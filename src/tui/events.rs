@@ -37,6 +37,11 @@ pub enum TuiEvent {
     InteractivePause {
         message: String,
     },
+    /// Emitted by an agent that needs a clarification answer from the user.
+    UserQuestion {
+        agent: String,
+        question: String,
+    },
     /// Emitted by the REPL `/continue` command to resume a paused workflow.
     Resume,
     /// Emitted periodically or at end to report aggregate token usage.

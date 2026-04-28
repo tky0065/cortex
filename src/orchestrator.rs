@@ -15,6 +15,10 @@ pub struct Orchestrator {
     resume_tx: Arc<tokio::sync::mpsc::Sender<()>>,
     /// Receiver half — shared with RunOptions so the workflow can await resume signals.
     resume_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<()>>>,
+    /// Sender half of the answer channel; the TUI sends user text answers here.
+    answer_tx: Arc<tokio::sync::mpsc::Sender<String>>,
+    /// Receiver half — shared with RunOptions so agents can await answers.
+    answer_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<String>>>,
     /// Reference to REPL state for updating session history (set via with_repl_state).
     pub repl_state: Option<Arc<crate::repl::ReplState>>,
 }
@@ -23,12 +27,15 @@ impl Orchestrator {
     pub fn new(workflow: Box<dyn Workflow>, config: Arc<Config>) -> Self {
         let cancel = CancellationToken::new();
         let (tx, rx) = tokio::sync::mpsc::channel::<()>(4);
+        let (atx, arx) = tokio::sync::mpsc::channel::<String>(4);
         Self {
             workflow,
             config,
             cancel,
             resume_tx: Arc::new(tx),
             resume_rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            answer_tx: Arc::new(atx),
+            answer_rx: Arc::new(tokio::sync::Mutex::new(arx)),
             repl_state: None,
         }
     }
@@ -53,6 +60,11 @@ impl Orchestrator {
     /// Sender that the REPL can use to resume an interactive pause.
     pub fn resume_sender(&self) -> Arc<tokio::sync::mpsc::Sender<()>> {
         Arc::clone(&self.resume_tx)
+    }
+
+    /// Sender that the TUI can use to deliver a text answer to a waiting agent.
+    pub fn answer_sender(&self) -> Arc<tokio::sync::mpsc::Sender<String>> {
+        Arc::clone(&self.answer_tx)
     }
 
     #[allow(dead_code)]
@@ -134,6 +146,8 @@ impl Orchestrator {
                 cancel: self.cancel.clone(),
                 resume_tx: Arc::clone(&self.resume_tx),
                 resume_rx: Arc::clone(&self.resume_rx),
+                answer_tx: Arc::clone(&self.answer_tx),
+                answer_rx: Arc::clone(&self.answer_rx),
                 verbose,
             };
 
@@ -161,6 +175,8 @@ impl Orchestrator {
             cancel: self.cancel.clone(),
             resume_tx: Arc::clone(&self.resume_tx),
             resume_rx: Arc::clone(&self.resume_rx),
+            answer_tx: Arc::clone(&self.answer_tx),
+            answer_rx: Arc::clone(&self.answer_rx),
             verbose,
         };
 

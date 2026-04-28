@@ -43,8 +43,22 @@ impl Workflow for DevWorkflow {
             ..options.clone()
         };
 
+        // ── Pre-flight: ask the user for constraints/preferences ─────────
+        let clarification = ask_user(
+            "ceo",
+            "Any specific constraints, tech stack preferences, or target platform? (press Enter to skip)",
+            &opts,
+        )
+        .await?;
+
+        let enriched_prompt = if clarification.trim().is_empty() {
+            prompt.clone()
+        } else {
+            format!("{}\n\nAdditional context from user: {}", prompt, clarification.trim())
+        };
+
         // ── Phase 1: CEO → brief ─────────────────────────────────────────
-        let brief = agents::ceo::run(&prompt, &opts).await?;
+        let brief = agents::ceo::run(&enriched_prompt, &opts).await?;
 
         // Early exit if cancelled
         if opts.cancel.is_cancelled() {
@@ -56,23 +70,6 @@ impl Workflow for DevWorkflow {
         fs.write("specs.md", &specs)?;
         let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "specs-ready".into() });
 
-        // Interactive pause after specs.md (Task 30 / 31)
-        if !opts.auto {
-            let _ = opts.tx.send(TuiEvent::InteractivePause {
-                message: "specs.md ready — type /continue to proceed or /abort to stop".into(),
-            });
-            tokio::select! {
-                _ = wait_for_resume(&opts) => {}
-                _ = opts.cancel.cancelled() => {
-                    let _ = opts.tx.send(TuiEvent::TokenChunk {
-                        agent: "orchestrator".into(),
-                        chunk: "Workflow aborted at specs pause.".into(),
-                    });
-                    return Ok(());
-                }
-            }
-        }
-
         if opts.cancel.is_cancelled() {
             return Ok(());
         }
@@ -81,23 +78,6 @@ impl Workflow for DevWorkflow {
         let arch = agents::tech_lead::run(&specs, &opts).await?;
         fs.write("architecture.md", &arch)?;
         let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "architecture-ready".into() });
-
-        // Interactive pause after architecture.md (Task 30 / 31)
-        if !opts.auto {
-            let _ = opts.tx.send(TuiEvent::InteractivePause {
-                message: "architecture.md ready — type /continue to proceed or /abort to stop".into(),
-            });
-            tokio::select! {
-                _ = wait_for_resume(&opts) => {}
-                _ = opts.cancel.cancelled() => {
-                    let _ = opts.tx.send(TuiEvent::TokenChunk {
-                        agent: "orchestrator".into(),
-                        chunk: "Workflow aborted at architecture pause.".into(),
-                    });
-                    return Ok(());
-                }
-            }
-        }
 
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -139,27 +119,6 @@ impl Workflow for DevWorkflow {
                 .map_err(|e| anyhow::anyhow!("Developer worker panicked: {e}"))??;
         }
         let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "development-done".into() });
-
-        if opts.cancel.is_cancelled() {
-            return Ok(());
-        }
-
-        // Interactive pause after first build (Task 30 / 31)
-        if !opts.auto {
-            let _ = opts.tx.send(TuiEvent::InteractivePause {
-                message: "Initial code ready — type /continue to run QA or /abort to stop".into(),
-            });
-            tokio::select! {
-                _ = wait_for_resume(&opts) => {}
-                _ = opts.cancel.cancelled() => {
-                    let _ = opts.tx.send(TuiEvent::TokenChunk {
-                        agent: "orchestrator".into(),
-                        chunk: "Workflow aborted after development phase.".into(),
-                    });
-                    return Ok(());
-                }
-            }
-        }
 
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -217,21 +176,26 @@ impl Workflow for DevWorkflow {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Wait until the REPL sends a resume signal (via `opts.resume_tx`).
+/// Ask the user a question and wait for their text answer.
 ///
-/// This async fn returns when `()` is received on the resume channel that
-/// was created in the `Orchestrator` and cloned into every `RunOptions`.
-///
-/// Note: Because `resume_tx` is `Arc<Sender>`, we can't move the receiver
-/// out of `RunOptions` without a `Mutex`.  We hold a simple polling loop
-/// here — good enough for a human-speed interactive pause.
-async fn wait_for_resume(opts: &RunOptions) {
+/// Emits `TuiEvent::UserQuestion` so the TUI can show a text-input popup.
+/// In `--auto` mode the question is skipped and an empty string is returned.
+pub async fn ask_user(agent: &str, question: &str, opts: &RunOptions) -> Result<String> {
+    if opts.auto {
+        return Ok(String::new());
+    }
+
+    let _ = opts.tx.send(TuiEvent::UserQuestion {
+        agent: agent.to_string(),
+        question: question.to_string(),
+    });
+
     tokio::select! {
-        _ = opts.cancel.cancelled() => {}
-        _ = async {
-            let mut rx = opts.resume_rx.lock().await;
-            rx.recv().await;
-        } => {}
+        answer = async {
+            let mut rx = opts.answer_rx.lock().await;
+            rx.recv().await.unwrap_or_default()
+        } => Ok(answer),
+        _ = opts.cancel.cancelled() => Ok(String::new()),
     }
 }
 

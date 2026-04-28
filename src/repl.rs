@@ -71,6 +71,8 @@ pub struct ReplState {
     pub cancel: Arc<Mutex<Option<CancellationToken>>>,
     /// Resume sender — calling `send(())` unblocks the next interactive pause.
     pub resume_tx: Arc<Mutex<Option<Arc<tokio::sync::mpsc::Sender<()>>>>>,
+    /// Answer sender — calling `send(text)` delivers a user answer to a waiting agent.
+    pub answer_tx: Arc<Mutex<Option<Arc<tokio::sync::mpsc::Sender<String>>>>>,
     /// Conversation history for free-form chat mode (user + assistant messages).
     pub chat_history: Arc<Mutex<Vec<rig::completion::Message>>>,
     /// History of past workflow sessions.
@@ -418,6 +420,10 @@ pub async fn dispatch(
                         let mut resume_guard = state.resume_tx.lock().await;
                         *resume_guard = Some(orch.resume_sender());
                     }
+                    {
+                        let mut answer_guard = state.answer_tx.lock().await;
+                        *answer_guard = Some(orch.answer_sender());
+                    }
 
                     // Clone state for use inside the spawn
                     let state_for_spawn = Arc::clone(&state);
@@ -586,6 +592,10 @@ pub async fn dispatch(
                 {
                     let mut resume_guard = state.resume_tx.lock().await;
                     *resume_guard = Some(orch.resume_sender());
+                }
+                {
+                    let mut answer_guard = state.answer_tx.lock().await;
+                    *answer_guard = Some(orch.answer_sender());
                 }
 
                 let prompt = format!(

@@ -65,6 +65,12 @@ enum PopupState {
     },
     /// Resume picker: shows session history for resuming workflows.
     ResumePicker(PickerState),
+    /// An agent is asking the user a clarification question; wait for text answer.
+    QuestionInput {
+        agent: String,
+        question: String,
+        input: tui_input::Input,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +198,9 @@ impl App {
             PopupState::ResumePicker(state) => {
                 PickerWidget { state }.render(frame);
             }
+            PopupState::QuestionInput { agent, question, input } => {
+                draw_question_overlay(frame, agent, question, input);
+            }
         }
     }
 
@@ -271,6 +280,17 @@ impl App {
                 self.pause_message = message.clone();
                 self.logs
                     .push(LogEntry::system(format!("[pause] {}", message)));
+            }
+            TuiEvent::UserQuestion { agent, question } => {
+                self.logs.push(LogEntry::system(format!(
+                    "[question:{}] {}",
+                    agent, question
+                )));
+                self.popup = PopupState::QuestionInput {
+                    agent: agent.clone(),
+                    question: question.clone(),
+                    input: tui_input::Input::default(),
+                };
             }
             TuiEvent::Resume => {
                 self.show_pause_popup = false;
@@ -490,6 +510,9 @@ impl Tui {
             }
             PopupState::ResumePicker(_) => {
                 return Self::handle_resume_picker(app, key, tx).await;
+            }
+            PopupState::QuestionInput { .. } => {
+                return Self::handle_question_input(app, key, tx).await;
             }
             PopupState::None => {}
         }
@@ -1036,6 +1059,46 @@ impl Tui {
         }
         false
     }
+
+    // -------------------------------------------------------------------------
+    // Question input key handler
+    // -------------------------------------------------------------------------
+
+    async fn handle_question_input(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        _tx: &TuiSender,
+    ) -> bool {
+        let PopupState::QuestionInput { ref mut input, .. } = app.popup else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Enter => {
+                let answer = input.value().to_string();
+                // Close the popup before sending to avoid any borrow issues
+                app.popup = PopupState::None;
+                app.logs.push(LogEntry::system(format!("answer: {}", answer)));
+                // Deliver the answer to the waiting agent
+                let answer_guard = app.repl_state.answer_tx.lock().await;
+                if let Some(ref atx) = *answer_guard {
+                    let _ = atx.send(answer).await;
+                }
+            }
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+                // Send empty string so the agent is unblocked
+                let answer_guard = app.repl_state.answer_tx.lock().await;
+                if let Some(ref atx) = *answer_guard {
+                    let _ = atx.send(String::new()).await;
+                }
+            }
+            _ => {
+                input.handle_event(&crossterm::event::Event::Key(*key));
+            }
+        }
+        false
+    }
 }
 
 impl Drop for Tui {
@@ -1195,3 +1258,84 @@ fn draw_loading_overlay(frame: &mut Frame) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Question input overlay
+// ---------------------------------------------------------------------------
+
+fn draw_question_overlay(
+    frame: &mut Frame,
+    agent: &str,
+    question: &str,
+    input: &tui_input::Input,
+) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::text::Line;
+
+    let screen = frame.area();
+    const POPUP_H: u16 = 13;
+    const POPUP_W_PCT: u16 = 60;
+    let popup_w = screen.width * POPUP_W_PCT / 100;
+    let popup_x = screen.x + (screen.width.saturating_sub(popup_w)) / 2;
+    let popup_y = screen.y + screen.height.saturating_sub(POPUP_H) / 2;
+    let area = Rect::new(popup_x, popup_y, popup_w, POPUP_H.min(screen.height));
+
+    frame.render_widget(Clear, area);
+
+    let title = format!(" 💬  {agent} — Question ");
+    let block = Block::default()
+        .title(Span::styled(title, THEME.title_style()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(THEME.warning))
+        .style(Style::default().bg(THEME.bg));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // top padding
+            Constraint::Length(3), // question text (wrapped)
+            Constraint::Length(1), // spacing
+            Constraint::Length(3), // input box
+            Constraint::Length(1), // footer hint
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    // Question text
+    let question_text = format!(" {}", question);
+    frame.render_widget(
+        Paragraph::new(Line::from(question_text))
+            .style(Style::default().fg(THEME.text))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        chunks[1],
+    );
+
+    // Answer input field
+    let typed = input.value();
+    let display = if typed.is_empty() {
+        " Type your answer…".to_string()
+    } else {
+        format!(" {}", typed)
+    };
+    let input_style = if typed.is_empty() {
+        Style::default().fg(THEME.muted)
+    } else {
+        Style::default().fg(THEME.text)
+    };
+    frame.render_widget(
+        Paragraph::new(display).style(input_style).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(THEME.active_border_style()),
+        ),
+        chunks[3],
+    );
+
+    // Footer
+    frame.render_widget(
+        Paragraph::new(" Enter to confirm  •  Esc to skip")
+            .style(Style::default().fg(THEME.muted)),
+        chunks[4],
+    );
+}

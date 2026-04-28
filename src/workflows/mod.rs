@@ -25,6 +25,10 @@ pub struct RunOptions {
     pub resume_tx: Arc<tokio::sync::mpsc::Sender<()>>,
     /// Receiver side of the resume channel, wrapped in Mutex for shared access across clones.
     pub resume_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<()>>>,
+    /// Sender used by the TUI to deliver a text answer back to a waiting agent.
+    pub answer_tx: Arc<tokio::sync::mpsc::Sender<String>>,
+    /// Receiver side of the answer channel — agents await here after emitting UserQuestion.
+    pub answer_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<String>>>,
     /// When true, log all agent prompts/responses to `cortex.log`.
     #[allow(dead_code)]
     pub verbose: bool,
