@@ -19,6 +19,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/config", "Print active configuration"),
     ("/model", "Switch model"),
     ("/provider", "Connect provider"),
+    ("/apikey", "Set an API key (openrouter/groq/together/web_search)"),
+    ("/websearch", "Toggle web search for all agents (enable|disable)"),
     ("/focus", "Focus logs by agent"),
     ("/clear", "Clear visible logs"),
     ("/logs", "Toggle log panel"),
@@ -323,7 +325,7 @@ impl InputBar {
 }
 
 /// Commands that require arguments and get a trailing space when selected.
-const REQUIRES_ARGS: &[&str] = &["/start", "/run", "/resume", "/focus"];
+const REQUIRES_ARGS: &[&str] = &["/start", "/run", "/resume", "/focus", "/apikey", "/websearch", "/model", "/provider"];
 
 #[cfg(test)]
 mod tests {
