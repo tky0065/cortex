@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -73,7 +74,7 @@ pub struct ReplState {
     /// Conversation history for free-form chat mode (user + assistant messages).
     pub chat_history: Arc<Mutex<Vec<rig::completion::Message>>>,
     /// History of past workflow sessions.
-    pub session_history: Arc<Mutex<Vec<SessionInfo>>>,
+    pub session_history: Arc<StdMutex<Vec<SessionInfo>>>,
     /// Directory where session history is stored.
     pub history_dir: PathBuf,
 }
@@ -100,22 +101,22 @@ impl ReplState {
         }
         let content = std::fs::read_to_string(history_path)?;
         let sessions: Vec<SessionInfo> = serde_json::from_str(&content)?;
-        *self.session_history.blocking_lock() = sessions;
+        *self.session_history.lock().unwrap() = sessions;
         Ok(())
     }
 
     /// Save session history to disk.
     fn save_history(&self) -> Result<()> {
         let history_path = self.history_dir.join("sessions.json");
-        let sessions = self.session_history.blocking_lock();
+        let sessions = self.session_history.lock().unwrap();
         let content = serde_json::to_string_pretty(&*sessions)?;
         std::fs::write(history_path, content)?;
         Ok(())
     }
 
     /// Add a new session to the history.
-    pub async fn add_session(&self, session: SessionInfo) -> Result<()> {
-        let mut history = self.session_history.lock().await;
+    pub fn add_session(&self, session: SessionInfo) -> Result<()> {
+        let mut history = self.session_history.lock().unwrap();
         history.push(session);
         // Keep only the last 50 sessions to prevent unbounded growth.
         if history.len() > 50 {
@@ -424,7 +425,7 @@ pub async fn dispatch(
                     // Spawn so the TUI stays responsive
                     tokio::spawn(async move {
                         // Add session to history when workflow starts
-                        let _ = state_for_spawn.add_session(session_info.clone()).await;
+                        let _ = state_for_spawn.add_session(session_info.clone());
 
                         let result = orch
                             .run_with_sender(prompt_owned.clone(), false, Some(tx_clone))
@@ -432,7 +433,7 @@ pub async fn dispatch(
 
                         // Update session status when workflow completes
                         {
-                            let mut history = state_for_spawn.session_history.lock().await;
+                            let mut history = state_for_spawn.session_history.lock().unwrap();
                             if let Some(session) = history.iter_mut().find(|s| s.id == session_id) {
                                 match &result {
                                     Ok(()) => session.status = SessionStatus::Completed,
@@ -487,7 +488,7 @@ pub async fn dispatch(
 
                 // Update the last running session to Interrupted
                 {
-                    let mut history = state.session_history.lock().await;
+                    let mut history = state.session_history.lock().unwrap();
                     if let Some(session) = history.iter_mut().last()
                         && matches!(session.status, SessionStatus::Running)
                     {

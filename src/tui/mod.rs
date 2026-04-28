@@ -329,7 +329,7 @@ impl App {
                 }
             }
             TuiEvent::OpenResumePicker => {
-                let sessions = self.repl_state.session_history.blocking_lock().clone();
+                let sessions = self.repl_state.session_history.lock().unwrap().clone();
                 self.popup = PopupState::ResumePicker(resume_picker(&sessions));
             }
             TuiEvent::ClearLogs => {
@@ -830,7 +830,7 @@ impl Tui {
                     app.popup = PopupState::None;
                     // Look up the directory for this session and dispatch /resume <dir>
                     let dir = {
-                        let history = app.repl_state.session_history.blocking_lock();
+                        let history = app.repl_state.session_history.lock().unwrap();
                         history
                             .iter()
                             .find(|s| s.id == session_id)
