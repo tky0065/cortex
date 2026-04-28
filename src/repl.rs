@@ -1,15 +1,15 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 use crate::config::Config;
+use crate::orchestrator::Orchestrator;
 use crate::tui::events::{TuiEvent, TuiSender};
 use crate::workflows;
-use crate::orchestrator::Orchestrator;
 
 const ASSISTANT_PREAMBLE: &str = "\
 You are Cortex, a helpful AI assistant embedded in an agentic software development CLI. \
@@ -166,60 +166,103 @@ pub async fn dispatch(
                 "  /config                       — print active configuration",
                 "  /model [<role> <model>]       — show or change a role's model",
                 "  /provider [<name>]            — show or change the default provider",
+                "  /focus <agent>                — show only logs for one agent",
+                "  /clear                        — clear visible logs",
                 "  /logs                         — toggle log panel focus",
                 "  /quit                         — exit cortex",
             ];
             for line in lines {
-                send(tx, TuiEvent::AgentStarted { agent: "help".to_string() });
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "help".to_string(),
-                    chunk: line.to_string(),
-                });
+                send(
+                    tx,
+                    TuiEvent::AgentStarted {
+                        agent: "help".to_string(),
+                    },
+                );
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "help".to_string(),
+                        chunk: line.to_string(),
+                    },
+                );
             }
         }
 
         "/config" => {
             let cfg = config.read().await;
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  provider: {}", cfg.provider.default),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  ceo:        {}", cfg.models.ceo),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  pm:         {}", cfg.models.pm),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  tech_lead:  {}", cfg.models.tech_lead),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  developer:  {}", cfg.models.developer),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  qa:         {}", cfg.models.qa),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  devops:     {}", cfg.models.devops),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  assistant:  {}", cfg.models.assistant),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  max_parallel_workers: {}", cfg.limits.max_parallel_workers),
-            });
-            send(tx, TuiEvent::TokenChunk {
-                agent: "config".to_string(),
-                chunk: format!("  max_qa_iterations: {}", cfg.limits.max_qa_iterations),
-            });
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  provider: {}", cfg.provider.default),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  ceo:        {}", cfg.models.ceo),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  pm:         {}", cfg.models.pm),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  tech_lead:  {}", cfg.models.tech_lead),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  developer:  {}", cfg.models.developer),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  qa:         {}", cfg.models.qa),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  devops:     {}", cfg.models.devops),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  assistant:  {}", cfg.models.assistant),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!(
+                        "  max_parallel_workers: {}",
+                        cfg.limits.max_parallel_workers
+                    ),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  max_qa_iterations: {}", cfg.limits.max_qa_iterations),
+                },
+            );
         }
 
         "/model" => {
@@ -245,22 +288,31 @@ pub async fn dispatch(
                 match cfg.set_model(role, model_str.to_string()) {
                     Ok(()) => {
                         if let Err(e) = cfg.save() {
-                            send(tx, TuiEvent::Error {
-                                agent: "model".to_string(),
-                                message: format!("saved in memory but failed to persist: {e}"),
-                            });
+                            send(
+                                tx,
+                                TuiEvent::Error {
+                                    agent: "model".to_string(),
+                                    message: format!("saved in memory but failed to persist: {e}"),
+                                },
+                            );
                         } else {
-                            send(tx, TuiEvent::TokenChunk {
-                                agent: "model".to_string(),
-                                chunk: format!("  ✓ {} → {} (saved)", role, model_str),
-                            });
+                            send(
+                                tx,
+                                TuiEvent::TokenChunk {
+                                    agent: "model".to_string(),
+                                    chunk: format!("  ✓ {} → {} (saved)", role, model_str),
+                                },
+                            );
                         }
                     }
                     Err(e) => {
-                        send(tx, TuiEvent::Error {
-                            agent: "model".to_string(),
-                            message: e.to_string(),
-                        });
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "model".to_string(),
+                                message: e.to_string(),
+                            },
+                        );
                     }
                 }
             }
@@ -275,25 +327,34 @@ pub async fn dispatch(
                 let mut cfg = config.write().await;
                 cfg.set_provider(name.clone());
                 if let Err(e) = cfg.save() {
-                    send(tx, TuiEvent::Error {
-                        agent: "provider".to_string(),
-                        message: format!("saved in memory but failed to persist: {e}"),
-                    });
+                    send(
+                        tx,
+                        TuiEvent::Error {
+                            agent: "provider".to_string(),
+                            message: format!("saved in memory but failed to persist: {e}"),
+                        },
+                    );
                 } else {
-                    send(tx, TuiEvent::TokenChunk {
-                        agent: "provider".to_string(),
-                        chunk: format!("  ✓ provider → {} (saved)", name),
-                    });
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "provider".to_string(),
+                            chunk: format!("  ✓ provider → {} (saved)", name),
+                        },
+                    );
                 }
             }
         }
 
         "/start" | "/run" => {
             if rest.is_empty() {
-                send(tx, TuiEvent::Error {
-                    agent: "repl".to_string(),
-                    message: format!("usage: {} <workflow> \"<prompt>\"", command),
-                });
+                send(
+                    tx,
+                    TuiEvent::Error {
+                        agent: "repl".to_string(),
+                        message: format!("usage: {} <workflow> \"<prompt>\"", command),
+                    },
+                );
                 return Ok(false);
             }
 
@@ -305,139 +366,194 @@ pub async fn dispatch(
 
             match workflows::get_workflow(workflow_name) {
                 Err(e) => {
-                    send(tx, TuiEvent::Error {
-                        agent: "repl".to_string(),
-                        message: e.to_string(),
+                    let hint = if is_known_agent_role(workflow_name) {
+                        format!(
+                            "{}. '{}' is an agent role, not a workflow. Try: /run dev \"{}\"",
+                            e, workflow_name, prompt
+                        )
+                    } else {
+                        e.to_string()
+                    };
+                    send(
+                        tx,
+                        TuiEvent::Error {
+                            agent: "repl".to_string(),
+                            message: hint,
+                        },
+                    );
+                }
+                Ok(wf) => {
+                    send(
+                        tx,
+                        TuiEvent::AgentStarted {
+                            agent: format!("workflow:{}", workflow_name),
+                        },
+                    );
+                    let tx_clone = tx.clone();
+                    let mut orch = Orchestrator::new(wf, config_snapshot);
+
+                    // Create session info for tracking
+                    let prompt_owned = prompt.to_string();
+                    let session_id = Uuid::new_v4().to_string();
+                    let session_info = SessionInfo {
+                        id: session_id.clone(),
+                        workflow: workflow_name.to_string(),
+                        idea: prompt_owned.clone(),
+                        directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        timestamp: Utc::now(),
+                        status: SessionStatus::Running,
+                        git_hash: None,
+                    };
+
+                    // Register repl_state with the orchestrator so it can use it internally
+                    orch = orch.with_repl_state(state.clone());
+
+                    // Store the cancel token and resume sender so /abort and /continue work
+                    {
+                        let mut cancel_guard = state.cancel.lock().await;
+                        *cancel_guard = Some(orch.cancel_token());
+                    }
+                    {
+                        let mut resume_guard = state.resume_tx.lock().await;
+                        *resume_guard = Some(orch.resume_sender());
+                    }
+
+                    // Clone state for use inside the spawn
+                    let state_for_spawn = Arc::clone(&state);
+
+                    // Spawn so the TUI stays responsive
+                    tokio::spawn(async move {
+                        // Add session to history when workflow starts
+                        let _ = state_for_spawn.add_session(session_info.clone()).await;
+
+                        let result = orch
+                            .run_with_sender(prompt_owned.clone(), false, Some(tx_clone))
+                            .await;
+
+                        // Update session status when workflow completes
+                        {
+                            let mut history = state_for_spawn.session_history.lock().await;
+                            if let Some(session) = history.iter_mut().find(|s| s.id == session_id) {
+                                match &result {
+                                    Ok(()) => session.status = SessionStatus::Completed,
+                                    Err(_) => session.status = SessionStatus::Failed,
+                                }
+                                // Try to get git hash if available
+                                session.git_hash = Some(
+                                    std::process::Command::new("git")
+                                        .arg("rev-parse")
+                                        .arg("HEAD")
+                                        .output()
+                                        .ok()
+                                        .and_then(|output| String::from_utf8(output.stdout).ok())
+                                        .map(|s| s.trim().to_string())
+                                        .unwrap_or_default(),
+                                );
+                            }
+                        }
+                        let _ = state_for_spawn.save_history();
                     });
                 }
-                 Ok(wf) => {
-                     send(tx, TuiEvent::AgentStarted {
-                         agent: format!("workflow:{}", workflow_name),
-                     });
-                     let tx_clone = tx.clone();
-                     let mut orch = Orchestrator::new(wf, config_snapshot);
-                     
-                     // Create session info for tracking
-                      let prompt_owned = prompt.to_string();
-                      let session_id = Uuid::new_v4().to_string();
-                      let session_info = SessionInfo {
-                          id: session_id.clone(),
-                          workflow: workflow_name.to_string(),
-                          idea: prompt_owned.clone(),
-                          directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                          timestamp: Utc::now(),
-                          status: SessionStatus::Running,
-                          git_hash: None,
-                      };
-                     
-                     // Register repl_state with the orchestrator so it can use it internally
-                     orch = orch.with_repl_state(state.clone());
-                     
-                     // Store the cancel token and resume sender so /abort and /continue work
-                     {
-                         let mut cancel_guard = state.cancel.lock().await;
-                         *cancel_guard = Some(orch.cancel_token());
-                     }
-                     {
-                         let mut resume_guard = state.resume_tx.lock().await;
-                         *resume_guard = Some(orch.resume_sender());
-                     }
-
-                     // Clone state for use inside the spawn
-                     let state_for_spawn = Arc::clone(&state);
-
-                     // Spawn so the TUI stays responsive
-                     tokio::spawn(async move {
-                         // Add session to history when workflow starts
-                         let _ = state_for_spawn.add_session(session_info.clone()).await;
-                         
-                         let result = orch.run_with_sender(prompt_owned.clone(), false, Some(tx_clone)).await;
-                         
-                         // Update session status when workflow completes
-                         {
-                             let mut history = state_for_spawn.session_history.lock().await;
-                             if let Some(session) = history.iter_mut().find(|s| s.id == session_id) {
-                                 match &result {
-                                     Ok(()) => session.status = SessionStatus::Completed,
-                                     Err(_) => session.status = SessionStatus::Failed,
-                                 }
-                                 // Try to get git hash if available
-                                 session.git_hash = Some(std::process::Command::new("git")
-                                     .arg("rev-parse")
-                                     .arg("HEAD")
-                                     .output()
-                                     .ok()
-                                     .and_then(|output| String::from_utf8(output.stdout).ok())
-                                     .map(|s| s.trim().to_string())
-                                     .unwrap_or_default());
-                             }
-                         }
-                         let _ = state_for_spawn.save_history();
-                     });
-                 }
             }
         }
 
         "/status" => {
             let running = state.cancel.lock().await.is_some();
-            send(tx, TuiEvent::TokenChunk {
-                agent: "status".to_string(),
-                chunk: if running {
-                    "  Workflow running.".to_string()
-                } else {
-                    "  No workflow running.".to_string()
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "status".to_string(),
+                    chunk: if running {
+                        "  Workflow running.".to_string()
+                    } else {
+                        "  No workflow running.".to_string()
+                    },
                 },
-            });
+            );
         }
 
-         "/abort" => {
-             let mut cancel_guard = state.cancel.lock().await;
-             if let Some(token) = cancel_guard.take() {
-                 token.cancel();
-                 send(tx, TuiEvent::TokenChunk {
-                     agent: "abort".to_string(),
-                     chunk: "  Abort signal sent — workflow will stop at the next checkpoint.".to_string(),
-                 });
-                 
-                 // Update the last running session to Interrupted
-                 {
-                     let mut history = state.session_history.lock().await;
-                     if let Some(session) = history.iter_mut().last()
-                         && matches!(session.status, SessionStatus::Running) {
-                         session.status = SessionStatus::Interrupted;
-                     }
-                 }
-                 let _ = state.save_history();
-             } else {
-                 send(tx, TuiEvent::TokenChunk {
-                     agent: "abort".to_string(),
-                     chunk: "  No workflow is currently running.".to_string(),
-                 });
-             }
-         }
+        "/abort" => {
+            let mut cancel_guard = state.cancel.lock().await;
+            if let Some(token) = cancel_guard.take() {
+                token.cancel();
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "abort".to_string(),
+                        chunk: "  Abort signal sent — workflow will stop at the next checkpoint."
+                            .to_string(),
+                    },
+                );
+
+                // Update the last running session to Interrupted
+                {
+                    let mut history = state.session_history.lock().await;
+                    if let Some(session) = history.iter_mut().last()
+                        && matches!(session.status, SessionStatus::Running)
+                    {
+                        session.status = SessionStatus::Interrupted;
+                    }
+                }
+                let _ = state.save_history();
+            } else {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "abort".to_string(),
+                        chunk: "  No workflow is currently running.".to_string(),
+                    },
+                );
+            }
+        }
 
         "/continue" => {
             let resume_guard = state.resume_tx.lock().await;
             if let Some(tx_resume) = resume_guard.as_ref() {
                 let _ = tx_resume.try_send(());
                 send(tx, TuiEvent::Resume);
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "repl".to_string(),
-                    chunk: "  Resuming workflow…".to_string(),
-                });
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "repl".to_string(),
+                        chunk: "  Resuming workflow…".to_string(),
+                    },
+                );
             } else {
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "repl".to_string(),
-                    chunk: "  No workflow is paused.".to_string(),
-                });
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "repl".to_string(),
+                        chunk: "  No workflow is paused.".to_string(),
+                    },
+                );
             }
         }
 
         "/logs" => {
-            send(tx, TuiEvent::TokenChunk {
-                agent: "logs".to_string(),
-                chunk: "  Log panel focus toggled.".to_string(),
-            });
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "logs".to_string(),
+                    chunk: "  Log panel focus toggled.".to_string(),
+                },
+            );
+        }
+
+        "/clear" => {
+            send(tx, TuiEvent::ClearLogs);
+        }
+
+        "/focus" => {
+            if rest.is_empty() || rest == "all" || rest == "off" {
+                send(tx, TuiEvent::SetLogFilter { agent: None });
+            } else {
+                send(
+                    tx,
+                    TuiEvent::SetLogFilter {
+                        agent: Some(rest.to_string()),
+                    },
+                );
+            }
         }
 
         "/resume" => {
@@ -447,10 +563,13 @@ pub async fn dispatch(
             } else {
                 let project_dir = std::path::PathBuf::from(rest);
                 if !project_dir.exists() {
-                    send(tx, TuiEvent::Error {
-                        agent: "repl".to_string(),
-                        message: format!("directory does not exist: {}", project_dir.display()),
-                    });
+                    send(
+                        tx,
+                        TuiEvent::Error {
+                            agent: "repl".to_string(),
+                            message: format!("directory does not exist: {}", project_dir.display()),
+                        },
+                    );
                     return Ok(false);
                 }
 
@@ -468,23 +587,32 @@ pub async fn dispatch(
                     *resume_guard = Some(orch.resume_sender());
                 }
 
-                let prompt = format!("Resume and complete the project in: {}", project_dir.display());
+                let prompt = format!(
+                    "Resume and complete the project in: {}",
+                    project_dir.display()
+                );
                 tokio::spawn(async move {
                     let _ = orch.run_with_sender(prompt, true, Some(tx_clone)).await;
                 });
 
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "repl".to_string(),
-                    chunk: format!("  Resuming project at: {}", rest),
-                });
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "repl".to_string(),
+                        chunk: format!("  Resuming project at: {}", rest),
+                    },
+                );
             }
         }
 
         other => {
-            send(tx, TuiEvent::Error {
-                agent: "repl".to_string(),
-                message: format!("unknown command '{}' — type /help", other),
-            });
+            send(
+                tx,
+                TuiEvent::Error {
+                    agent: "repl".to_string(),
+                    message: format!("unknown command '{}' — type /help", other),
+                },
+            );
         }
     }
 
@@ -506,6 +634,29 @@ fn parse_workflow_and_prompt(rest: &str) -> (&str, &str) {
         return ("dev", rest.trim_matches('"'));
     }
     ("dev", rest.trim_matches('"'))
+}
+
+fn is_known_agent_role(name: &str) -> bool {
+    matches!(
+        name,
+        "ceo"
+            | "pm"
+            | "tech_lead"
+            | "developer"
+            | "qa"
+            | "devops"
+            | "strategist"
+            | "copywriter"
+            | "analyst"
+            | "social_media_manager"
+            | "researcher"
+            | "profiler"
+            | "outreach_manager"
+            | "reviewer"
+            | "security"
+            | "performance"
+            | "reporter"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -530,19 +681,25 @@ async fn chat_message(
     };
 
     // Snapshot history before the call (avoid holding the lock across await)
-    let history_snapshot = {
-        state.chat_history.lock().await.clone()
-    };
+    let history_snapshot = { state.chat_history.lock().await.clone() };
 
-    send(tx, TuiEvent::AgentStarted { agent: "assistant".to_string() });
+    send(
+        tx,
+        TuiEvent::AgentStarted {
+            agent: "assistant".to_string(),
+        },
+    );
+    send(
+        tx,
+        TuiEvent::AgentProgress {
+            agent: "assistant".to_string(),
+            message: "Preparation de la reponse".to_string(),
+        },
+    );
 
-    let result = crate::providers::complete_chat(
-        &model,
-        ASSISTANT_PREAMBLE,
-        history_snapshot,
-        message,
-    )
-    .await;
+    let result =
+        crate::providers::complete_chat(&model, ASSISTANT_PREAMBLE, history_snapshot, message)
+            .await;
 
     match result {
         Ok(reply) => {
@@ -553,20 +710,38 @@ async fn chat_message(
                 hist.push(rig::completion::Message::assistant(&reply));
             }
 
+            send(
+                tx,
+                TuiEvent::AgentSummary {
+                    agent: "assistant".to_string(),
+                    summary: crate::workflows::summarize_output(&reply),
+                },
+            );
             // Stream reply line-by-line so the log panel shows it nicely
             for line in reply.lines() {
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "assistant".to_string(),
-                    chunk: line.to_string(),
-                });
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "assistant".to_string(),
+                        chunk: line.to_string(),
+                    },
+                );
             }
-            send(tx, TuiEvent::AgentDone { agent: "assistant".to_string() });
+            send(
+                tx,
+                TuiEvent::AgentDone {
+                    agent: "assistant".to_string(),
+                },
+            );
         }
         Err(e) => {
-            send(tx, TuiEvent::Error {
-                agent: "assistant".to_string(),
-                message: format!("chat error: {e}"),
-            });
+            send(
+                tx,
+                TuiEvent::Error {
+                    agent: "assistant".to_string(),
+                    message: format!("chat error: {e}"),
+                },
+            );
         }
     }
 

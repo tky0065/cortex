@@ -1,27 +1,29 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 use tui_input::Input;
 
 /// All slash commands with their short descriptions.
 const COMMANDS: &[(&str, &str)] = &[
-    ("/start",    "Launch a workflow"),
-    ("/run",      "Alias for /start"),
-    ("/resume",   "Resume an interrupted workflow"),
-    ("/status",   "Show current workflow status"),
-    ("/abort",    "Cancel the running workflow"),
+    ("/start", "Launch a workflow"),
+    ("/run", "Alias for /start"),
+    ("/resume", "Resume an interrupted workflow"),
+    ("/status", "Show current workflow status"),
+    ("/abort", "Cancel the running workflow"),
     ("/continue", "Resume an interactive pause"),
-    ("/config",   "Print active configuration"),
-    ("/model",    "Switch model"),
+    ("/config", "Print active configuration"),
+    ("/model", "Switch model"),
     ("/provider", "Connect provider"),
-    ("/logs",     "Toggle log panel"),
-    ("/help",     "Show all commands"),
-    ("/quit",     "Exit cortex"),
-    ("/exit",     "Exit cortex"),
+    ("/focus", "Focus logs by agent"),
+    ("/clear", "Clear visible logs"),
+    ("/logs", "Toggle log panel"),
+    ("/help", "Show all commands"),
+    ("/quit", "Exit cortex"),
+    ("/exit", "Exit cortex"),
 ];
 
 pub struct InputBar {
@@ -171,7 +173,10 @@ impl InputBar {
     // -----------------------------------------------------------------------
 
     pub fn active_suggestions(&self) -> Vec<&'static str> {
-        let prefix = self.completion_prefix.as_deref().unwrap_or_else(|| self.input.value());
+        let prefix = self
+            .completion_prefix
+            .as_deref()
+            .unwrap_or_else(|| self.input.value());
         if prefix.is_empty() || !prefix.starts_with('/') {
             return Vec::new();
         }
@@ -253,8 +258,8 @@ impl InputBar {
         }
 
         // Palette height: one row per match + 2 border rows, capped so it doesn't exceed screen.
-        let palette_h = (matches.len() as u16 + 2)
-            .min(full_area.height.saturating_sub(input_area.height + 2));
+        let palette_h =
+            (matches.len() as u16 + 2).min(full_area.height.saturating_sub(input_area.height + 2));
         if palette_h < 3 {
             return;
         }
@@ -317,12 +322,12 @@ impl InputBar {
 }
 
 /// Commands that require arguments and get a trailing space when selected.
-const REQUIRES_ARGS: &[&str] = &["/start", "/run", "/resume", "/model", "/provider"];
+const REQUIRES_ARGS: &[&str] = &["/start", "/run", "/resume", "/focus"];
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use tui_input::backend::crossterm::EventHandler;
 
     fn make_terminal() -> Terminal<TestBackend> {
@@ -506,6 +511,22 @@ mod tests {
         assert_eq!(selected, Some("/help".to_string()));
         assert_eq!(bar.input.value(), "/help");
     }
+
+    #[test]
+    fn palette_select_complete_command_can_dispatch_immediately() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/status");
+        let selected = bar.palette_select();
+        assert_eq!(selected, Some("/status".to_string()));
+        assert!(!bar.input.value().ends_with(' '));
+    }
+
+    #[test]
+    fn palette_select_arg_command_waits_for_prompt() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/ru");
+        let selected = bar.palette_select();
+        assert_eq!(selected, Some("/run ".to_string()));
+        assert!(bar.input.value().ends_with(' '));
+    }
 }
-
-

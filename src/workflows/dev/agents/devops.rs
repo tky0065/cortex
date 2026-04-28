@@ -2,26 +2,32 @@
 
 use anyhow::Result;
 
-use crate::tui::events::TuiEvent;
 use crate::tools::filesystem::FileSystem;
 use crate::tools::terminal;
-use crate::workflows::RunOptions;
+use crate::tui::events::TuiEvent;
+use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/devops.md");
 
 /// Generate deployment files and run git commit.
 pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> Result<()> {
-    let _ = options.tx.send(TuiEvent::AgentStarted { agent: "devops".into() });
+    let _ = options.tx.send(TuiEvent::AgentStarted {
+        agent: "devops".into(),
+    });
+    send_agent_progress(options, "devops", "Preparation des fichiers de deploiement");
 
     let model = crate::providers::model_for_role("devops", &options.config)?;
     let prompt = format!(
         "Create deployment infrastructure for this project:\n\n{}",
         architecture
     );
-    let output = crate::providers::complete(model, PREAMBLE, &prompt).await
+    let output = crate::providers::complete(model, PREAMBLE, &prompt)
+        .await
         .map_err(|e| anyhow::anyhow!("DevOps agent error: {e}"))?;
 
+    send_agent_progress(options, "devops", "Ecriture des fichiers de deploiement");
     parse_and_write_files(&output, fs)?;
+    send_agent_summary(options, "devops", &output);
 
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "devops".into(),
@@ -30,7 +36,9 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
 
     git_commit(options).await?;
 
-    let _ = options.tx.send(TuiEvent::AgentDone { agent: "devops".into() });
+    let _ = options.tx.send(TuiEvent::AgentDone {
+        agent: "devops".into(),
+    });
     Ok(())
 }
 
@@ -49,6 +57,11 @@ fn parse_and_write_files(output: &str, fs: &FileSystem) -> Result<()> {
 async fn git_commit(options: &RunOptions) -> Result<()> {
     let dir = &options.project_dir;
 
+    send_agent_progress(
+        options,
+        "devops",
+        "Initialisation git et creation du commit",
+    );
     let _ = terminal::run("git", &["init"], Some(dir.as_path()), Some(30)).await;
 
     let add_out = terminal::run("git", &["add", "."], Some(dir.as_path()), Some(30)).await?;
@@ -62,7 +75,11 @@ async fn git_commit(options: &RunOptions) -> Result<()> {
 
     let commit_out = terminal::run(
         "git",
-        &["commit", "-m", "chore: initial commit by cortex devops agent"],
+        &[
+            "commit",
+            "-m",
+            "chore: initial commit by cortex devops agent",
+        ],
         Some(dir.as_path()),
         Some(30),
     )

@@ -2,31 +2,39 @@
 
 use anyhow::Result;
 
-use crate::tui::events::TuiEvent;
 use crate::tools::filesystem::FileSystem;
-use crate::workflows::RunOptions;
+use crate::tui::events::TuiEvent;
+use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/qa.md");
 
 /// Run QA review on the project. Returns the QA report string.
 pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> Result<String> {
-    let _ = options.tx.send(TuiEvent::AgentStarted { agent: "qa".into() });
+    let _ = options
+        .tx
+        .send(TuiEvent::AgentStarted { agent: "qa".into() });
+    send_agent_progress(options, "qa", "Lecture du code et verification qualite");
 
     let source_files = collect_source_files(fs);
     let model = crate::providers::model_for_role("qa", &options.config)?;
     let prompt = format!(
         "Architecture:\n{}\n\nSource files to review:\n{}\n\nProduce a QA report.",
-        architecture,
-        source_files
+        architecture, source_files
     );
 
-    let report = crate::providers::complete(model, PREAMBLE, &prompt).await
+    let report = crate::providers::complete(model, PREAMBLE, &prompt)
+        .await
         .map_err(|e| anyhow::anyhow!("QA agent error: {e}"))?;
 
     let passed = report.contains("RECOMMENDATION: APPROVE");
+    send_agent_summary(options, "qa", &report);
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "qa".into(),
-        chunk: if passed { "QA: APPROVED".into() } else { "QA: NEEDS_FIXES".into() },
+        chunk: if passed {
+            "QA: APPROVED".into()
+        } else {
+            "QA: NEEDS_FIXES".into()
+        },
     });
     let _ = options.tx.send(TuiEvent::AgentDone { agent: "qa".into() });
 
