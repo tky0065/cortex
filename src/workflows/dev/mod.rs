@@ -43,22 +43,28 @@ impl Workflow for DevWorkflow {
             ..options.clone()
         };
 
-        // ── Pre-flight: ask the user for constraints/preferences ─────────
-        let clarification = ask_user(
-            "ceo",
-            "Any specific constraints, tech stack preferences, or target platform? (press Enter to skip)",
-            &opts,
-        )
-        .await?;
-
-        let enriched_prompt = if clarification.trim().is_empty() {
-            prompt.clone()
-        } else {
-            format!("{}\n\nAdditional context from user: {}", prompt, clarification.trim())
-        };
-
         // ── Phase 1: CEO → brief ─────────────────────────────────────────
-        let brief = agents::ceo::run(&enriched_prompt, &opts).await?;
+        // The CEO may output `CLARIFICATION_NEEDED: <question>` when the prompt
+        // is genuinely ambiguous. We ask the user once, then re-run CEO with
+        // the enriched context. For clear prompts CEO proceeds directly.
+        let brief = {
+            let first = agents::ceo::run(&prompt, &opts).await?;
+            if let Some(question) = parse_clarification_needed(&first) {
+                let answer = ask_user("ceo", &question, &opts).await?;
+                if answer.trim().is_empty() {
+                    first
+                } else {
+                    let enriched = format!(
+                        "{}\n\nAdditional context: {}",
+                        prompt,
+                        answer.trim()
+                    );
+                    agents::ceo::run(&enriched, &opts).await?
+                }
+            } else {
+                first
+            }
+        };
 
         // Early exit if cancelled
         if opts.cancel.is_cancelled() {
@@ -210,6 +216,17 @@ fn slugify(s: &str) -> String {
         .join("-")
 }
 
+/// If the CEO output is a clarification request, extract the question text.
+/// Returns `Some(question)` when the entire output is `CLARIFICATION_NEEDED: <question>`,
+/// `None` otherwise (i.e. CEO produced a normal brief).
+fn parse_clarification_needed(output: &str) -> Option<String> {
+    let trimmed = output.trim();
+    trimmed
+        .strip_prefix("CLARIFICATION_NEEDED:")
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty())
+}
+
 /// Parse the FILES_TO_CREATE section from architecture.md.
 fn parse_files_to_create(arch: &str) -> Vec<String> {
     let mut in_section = false;
@@ -261,4 +278,30 @@ fn extract_files_from_report(report: &str) -> Vec<String> {
         }
     }
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_clarification_needed;
+
+    #[test]
+    fn detects_clarification_marker() {
+        let out = "CLARIFICATION_NEEDED: What programming language should be used?";
+        assert_eq!(
+            parse_clarification_needed(out),
+            Some("What programming language should be used?".into())
+        );
+    }
+
+    #[test]
+    fn ignores_normal_brief() {
+        let out = "## Overview\nA Go hello-world CLI tool.\n## Target Users\n...";
+        assert_eq!(parse_clarification_needed(out), None);
+    }
+
+    #[test]
+    fn ignores_partial_match_inside_text() {
+        let out = "## Overview\nCLARIFICATION_NEEDED: something buried in a paragraph";
+        assert_eq!(parse_clarification_needed(out), None);
+    }
 }
