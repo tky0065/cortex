@@ -48,7 +48,11 @@ impl Workflow for ProspectingWorkflow {
         };
 
         // ── Phase 1: Researcher → prospects.md ───────────────────────────
-        let prospects_raw = agents::researcher::run(&prompt, &opts).await?;
+        let enriched_prompt = {
+            let profile_prefix = load_profile(&options.project_dir).unwrap_or_default();
+            format!("{}{}", profile_prefix, prompt)
+        };
+        let prospects_raw = agents::researcher::run(&enriched_prompt, &opts).await?;
         fs.write("prospects.md", &prospects_raw)?;
         let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "prospects-identified".into() });
 
@@ -111,6 +115,13 @@ impl Workflow for ProspectingWorkflow {
 
         Ok(())
     }
+}
+
+/// Load user profile from profile.toml in the project dir, if present.
+fn load_profile(project_dir: &std::path::Path) -> Option<String> {
+    let profile_path = project_dir.join("profile.toml");
+    let content = std::fs::read_to_string(&profile_path).ok()?;
+    Some(format!("## User Profile\n\n```toml\n{}\n```\n\n", content))
 }
 
 fn parse_prospects(raw: &str) -> Vec<String> {

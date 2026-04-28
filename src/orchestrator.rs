@@ -13,8 +13,7 @@ pub struct Orchestrator {
     cancel: CancellationToken,
     /// Sender half of the resume channel; the REPL calls `resume_tx.send(())` to unblock pauses.
     resume_tx: Arc<tokio::sync::mpsc::Sender<()>>,
-    /// Receiver half — held here so it lives as long as the orchestrator.
-    #[allow(dead_code)]
+    /// Receiver half — shared with RunOptions so the workflow can await resume signals.
     resume_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<()>>>,
 }
 
@@ -131,6 +130,7 @@ impl Orchestrator {
                 project_dir,
                 cancel: self.cancel.clone(),
                 resume_tx: Arc::clone(&self.resume_tx),
+                resume_rx: Arc::clone(&self.resume_rx),
                 verbose,
             };
 
@@ -157,6 +157,7 @@ impl Orchestrator {
             project_dir,
             cancel: self.cancel.clone(),
             resume_tx: Arc::clone(&self.resume_tx),
+            resume_rx: Arc::clone(&self.resume_rx),
             verbose,
         };
 

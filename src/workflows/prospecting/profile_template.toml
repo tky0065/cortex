@@ -1,0 +1,15 @@
+# Cortex Prospecting — User Profile Template
+# Copy this file to your project directory as profile.toml and customize it.
+
+[profile]
+skills    = ["React", "TypeScript", "Node.js"]
+services  = ["refonte frontend", "audit performance", "mise en place design system"]
+rate      = "600€/jour"
+location  = "France (remote)"
+
+[targeting]
+sectors      = ["e-commerce", "SaaS B2B", "fintech"]
+company_size = "10-200 salariés"
+signals      = ["offres d'emploi React", "levée de fonds récente", "croissance équipe tech"]
+geography    = "France"
+count        = 20

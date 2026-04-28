@@ -226,19 +226,12 @@ impl Workflow for DevWorkflow {
 /// out of `RunOptions` without a `Mutex`.  We hold a simple polling loop
 /// here — good enough for a human-speed interactive pause.
 async fn wait_for_resume(opts: &RunOptions) {
-    // We detect "resume" by sending a dummy message to ourselves — that won't
-    // work cleanly.  Instead we just yield in a tight-ish loop checking
-    // whether a `Resume` token was sent via the resume channel.
-    // The resume_tx is shared; we listen by having the RunOptions also carry
-    // the shared receiver wrapped in a Mutex.
-    //
-    // For now we park and poll every 200 ms, which is fine at human timescales.
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        // Try to receive without blocking
-        if opts.cancel.is_cancelled() {
-            return;
-        }
+    tokio::select! {
+        _ = opts.cancel.cancelled() => {}
+        _ = async {
+            let mut rx = opts.resume_rx.lock().await;
+            rx.recv().await;
+        } => {}
     }
 }
 

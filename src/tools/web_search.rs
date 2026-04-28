@@ -30,9 +30,34 @@ pub async fn search(query: &str, max_results: usize) -> Result<Vec<SearchResult>
         }]);
     }
 
-    // TODO: wire real provider (e.g. Brave Search API) here.
-    let _ = max_results;
-    bail!("Live web search not yet implemented. Set WEB_SEARCH_API_KEY and implement the provider.")
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.search.brave.com/res/v1/web/search")
+        .query(&[("q", query), ("count", &max_results.to_string())])
+        .header("X-Subscription-Token", &api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Brave Search request failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!("Brave Search API error: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| anyhow::anyhow!("Brave Search parse failed: {e}"))?;
+
+    let results = resp["web"]["results"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| SearchResult {
+            title:   r["title"].as_str().unwrap_or("").to_string(),
+            url:     r["url"].as_str().unwrap_or("").to_string(),
+            snippet: r["description"].as_str().unwrap_or("").to_string(),
+        })
+        .collect();
+
+    Ok(results)
 }
 
 #[cfg(test)]
