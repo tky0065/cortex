@@ -15,17 +15,18 @@ Cortex is an agentic CLI written in Rust that simulates a full software developm
    - [REPL (interactive)](#41-repl-interactive)
    - [One-shot CLI](#42-one-shot-cli)
    - [Resume an interrupted run](#43-resume-an-interrupted-run)
-5. [Workflows](#5-workflows)
-   - [dev](#51-dev--software-development)
-   - [marketing](#52-marketing--content-campaign)
-   - [prospecting](#53-prospecting--freelance-outreach)
-   - [code-review](#54-code-review--code-audit)
-6. [Providers & Models](#6-providers--models)
-7. [Architecture Internals](#7-architecture-internals)
-8. [Security & Sandboxing](#8-security--sandboxing)
-9. [Verbose Logging](#9-verbose-logging)
-10. [Running Tests](#10-running-tests)
-11. [Output Structure](#11-output-structure)
+5. [Web Search](#5-web-search)
+6. [Workflows](#6-workflows)
+   - [dev](#61-dev--software-development)
+   - [marketing](#62-marketing--content-campaign)
+   - [prospecting](#63-prospecting--freelance-outreach)
+   - [code-review](#64-code-review--code-audit)
+7. [Providers & Models](#7-providers--models)
+8. [Architecture Internals](#8-architecture-internals)
+9. [Security & Sandboxing](#9-security--sandboxing)
+10. [Verbose Logging](#10-verbose-logging)
+11. [Running Tests](#11-running-tests)
+12. [Output Structure](#12-output-structure)
 
 ---
 
@@ -92,6 +93,15 @@ devops    = "ollama/qwen2.5-coder:14b"
 max_qa_iterations    = 5   # how many QA→Developer fix cycles before proceeding
 max_tokens_per_call  = 8192
 max_parallel_workers = 4   # concurrent developer/profiler workers
+
+[tools]
+web_search_enabled = false  # set to true or use /websearch enable in the REPL
+
+[api_keys]
+# openrouter = "sk-or-..."
+# groq       = "gsk_..."
+# together   = "tg-..."
+# web_search = "BSA..."    # Brave Search API key
 ```
 
 ### Model string format
@@ -118,10 +128,24 @@ qa        = "groq/llama3-70b-8192"
 
 ### Setting API keys
 
+API keys can be set in two ways:
+
+**Option A — REPL command (recommended, persisted to `~/.cortex/config.toml`):**
+
+```
+/apikey openrouter sk-or-...
+/apikey groq       gsk_...
+/apikey together   tg-...
+/apikey web_search BSA...
+```
+
+**Option B — environment variables (session-only):**
+
 ```bash
 export OPENROUTER_API_KEY="sk-or-..."
 export GROQ_API_KEY="gsk_..."
 export TOGETHER_API_KEY="tg-..."
+export WEB_SEARCH_API_KEY="BSA..."
 ```
 
 ---
@@ -145,6 +169,10 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/abort` | Cancel the running workflow at the next checkpoint |
 | `/continue` | Resume an interactive pause |
 | `/config` | Display active config values |
+| `/model [<role> <model>]` | Show or change a role's model |
+| `/provider [<name>]` | Show or change the default provider |
+| `/apikey <provider> <key>` | Set an API key (openrouter / groq / together / web_search) |
+| `/websearch [enable\|disable]` | Toggle web search context injection for all agents |
 | `/logs` | Toggle log panel focus |
 | `/quit` or `/exit` | Exit Cortex |
 
@@ -196,9 +224,64 @@ Cortex re-runs the dev workflow with a prompt that asks the agents to continue f
 
 ---
 
-## 5. Workflows
+## 5. Web Search
 
-### 5.1 `dev` — Software Development
+When enabled, every agent automatically enriches its prompt with live web search results before calling the LLM. This lets agents use up-to-date information: latest library versions, recent CVEs, current pricing, new best practices, etc.
+
+### How it works
+
+Cortex uses the **[Brave Search API](https://brave.com/search/api/)** (free tier available). When a workflow agent fires, Cortex extracts a search query from the first ~200 characters of the agent's input, fetches the top 5 results, and appends them as a Markdown block to the prompt:
+
+```
+## Web Search Results
+1. **Title** (https://...)
+   Snippet...
+2. ...
+```
+
+All 18 agent system prompts include a `## Web Search` instruction that tells agents to prefer these results over their training data when relevant.
+
+### Setup
+
+**Step 1 — Get a Brave Search API key:**
+Sign up at [brave.com/search/api](https://brave.com/search/api/). The free tier includes 2,000 queries/month.
+
+**Step 2 — Store the key (REPL):**
+```
+/apikey web_search <your-key>
+```
+
+**Step 3 — Enable web search:**
+```
+/websearch enable
+```
+
+Or via `~/.cortex/config.toml`:
+```toml
+[tools]
+web_search_enabled = true
+
+[api_keys]
+web_search = "BSA..."
+```
+
+### Toggle on / off
+
+```
+/websearch enable    # turns on, saves to config
+/websearch disable   # turns off, saves to config
+/websearch           # prints current status
+```
+
+### Offline / no-key mode
+
+If web search is enabled but no API key is set (or the key is empty), the agent runs normally without any web context — no errors are raised.
+
+---
+
+## 6. Workflows
+
+### 6.1 `dev` — Software Development
 
 The flagship workflow. Simulates a complete dev team from idea to deployable repo.
 
@@ -242,7 +325,7 @@ Output: ./cortex-output/<project-name>/
 
 ---
 
-### 5.2 `marketing` — Content Campaign
+### 6.2 `marketing` — Content Campaign
 
 Produces a full marketing campaign from a product/service description.
 
@@ -268,7 +351,7 @@ Produces a full marketing campaign from a product/service description.
 
 ---
 
-### 5.3 `prospecting` — Freelance Outreach
+### 6.3 `prospecting` — Freelance Outreach
 
 Automates the identification and outreach process for freelance prospects.
 
@@ -299,7 +382,7 @@ rate       = "€600/day"
 
 ---
 
-### 5.4 `code-review` — Code Audit
+### 6.4 `code-review` — Code Audit
 
 Runs a multi-angle audit on an existing codebase.
 
@@ -330,7 +413,7 @@ Files larger than 8 KB are automatically truncated to protect context windows.
 
 ---
 
-## 6. Providers & Models
+## 7. Providers & Models
 
 ### Role → Model mapping
 
@@ -363,7 +446,7 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 
 ---
 
-## 7. Architecture Internals
+## 8. Architecture Internals
 
 ```
 main.rs
@@ -424,7 +507,7 @@ The REPL's `/continue` sends `()` to `resume_tx`, unblocking the channel receive
 
 ---
 
-## 8. Security & Sandboxing
+## 9. Security & Sandboxing
 
 ### Filesystem sandbox
 All file I/O is mediated through `FileSystem` (`src/tools/filesystem.rs`).
@@ -447,7 +530,7 @@ API keys are read from environment variables only — never stored in config fil
 
 ---
 
-## 9. Verbose Logging
+## 10. Verbose Logging
 
 Add `-v` to any command to write full agent I/O to `cortex.log` in the working directory:
 
@@ -460,10 +543,10 @@ The log file is appended (not overwritten) and each session is marked with a Uni
 
 ---
 
-## 10. Running Tests
+## 11. Running Tests
 
 ```bash
-cargo test                          # all 36 tests
+cargo test                          # all 64 tests
 cargo test <test_name>              # single test, e.g. cargo test parse_model_with_prefix
 cargo clippy -- -D warnings         # lint (warnings treated as errors)
 cargo fmt                           # format
@@ -483,7 +566,7 @@ Test coverage areas:
 
 ---
 
-## 11. Output Structure
+## 12. Output Structure
 
 All output lands under `./cortex-output/` relative to the directory where `cortex` was run.
 

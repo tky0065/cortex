@@ -55,6 +55,7 @@ cargo fmt                      # format
 | Task 48 — ratatui headless tests | 48 | ✅ Done |
 | Tasks 13, 40 — Groq/Together providers + token progress | 13, 40 | ✅ Done |
 | Tasks 49, 50, 51 — resume + verbose + CI config | 49, 50, 51 | ✅ Done |
+| Web search config + agent injection + REPL commands | — | ✅ Done |
 
 Files currently implemented:
 - `src/main.rs`, `src/config.rs`, `src/orchestrator.rs`, `src/repl.rs`
@@ -81,7 +82,7 @@ Current and planned `src/` structure:
 ```
 src/
   main.rs                    # ✅ CLI entry: clap + routing --workflow <name>
-  repl.rs                    # ✅ Slash commands dispatcher (/start, /status, /abort, /help, /config, /logs)
+  repl.rs                    # ✅ Slash commands dispatcher (/start, /status, /abort, /help, /config, /logs, /apikey, /websearch)
   config.rs                  # ✅ ~/.cortex/config.toml — models, limits, profile
   orchestrator.rs            # ✅ Generic orchestrator over dyn Workflow
   tui/
@@ -112,7 +113,7 @@ src/
     mod.rs
     filesystem.rs            # Sandboxed read/write (path-traversal blocked)
     terminal.rs              # Allowlisted command execution
-    web_search.rs
+    web_search.rs            # Brave Search API — fetch_context() injects results into every agent prompt
     email.rs                 # SMTP tool — dry-run by default, --send explicit
   context/
     mod.rs                   # Selective context injection per agent
@@ -160,6 +161,26 @@ User idea → [CEO] → [PM: specs.md] → [Tech Lead: architecture.md]
 
 In `--interactive` mode the workflow pauses after `specs.md`, `architecture.md`, and the first passing build for user validation.
 
+## Web Search
+
+When `config.tools.web_search_enabled = true` and `api_keys.web_search` is set, every call to `providers::complete()` automatically:
+
+1. Extracts the first ~200 chars of the agent's `prompt` as a search query
+2. Calls `tools::web_search::fetch_context(query, config)` (Brave Search API)
+3. Appends a `## Web Search Results` Markdown block to the prompt before the LLM call
+
+All 18 agent system prompts include a `## Web Search` instruction to use these results.
+
+**REPL commands:**
+```
+/apikey web_search <key>   # store Brave Search API key in config
+/websearch enable          # activate (saved to ~/.cortex/config.toml)
+/websearch disable         # deactivate
+/websearch                 # show current status
+```
+
+**Injection point:** `src/providers/mod.rs` → `complete()` — no individual agent files need to change when adding web search to a new workflow.
+
 ## Configuration File
 
 User config lives at `~/.cortex/config.toml`:
@@ -176,4 +197,10 @@ qa        = "ollama/qwen2.5-coder:14b"
 [limits]
 max_qa_iterations = 5
 max_tokens_per_call = 8192
+
+[tools]
+web_search_enabled = false  # enable with /websearch enable in the REPL
+
+[api_keys]
+# web_search = "BSA..."     # Brave Search API key — set with /apikey web_search <key>
 ```
