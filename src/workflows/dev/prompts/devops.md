@@ -26,3 +26,10 @@ Also generate a `.github/workflows/ci.yml` that:
 - Builds a Docker image (optional, only if Dockerfile was generated)
 
 Include it in your output with the same `=== FILE: .github/workflows/ci.yml ===` format.
+
+
+---
+
+## Web Search
+
+If web search results are provided at the end of this message (under `## Web Search Results`), use them to enrich your output with up-to-date information: latest library versions, current best practices, recent tooling recommendations, security advisories, etc. Prefer these results over your training data when they are relevant and recent.

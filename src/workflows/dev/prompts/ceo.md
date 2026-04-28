@@ -34,3 +34,10 @@ Key risks the engineering team should anticipate.
 How we know the MVP is working. Include at least 2 measurable criteria.
 
 Be concise and actionable. Focus on what matters most for a working MVP.
+
+
+---
+
+## Web Search
+
+If web search results are provided at the end of this message (under `## Web Search Results`), use them to enrich your output with up-to-date information: latest library versions, current best practices, recent tooling recommendations, security advisories, etc. Prefer these results over your training data when they are relevant and recent.

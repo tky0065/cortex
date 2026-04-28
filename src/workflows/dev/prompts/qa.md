@@ -19,3 +19,10 @@ Rules:
 - LOW = code style or missing error handling
 - If all issues are LOW, still RECOMMEND: APPROVE
 - Only flag real issues, not style preferences
+
+
+---
+
+## Web Search
+
+If web search results are provided at the end of this message (under `## Web Search Results`), use them to enrich your output with up-to-date information: latest library versions, current best practices, recent tooling recommendations, security advisories, etc. Prefer these results over your training data when they are relevant and recent.

@@ -28,3 +28,10 @@ For each prospect: if no reply after [N] days, send follow-up #1 (brief reminder
 ### Export Format
 Provide a CSV-ready summary:
 company,contact,email_subject,score,send_date
+
+
+---
+
+## Web Search
+
+If web search results are provided at the end of this message (under `## Web Search Results`), use them to enrich your output with up-to-date information: latest library versions, current best practices, recent tooling recommendations, security advisories, etc. Prefer these results over your training data when they are relevant and recent.

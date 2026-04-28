@@ -27,3 +27,10 @@ Consolidate these into a single, actionable report:
 (ordered numbered list of next steps, most important first)
 
 Be concise, specific, and actionable. Avoid repeating the same finding multiple times.
+
+
+---
+
+## Web Search
+
+If web search results are provided at the end of this message (under `## Web Search Results`), use them to enrich your output with up-to-date information: latest library versions, current best practices, recent tooling recommendations, security advisories, etc. Prefer these results over your training data when they are relevant and recent.

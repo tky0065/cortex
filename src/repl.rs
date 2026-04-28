@@ -154,6 +154,8 @@ pub async fn dispatch(
                 "  /config                       — print active configuration",
                 "  /model [<role> <model>]       — show or change a role's model",
                 "  /provider [<name>]            — show or change the default provider",
+                "  /apikey <provider> <key>      — set an API key (openrouter/groq/together/web_search)",
+                "  /websearch [enable|disable]   — toggle web search context injection for all agents",
                 "  /focus <agent>                — show only logs for one agent",
                 "  /clear                        — clear visible logs",
                 "  /logs                         — toggle log panel focus",
@@ -251,6 +253,112 @@ pub async fn dispatch(
                     chunk: format!("  max_qa_iterations: {}", cfg.limits.max_qa_iterations),
                 },
             );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!("  web_search_enabled: {}", cfg.tools.web_search_enabled),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!(
+                        "  web_search_key: {}",
+                        if cfg.api_keys.web_search.is_some() { "set" } else { "not set" }
+                    ),
+                },
+            );
+        }
+
+        "/websearch" => {
+            let arg = rest.trim();
+            if arg.is_empty() {
+                let cfg = config.read().await;
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "websearch".to_string(),
+                        chunk: format!(
+                            "  web_search_enabled: {}  (use /websearch enable|disable to change)",
+                            cfg.tools.web_search_enabled
+                        ),
+                    },
+                );
+            } else {
+                let enable = match arg {
+                    "enable"  => Some(true),
+                    "disable" => Some(false),
+                    _ => {
+                        send(tx, TuiEvent::Error {
+                            agent: "websearch".to_string(),
+                            message: "usage: /websearch [enable|disable]".to_string(),
+                        });
+                        None
+                    }
+                };
+                if let Some(enabled) = enable {
+                    let mut cfg = config.write().await;
+                    cfg.set_web_search_enabled(enabled);
+                    if let Err(e) = cfg.save() {
+                        send(tx, TuiEvent::Error {
+                            agent: "websearch".to_string(),
+                            message: format!("saved in memory but failed to persist: {e}"),
+                        });
+                    } else {
+                        send(tx, TuiEvent::TokenChunk {
+                            agent: "websearch".to_string(),
+                            chunk: format!("  ✓ web_search_enabled → {} (saved)", enabled),
+                        });
+                        if enabled && config.read().await.api_keys.web_search.is_none() {
+                            send(tx, TuiEvent::TokenChunk {
+                                agent: "websearch".to_string(),
+                                chunk: "  ⚠ Tip: set your Brave Search API key with /apikey web_search <key>".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        "/apikey" => {
+            let (provider, key_str) = rest
+                .split_once(char::is_whitespace)
+                .map(|(p, k)| (p.trim(), k.trim()))
+                .unwrap_or((rest, ""));
+
+            if provider.is_empty() || key_str.is_empty() {
+                send(tx, TuiEvent::Error {
+                    agent: "apikey".to_string(),
+                    message: "usage: /apikey <provider> <key>  (providers: openrouter, groq, together, web_search)".to_string(),
+                });
+                return Ok(false);
+            }
+
+            let mut cfg = config.write().await;
+            match cfg.set_api_key(provider, key_str.to_string()) {
+                Ok(()) => {
+                    cfg.apply_api_keys_to_env();
+                    if let Err(e) = cfg.save() {
+                        send(tx, TuiEvent::Error {
+                            agent: "apikey".to_string(),
+                            message: format!("saved in memory but failed to persist: {e}"),
+                        });
+                    } else {
+                        send(tx, TuiEvent::TokenChunk {
+                            agent: "apikey".to_string(),
+                            chunk: format!("  ✓ {} API key saved", provider),
+                        });
+                    }
+                }
+                Err(e) => {
+                    send(tx, TuiEvent::Error {
+                        agent: "apikey".to_string(),
+                        message: e.to_string(),
+                    });
+                }
+            }
         }
 
         "/model" => {

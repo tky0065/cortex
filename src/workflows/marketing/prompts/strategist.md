@@ -26,3 +26,10 @@ For each channel (select the 3 most relevant: LinkedIn, Twitter/X, Instagram, Em
 The single most important action we want the audience to take.
 
 Be specific and data-driven. The Copywriter and Analyst will use this document.
+
+
+---
+
+## Web Search
+
+If web search results are provided at the end of this message (under `## Web Search Results`), use them to enrich your output with up-to-date information: latest library versions, current best practices, recent tooling recommendations, security advisories, etc. Prefer these results over your training data when they are relevant and recent.

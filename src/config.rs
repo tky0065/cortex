@@ -10,6 +10,8 @@ pub struct Config {
     pub limits: LimitsConfig,
     #[serde(default)]
     pub api_keys: ApiKeysConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +28,22 @@ pub struct ApiKeysConfig {
     pub groq: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub together: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<String>,
+}
+
+/// Optional tools configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolsConfig {
+    /// Enable web search context injection for all agents. Requires `api_keys.web_search` to be set.
+    #[serde(default)]
+    pub web_search_enabled: bool,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self { web_search_enabled: false }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +92,7 @@ impl Default for Config {
                 max_parallel_workers: 4,
             },
             api_keys: ApiKeysConfig::default(),
+            tools: ToolsConfig::default(),
         }
     }
 }
@@ -154,7 +173,8 @@ impl Config {
             "openrouter" => self.api_keys.openrouter = Some(key),
             "groq"       => self.api_keys.groq = Some(key),
             "together"   => self.api_keys.together = Some(key),
-            other => anyhow::bail!("Provider '{}' does not use an API key", other),
+            "web_search" => self.api_keys.web_search = Some(key),
+            other => anyhow::bail!("Unknown provider '{}'. Valid providers: openrouter, groq, together, web_search", other),
         }
         Ok(())
     }
@@ -166,8 +186,14 @@ impl Config {
             "openrouter" => self.api_keys.openrouter.as_deref(),
             "groq"       => self.api_keys.groq.as_deref(),
             "together"   => self.api_keys.together.as_deref(),
+            "web_search" => self.api_keys.web_search.as_deref(),
             _            => None,
         }
+    }
+
+    /// Toggle web search on or off. Persists to config.toml.
+    pub fn set_web_search_enabled(&mut self, enabled: bool) {
+        self.tools.web_search_enabled = enabled;
     }
 
     /// Export stored API keys as environment variables so provider clients can read them.
@@ -183,6 +209,9 @@ impl Config {
             }
             if let Some(k) = &self.api_keys.together {
                 std::env::set_var("TOGETHER_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.web_search {
+                std::env::set_var("WEB_SEARCH_API_KEY", k);
             }
         }
     }

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use anyhow::{bail, Result};
+use crate::config::Config;
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -60,6 +61,39 @@ pub async fn search(query: &str, max_results: usize) -> Result<Vec<SearchResult>
     Ok(results)
 }
 
+/// Returns a formatted Markdown block of web search results to inject into an agent prompt.
+/// Returns an empty string when web search is disabled, the API key is missing, or search fails.
+pub async fn fetch_context(query: &str, config: &Config) -> String {
+    if !config.tools.web_search_enabled {
+        return String::new();
+    }
+    if config.api_keys.web_search.is_none() {
+        return String::new();
+    }
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    match search(trimmed, 5).await {
+        Err(_) => String::new(),
+        Ok(results) if results.is_empty() => String::new(),
+        Ok(results) => {
+            // Skip the offline stub result — it adds no value to the LLM prompt.
+            if results.len() == 1 && results[0].snippet.contains("[offline mode]") {
+                return String::new();
+            }
+            let mut block = String::from("\n\n## Web Search Results\n");
+            for (i, r) in results.iter().enumerate() {
+                block.push_str(&format!(
+                    "{}. **{}** ({})\n   {}\n",
+                    i + 1, r.title, r.url, r.snippet
+                ));
+            }
+            block
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +111,21 @@ mod tests {
         let results = search("Rust async traits", 3).await.unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].snippet.contains("offline mode"));
+    }
+
+    #[tokio::test]
+    async fn fetch_context_disabled_returns_empty() {
+        let config = Config::default();
+        let ctx = fetch_context("Rust async traits", &config).await;
+        assert!(ctx.is_empty(), "should be empty when web_search_enabled is false");
+    }
+
+    #[tokio::test]
+    async fn fetch_context_no_key_returns_empty() {
+        let mut config = Config::default();
+        config.tools.web_search_enabled = true;
+        // api_keys.web_search is None by default
+        let ctx = fetch_context("Rust async traits", &config).await;
+        assert!(ctx.is_empty(), "should be empty when api key is not set");
     }
 }

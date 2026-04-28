@@ -103,6 +103,8 @@ async fn consume_stream<R: Clone + Send + 'static>(
 /// Single entry point for LLM completions with streaming support.
 /// Sends `TuiEvent::TokenChunk` to `options.tx` for each token.
 /// Sends `TuiEvent::AgentProgress` heartbeats while waiting for the first token.
+/// When `options.config.tools.web_search_enabled` is true and a key is configured,
+/// appends live web search results to the prompt before sending to the LLM.
 pub async fn complete(
     model_str: &str,
     preamble: &str,
@@ -110,31 +112,40 @@ pub async fn complete(
     options: &crate::workflows::RunOptions,
     agent_name: &str,
 ) -> Result<String> {
+    // Extract a concise search query from the first 200 chars of the prompt.
+    let search_query: String = prompt.chars().take(200).collect();
+    let web_context = crate::tools::web_search::fetch_context(&search_query, &options.config).await;
+    let enriched_prompt = if web_context.is_empty() {
+        prompt.to_string()
+    } else {
+        format!("{}{}", prompt, web_context)
+    };
+
     let (provider, model) = parse_model(model_str);
 
     match provider {
         "openrouter" => {
             let client = openrouter::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_prompt(prompt).await;
+            let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
         "groq" => {
             let client = groq::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_prompt(prompt).await;
+            let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
         "together" => {
             let client = together::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_prompt(prompt).await;
+            let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
         "ollama" | _ => {
             let client = ollama::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_prompt(prompt).await;
+            let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
     }

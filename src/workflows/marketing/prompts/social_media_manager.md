@@ -22,3 +22,10 @@ For each week, list the posts:
 Top 10 hashtags per channel with usage notes.
 
 Be practical and actionable. Include specific dates based on today being the start of the campaign.
+
+
+---
+
+## Web Search
+
+If web search results are provided at the end of this message (under `## Web Search Results`), use them to enrich your output with up-to-date information: latest library versions, current best practices, recent tooling recommendations, security advisories, etc. Prefer these results over your training data when they are relevant and recent.
