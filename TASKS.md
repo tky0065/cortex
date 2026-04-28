@@ -154,6 +154,20 @@ Legend: 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Nice to have
 
 ---
 
+## Phase 12 — Extensions & Correctifs
+
+| # | Priorité | Tâche | Statut |
+|---|----------|-------|--------|
+| 52 | 🟠 | `tools/web_search.rs` : câbler Brave Search API via `reqwest` (clé `WEB_SEARCH_API_KEY`) | ✅ Done |
+| 53 | 🟠 | `tools/email.rs` : implémenter SMTP live via `lettre` (vars `SMTP_HOST/USER/PASS/PORT`) | ✅ Done |
+| 54 | 🔴 | `workflows/dev/mod.rs` : remplacer le polling 200ms dans `wait_for_resume` par écoute channel | ✅ Done |
+| 55 | 🟠 | `workflows/mod.rs` + `orchestrator.rs` : ajouter `resume_rx` dans `RunOptions` et le passer depuis l'orchestrateur | ✅ Done |
+| 56 | 🟡 | `workflows/prospecting/mod.rs` : charger `profile.toml` du répertoire projet pour enrichir le prompt Researcher | ✅ Done |
+| 57 | 🟠 | Workflow `code-review` : Reviewer → Security ‖ Performance → Reporter, avec `tokio::join!` | ✅ Done |
+| 58 | 🟠 | `providers/mod.rs` : ajouter les rôles `reviewer`, `security`, `performance`, `reporter` | ✅ Done |
+
+---
+
 ## Ordre d'implémentation recommandé
 
 ```
