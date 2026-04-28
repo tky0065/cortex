@@ -1,6 +1,7 @@
 pub mod events;
 pub mod layout;
 pub mod widgets;
+pub mod theme;
 
 use std::collections::HashMap;
 use std::io::{self, Stdout};
@@ -17,7 +18,8 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
+    text::Span,
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use tokio::sync::RwLock;
@@ -28,12 +30,14 @@ use crate::config::Config;
 use crate::tui::{
     events::{TuiEvent, TuiReceiver, TuiSender},
     layout::compute,
+    theme::THEME,
     widgets::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
         input::InputBar,
         logs::{LogEntry, LogsWidget},
         picker::{PickerState, PickerWidget, model_picker, provider_picker, resume_picker},
         pipeline::{AgentState, AgentStatus, PipelineWidget},
+        status_bar::{StatusBarState, StatusBarWidget},
     },
 };
 
@@ -81,6 +85,10 @@ struct App {
     pause_message: String,
     /// Cached model lists per provider, populated by background fetch.
     model_cache: HashMap<String, Vec<String>>,
+    /// Total tokens used in current session
+    tokens_total: usize,
+    /// When the current workflow started
+    start_time: Option<std::time::Instant>,
 }
 
 impl App {
@@ -97,17 +105,19 @@ impl App {
             show_pause_popup: false,
             pause_message: String::new(),
             model_cache: HashMap::new(),
+            tokens_total: 0,
+            start_time: None,
         }
     }
 
     fn draw(&self, frame: &mut Frame) {
         let layout = compute(frame);
 
-        let provider = self
+        let (provider, model) = self
             .config
             .try_read()
-            .map(|c| c.provider.default.clone())
-            .unwrap_or_else(|_| "ollama".to_string());
+            .map(|c| (c.provider.default.clone(), c.models.assistant.clone()))
+            .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
 
         PipelineWidget {
             agents: &self.pipeline,
@@ -126,7 +136,17 @@ impl App {
         // Command palette floats above the input bar (drawn after so it's on top)
         self.input_bar
             .render_palette(frame, frame.area(), layout.input);
-        draw_status(frame, layout.status, &provider);
+        
+        let elapsed = self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        StatusBarWidget {
+            state: &StatusBarState {
+                provider: &provider,
+                model: &model,
+                elapsed_secs: elapsed,
+                tokens_total: self.tokens_total,
+            },
+        }
+        .render(frame, layout.status);
 
         // Interactive-pause overlay
         if self.show_pause_popup {
@@ -136,11 +156,11 @@ impl App {
             let block = Block::default()
                 .title(" Workflow Paused ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow));
+                .border_style(Style::default().fg(THEME.warning));
             frame.render_widget(
                 Paragraph::new(body)
                     .block(block)
-                    .style(Style::default().fg(Color::White)),
+                    .style(Style::default().fg(THEME.text)),
                 popup_area,
             );
         }
@@ -180,6 +200,8 @@ impl App {
             TuiEvent::WorkflowStarted { workflow, agents } => {
                 self.pipeline = agents.iter().map(|n| AgentState::idle(n)).collect();
                 self.active_agents.clear();
+                self.tokens_total = 0;
+                self.start_time = Some(std::time::Instant::now());
                 self.logs.push(LogEntry::system(format!(
                     "workflow '{}' started ({} agents)",
                     workflow,
@@ -199,7 +221,8 @@ impl App {
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
                     a.set_progress(message);
                 }
-                self.logs.push(LogEntry::agent(agent, message.clone()));
+                // Heartbeat messages are reflected in the agent panel status line only —
+                // do NOT spam the logs panel with every 5s tick.
             }
             TuiEvent::AgentSummary { agent, summary } => {
                 self.ensure_agent(agent);
@@ -209,13 +232,13 @@ impl App {
                 self.logs.push(LogEntry::agent(agent, summary.clone()));
             }
             TuiEvent::TokenChunk { agent, chunk } => {
-                // Task 41: auto-create an agent block for workers that send chunks
+                // Auto-create an agent block for workers that send chunks
                 // without a prior AgentStarted event (e.g. developer:src/main.rs).
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
                     a.push_chunk(chunk);
                 }
-                self.logs.push(LogEntry::agent(agent, chunk.clone()));
+                // Tokens flow into the agent panel stream buffer — do NOT log each chunk.
             }
             TuiEvent::AgentDone { agent } => {
                 self.set_pipeline_status(agent, AgentStatus::Done);
@@ -254,6 +277,7 @@ impl App {
                 self.logs.push(LogEntry::system("workflow resumed"));
             }
             TuiEvent::WorkflowStats { tokens_total } => {
+                self.tokens_total = *tokens_total;
                 self.logs
                     .push(LogEntry::system(format!("tokens used: {}", tokens_total)));
             }
@@ -1092,10 +1116,10 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(format!(" 🔑  API Key — {provider} "))
+        .title(Span::styled(format!(" 🔑  API Key — {provider} "), THEME.title_style()))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(255, 200, 50)))
-        .style(Style::default().bg(Color::Rgb(18, 18, 18)));
+        .border_style(THEME.border_style())
+        .style(Style::default().bg(THEME.bg));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1116,7 +1140,7 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
     // Hint
     frame.render_widget(
         Paragraph::new(" Paste your API key (blank = keep existing).")
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(THEME.muted)),
         chunks[1],
     );
 
@@ -1128,15 +1152,15 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
         format!(" {}", "•".repeat(typed.len()))
     };
     let input_style = if typed.is_empty() {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(THEME.muted)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(THEME.text)
     };
     frame.render_widget(
         Paragraph::new(display).style(input_style).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(255, 200, 50))),
+                .border_style(THEME.active_border_style()),
         ),
         chunks[3],
     );
@@ -1144,7 +1168,7 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
     // Footer
     frame.render_widget(
         Paragraph::new(" Enter to save  •  Esc to cancel")
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(THEME.muted)),
         chunks[5],
     );
 }
@@ -1158,30 +1182,16 @@ fn draw_loading_overlay(frame: &mut Frame) {
     let area = picker::centered_rect(40, 12, frame.area());
     frame.render_widget(Clear, area);
     let block = Block::default()
-        .title(" Loading models… ")
+        .title(Span::styled(" Loading models… ", THEME.title_style()))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(180, 80, 20)))
-        .style(Style::default().bg(Color::Rgb(20, 20, 20)));
+        .border_style(THEME.border_style())
+        .style(Style::default().bg(THEME.bg));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(
         Paragraph::new("  Fetching model list from provider…")
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(THEME.muted)),
         inner,
     );
 }
 
-// ---------------------------------------------------------------------------
-// Status bar
-// ---------------------------------------------------------------------------
-
-fn draw_status(frame: &mut Frame, area: ratatui::layout::Rect, provider: &str) {
-    let text = format!(
-        " cortex v0.1.0  │  provider: {}  │  Ctrl+C or /quit to exit ",
-        provider
-    );
-    frame.render_widget(
-        Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
-        area,
-    );
-}
