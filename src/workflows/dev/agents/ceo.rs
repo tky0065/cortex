@@ -14,7 +14,7 @@ pub async fn run(idea: &str, options: &RunOptions) -> Result<String> {
     send_agent_progress(options, "ceo", "Analyse du besoin et cadrage MVP");
 
     let model = crate::providers::model_for_role("ceo", &options.config)?;
-    let response = crate::providers::complete(model, PREAMBLE, idea)
+    let response = crate::providers::complete(model, PREAMBLE, idea, options, "ceo")
         .await
         .map_err(|e| anyhow::anyhow!("CEO agent error: {e}"))?;
 

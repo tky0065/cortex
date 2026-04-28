@@ -14,7 +14,7 @@ pub async fn run(combined: &str, options: &RunOptions) -> Result<String> {
     send_agent_progress(options, "reporter", "Synthese du rapport final");
 
     let model = crate::providers::model_for_role("reporter", &options.config)?;
-    let response = crate::providers::complete(model, PREAMBLE, combined)
+    let response = crate::providers::complete(model, PREAMBLE, combined, options, "reporter")
         .await
         .map_err(|e| anyhow::anyhow!("Reporter agent error: {e}"))?;
 

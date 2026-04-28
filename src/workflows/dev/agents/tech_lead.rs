@@ -18,7 +18,7 @@ pub async fn run(specs: &str, options: &RunOptions) -> Result<String> {
         "Generate a complete architecture.md for these specifications:\n\n{}",
         specs
     );
-    let arch = crate::providers::complete(model, PREAMBLE, &prompt)
+    let arch = crate::providers::complete(model, PREAMBLE, &prompt, options, "tech_lead")
         .await
         .map_err(|e| anyhow::anyhow!("Tech Lead agent error: {e}"))?;
 

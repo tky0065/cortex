@@ -1,10 +1,11 @@
 use ratatui::{
-    style::{Color, Style},
+    style::{Style, Modifier},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     layout::Rect,
     Frame,
 };
+use crate::tui::theme::THEME;
 
 /// A single log entry with an optional agent tag.
 #[derive(Debug, Clone)]
@@ -54,9 +55,9 @@ pub struct LogsWidget<'a> {
 impl<'a> LogsWidget<'a> {
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
-            .title(" Logs ")
+            .title(Span::styled(" Logs ", THEME.title_style()))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(THEME.border_style());
 
         let inner_height = area.height.saturating_sub(2) as usize;
         let inner_width = area.width.saturating_sub(2) as usize;
@@ -103,7 +104,7 @@ fn visual_rows(entry: &LogEntry, panel_width: usize) -> usize {
     if panel_width == 0 {
         return 1;
     }
-    // prefix: "HH:MM:SS " (9) + "[agent] " (agent.len + 3) or nothing
+    // prefix: "HH:MM:SS " (9) + "agent ┃ " (agent.len + 3) or nothing
     let prefix_len = 9 + entry.agent.as_ref().map(|a| a.len() + 3).unwrap_or(0);
     let available = panel_width.saturating_sub(prefix_len);
     if available == 0 {
@@ -115,38 +116,44 @@ fn visual_rows(entry: &LogEntry, panel_width: usize) -> usize {
 fn format_entry(entry: &LogEntry) -> Line<'static> {
     let ts = Span::styled(
         format!("{} ", entry.timestamp),
-        Style::default().fg(Color::DarkGray),
+        THEME.log_timestamp(),
     );
 
     match &entry.agent {
         None => {
             let msg = Span::styled(
                 entry.message.clone(),
-                Style::default().fg(Color::White),
+                Style::default().fg(THEME.text),
             );
-            Line::from(vec![ts, msg])
+            Line::from(vec![ts, Span::styled("◈ ", THEME.secondary), msg])
         }
         Some(agent) => {
             let (tag_color, msg_color) = if entry.is_error {
-                (Color::Red, Color::Red)
+                (THEME.error, THEME.error)
             } else {
-                (Color::Cyan, Color::White)
+                (THEME.primary, THEME.text)
             };
+            
             let tag = Span::styled(
-                format!("[{}] ", agent),
-                Style::default().fg(tag_color),
+                format!("{}", agent),
+                THEME.agent_tag(tag_color),
             );
+            
+            let separator = Span::styled(" ┃ ", Style::default().fg(THEME.muted));
+            
             // Error marker
             let prefix = if entry.is_error {
-                Span::styled("✗ ".to_string(), Style::default().fg(Color::Red))
+                Span::styled("✗ ", Style::default().fg(THEME.error).add_modifier(Modifier::BOLD))
             } else {
                 Span::raw("")
             };
+            
             let msg = Span::styled(
                 entry.message.clone(),
                 Style::default().fg(msg_color),
             );
-            Line::from(vec![ts, tag, prefix, msg])
+            
+            Line::from(vec![ts, tag, separator, prefix, msg])
         }
     }
 }

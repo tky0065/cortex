@@ -18,7 +18,7 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         "Write marketing copy based on this strategy:\n\n{}",
         strategy
     );
-    let copy = crate::providers::complete(model, PREAMBLE, &prompt)
+    let copy = crate::providers::complete(model, PREAMBLE, &prompt, options, "copywriter")
         .await
         .map_err(|e| anyhow::anyhow!("Copywriter agent error: {e}"))?;
 

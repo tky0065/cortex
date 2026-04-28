@@ -2,10 +2,12 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::{Color, Style, Modifier},
+    text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
+use crate::tui::theme::THEME;
 
 /// Rendered state fed to the status bar widget each frame.
 pub struct StatusBarState<'a> {
@@ -26,28 +28,34 @@ impl<'a> StatusBarWidget<'a> {
         let elapsed_s = self.state.elapsed_secs % 60;
         let tokens = self.state.tokens_total;
 
-        let text = if tokens > 0 {
-            format!(
-                " cortex v0.1.0  │  provider: {}  │  model: {}  │  tokens: {}  │  elapsed: {:02}:{:02}  │  Ctrl+C or /quit to exit ",
-                self.state.provider,
-                self.state.model,
-                tokens,
-                elapsed_mins,
-                elapsed_s,
-            )
-        } else {
-            format!(
-                " cortex v0.1.0  │  provider: {}  │  model: {}  │  elapsed: {:02}:{:02}  │  Ctrl+C or /quit to exit ",
-                self.state.provider,
-                self.state.model,
-                elapsed_mins,
-                elapsed_s,
-            )
-        };
+        let separator = Span::styled(" │ ", Style::default().fg(THEME.muted));
+        
+        let mut spans = vec![
+            Span::styled(" CORTEX v0.1.0 ", Style::default().fg(THEME.secondary).add_modifier(Modifier::BOLD)),
+            separator.clone(),
+            Span::styled("PROVIDER: ", Style::default().fg(THEME.muted)),
+            Span::styled(self.state.provider.to_uppercase(), Style::default().fg(THEME.primary).add_modifier(Modifier::BOLD)),
+            separator.clone(),
+            Span::styled("MODEL: ", Style::default().fg(THEME.muted)),
+            Span::styled(self.state.model.to_uppercase(), Style::default().fg(THEME.accent).add_modifier(Modifier::BOLD)),
+        ];
+
+        if tokens > 0 {
+            spans.push(separator.clone());
+            spans.push(Span::styled("TOKENS: ", Style::default().fg(THEME.muted)));
+            spans.push(Span::styled(tokens.to_string(), Style::default().fg(THEME.success).add_modifier(Modifier::BOLD)));
+        }
+
+        spans.push(separator.clone());
+        spans.push(Span::styled("TIME: ", Style::default().fg(THEME.muted)));
+        spans.push(Span::styled(format!("{:02}:{:02}", elapsed_mins, elapsed_s), Style::default().fg(THEME.text)));
+        
+        spans.push(Span::styled("  ┃  ", Style::default().fg(THEME.muted)));
+        spans.push(Span::styled("Ctrl+C or /quit to exit", Style::default().fg(THEME.muted).add_modifier(Modifier::ITALIC)));
 
         frame.render_widget(
-            Paragraph::new(text)
-                .style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+            Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(Color::Reset)),
             area,
         );
     }

@@ -25,7 +25,7 @@ pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> R
         "Architecture:\n{}\n\nImplement this file: {}\n\nWrite only the complete source code.",
         architecture, file_path
     );
-    let code = crate::providers::complete(model, PREAMBLE, &prompt)
+    let code = crate::providers::complete(model, PREAMBLE, &prompt, options, &agent_name)
         .await
         .map_err(|e| anyhow::anyhow!("Developer agent error for '{}': {}", file_path, e))?;
 
@@ -62,7 +62,7 @@ pub async fn fix(
         "Fix the following issues in {}.\n\nCurrent code:\n{}\n\nQA Report:\n{}\n\nWrite the complete fixed source code.",
         file_path, current_code, qa_report
     );
-    let fixed = crate::providers::complete(model, PREAMBLE, &prompt)
+    let fixed = crate::providers::complete(model, PREAMBLE, &prompt, options, &agent_name)
         .await
         .map_err(|e| anyhow::anyhow!("Developer fix error for '{}': {}", file_path, e))?;
 

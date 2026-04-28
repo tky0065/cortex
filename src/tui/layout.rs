@@ -25,6 +25,7 @@ pub fn compute(frame: &Frame) -> AppLayout {
         .split(frame.area());
 
     // Main area: agents (60%) | logs (40%)
+    // Added a small horizontal margin between agents and logs
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])

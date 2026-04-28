@@ -15,6 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
+use crate::tui::theme::THEME;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -127,8 +128,8 @@ impl<'a> PickerWidget<'a> {
 
         let outer_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .style(Style::default().bg(Color::Rgb(20, 20, 20)));
+            .border_style(THEME.border_style())
+            .style(Style::default().bg(THEME.bg));
         let inner = outer_block.inner(area);
         frame.render_widget(outer_block, area);
 
@@ -148,23 +149,21 @@ impl<'a> PickerWidget<'a> {
         let title_line = Line::from(vec![
             Span::styled(
                 format!(" {} ", self.state.title),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
+                THEME.title_style(),
             ),
             Span::raw("  "),
             Span::styled(
-                "esc",
-                Style::default().fg(Color::DarkGray),
+                "esc to close",
+                Style::default().fg(THEME.muted).add_modifier(Modifier::ITALIC),
             ),
         ]);
         frame.render_widget(Paragraph::new(title_line), chunks[0]);
 
         // Search bar
-        let search_text = format!(" {}{}", self.state.search, "█");
+        let search_text = format!("  🔍 {} ", self.state.search);
         frame.render_widget(
             Paragraph::new(search_text)
-                .style(Style::default().fg(Color::White).bg(Color::Rgb(35, 35, 35))),
+                .style(Style::default().fg(THEME.text).bg(Color::Rgb(30, 41, 59))),
             chunks[2],
         );
 
@@ -177,9 +176,9 @@ impl<'a> PickerWidget<'a> {
             // Section header when group changes
             if *group_title != last_group {
                 rows.push(ListItem::new(Line::from(Span::styled(
-                    format!(" {}", group_title),
+                    format!(" 📂 {}", group_title),
                     Style::default()
-                        .fg(Color::Rgb(150, 100, 255))
+                        .fg(THEME.secondary)
                         .add_modifier(Modifier::BOLD),
                 ))));
                 last_group = group_title;
@@ -187,33 +186,38 @@ impl<'a> PickerWidget<'a> {
 
             let is_cursor = flat_idx == self.state.cursor;
             let check = if item.checked {
-                Span::styled(" ✓ ", Style::default().fg(Color::Green))
+                Span::styled(" ✓ ", Style::default().fg(THEME.success))
             } else {
                 Span::raw("   ")
             };
 
-            let label_style = if is_cursor {
-                Style::default()
-                    .bg(Color::Rgb(180, 80, 20))
-                    .fg(Color::White)
+            let (label_style, desc_style, row_bg) = if is_cursor {
+                (
+                    Style::default()
+                        .bg(THEME.primary)
+                        .fg(THEME.bg)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .bg(THEME.primary)
+                        .fg(Color::Rgb(30, 41, 59)),
+                    THEME.primary,
+                )
             } else {
-                Style::default().fg(Color::White)
+                (
+                    Style::default().fg(THEME.text),
+                    Style::default().fg(THEME.muted),
+                    Color::Reset,
+                )
             };
 
-            let mut spans = vec![check, Span::styled(item.label.clone(), label_style)];
+            let mut spans = vec![check, Span::styled(format!(" {} ", item.label), label_style)];
             if let Some(desc) = &item.description {
                 spans.push(Span::styled(
-                    format!(" {}", desc),
-                    if is_cursor {
-                        Style::default()
-                            .bg(Color::Rgb(180, 80, 20))
-                            .fg(Color::Rgb(220, 180, 160))
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    },
+                    format!("  {}", desc),
+                    desc_style,
                 ));
             }
-            rows.push(ListItem::new(Line::from(spans)));
+            rows.push(ListItem::new(Line::from(spans)).style(Style::default().bg(row_bg)));
         }
 
         // Scroll so cursor stays visible
@@ -223,7 +227,7 @@ impl<'a> PickerWidget<'a> {
         list_state.select(Some(row_idx));
 
         let list = List::new(rows)
-            .style(Style::default().bg(Color::Rgb(20, 20, 20)));
+            .style(Style::default().bg(THEME.bg));
 
         frame.render_stateful_widget(list, chunks[4], &mut list_state);
     }

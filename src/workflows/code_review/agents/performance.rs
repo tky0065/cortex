@@ -14,7 +14,7 @@ pub async fn run(source_content: &str, options: &RunOptions) -> Result<String> {
     send_agent_progress(options, "performance", "Analyse performance du code");
 
     let model = crate::providers::model_for_role("performance", &options.config)?;
-    let response = crate::providers::complete(model, PREAMBLE, source_content)
+    let response = crate::providers::complete(model, PREAMBLE, source_content, options, "performance")
         .await
         .map_err(|e| anyhow::anyhow!("Performance agent error: {e}"))?;
 

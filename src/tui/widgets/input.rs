@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use tui_input::Input;
+use crate::tui::theme::THEME;
 
 /// All slash commands with their short descriptions.
 const COMMANDS: &[(&str, &str)] = &[
@@ -232,12 +233,12 @@ impl InputBar {
         let scroll = self.input.visual_scroll(inner_width);
         let widget = Paragraph::new(format!("> {}", self.input.value()))
             .scroll((0, scroll as u16))
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(THEME.text))
             .block(
                 Block::default()
-                    .title(" Command ")
+                    .title(Span::styled(" Command ", THEME.title_style()))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(THEME.border_style()),
             );
         frame.render_widget(widget, area);
 
@@ -286,18 +287,18 @@ impl InputBar {
                 let (cmd_style, desc_style, row_bg) = if selected {
                     (
                         Style::default()
-                            .fg(Color::White)
-                            .bg(Color::Rgb(180, 80, 20))
+                            .fg(THEME.text)
+                            .bg(THEME.secondary)
                             .add_modifier(Modifier::BOLD),
                         Style::default()
-                            .fg(Color::Rgb(220, 180, 160))
-                            .bg(Color::Rgb(180, 80, 20)),
-                        Color::Rgb(180, 80, 20),
+                            .fg(THEME.text)
+                            .bg(THEME.secondary),
+                        THEME.secondary,
                     )
                 } else {
                     (
-                        Style::default().fg(Color::White),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(THEME.primary),
+                        Style::default().fg(THEME.muted),
                         Color::Reset,
                     )
                 };
@@ -314,8 +315,8 @@ impl InputBar {
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .style(Style::default().bg(Color::Rgb(18, 18, 18))),
+                .border_style(THEME.border_style())
+                .style(Style::default().bg(THEME.bg)),
         );
         frame.render_widget(list, palette_area);
     }

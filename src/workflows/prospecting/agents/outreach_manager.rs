@@ -22,7 +22,7 @@ pub async fn run(profiles_and_emails: &str, options: &RunOptions) -> Result<Stri
         "Organize this outreach campaign and produce a report:\n\n{}",
         profiles_and_emails
     );
-    let report = crate::providers::complete(model, PREAMBLE, &prompt)
+    let report = crate::providers::complete(model, PREAMBLE, &prompt, options, "outreach_manager")
         .await
         .map_err(|e| anyhow::anyhow!("Outreach Manager agent error: {e}"))?;
 

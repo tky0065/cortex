@@ -1,10 +1,11 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use crate::tui::theme::THEME;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentStatus {
@@ -39,33 +40,46 @@ impl<'a> PipelineWidget<'a> {
 
         for (i, agent) in self.agents.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::styled("   │   ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled("  →  ", Style::default().fg(THEME.muted)));
             }
             let (symbol, style) = match agent.status {
                 AgentStatus::Idle => (
-                    "◌",
-                    Style::default().fg(Color::DarkGray),
+                    "◇",
+                    Style::default().fg(THEME.muted),
                 ),
                 AgentStatus::Running => (
-                    "●",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    "◈",
+                    Style::default().fg(THEME.warning).add_modifier(Modifier::BOLD),
                 ),
                 AgentStatus::Done => (
-                    "✓",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    "◆",
+                    Style::default().fg(THEME.success).add_modifier(Modifier::BOLD),
                 ),
                 AgentStatus::Error => (
                     "✗",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    Style::default().fg(THEME.error).add_modifier(Modifier::BOLD),
                 ),
             };
-            spans.push(Span::styled(format!("{} {}", symbol, agent.name), style));
+            
+            let color = match agent.status {
+                AgentStatus::Idle => THEME.muted,
+                AgentStatus::Running => THEME.primary,
+                AgentStatus::Done => THEME.success,
+                AgentStatus::Error => THEME.error,
+            };
+
+            spans.push(Span::styled(format!("{} ", symbol), style));
+            spans.push(Span::styled(
+                agent.name.to_uppercase(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
         }
 
         let block = Block::default()
-            .title(" Pipeline ")
+            .title(Span::styled(" Pipeline ", THEME.title_style()))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(THEME.border_style());
+            
         frame.render_widget(
             Paragraph::new(Line::from(spans)).block(block),
             area,

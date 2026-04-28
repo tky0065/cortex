@@ -18,7 +18,7 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         "Define KPIs and A/B tests for this marketing strategy:\n\n{}",
         strategy
     );
-    let metrics = crate::providers::complete(model, PREAMBLE, &prompt)
+    let metrics = crate::providers::complete(model, PREAMBLE, &prompt, options, "analyst")
         .await
         .map_err(|e| anyhow::anyhow!("Analyst agent error: {e}"))?;
 

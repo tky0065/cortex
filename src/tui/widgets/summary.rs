@@ -2,11 +2,12 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use crate::tui::theme::THEME;
 
 /// Data stored in App once `WorkflowComplete` is received.
 #[derive(Debug, Clone)]
@@ -27,9 +28,9 @@ impl<'a> SummaryWidget<'a> {
 
         let mut lines: Vec<Line> = vec![
             Line::from(Span::styled(
-                "  Workflow complete!",
+                "  ✨ Workflow complete!",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(THEME.success)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
@@ -37,22 +38,22 @@ impl<'a> SummaryWidget<'a> {
 
         // Output directory
         lines.push(Line::from(vec![
-            Span::styled("  Output: ", Style::default().fg(Color::Cyan)),
-            Span::raw(s.output_dir.clone()),
+            Span::styled("  📂 Output: ", Style::default().fg(THEME.primary)),
+            Span::styled(s.output_dir.clone(), Style::default().fg(THEME.text)),
         ]));
         lines.push(Line::from(""));
 
         // File tree
         lines.push(Line::from(Span::styled(
-            "  Files created:",
+            "  📄 Files created:",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(THEME.warning)
                 .add_modifier(Modifier::BOLD),
         )));
         for f in &s.files {
             lines.push(Line::from(vec![
                 Span::styled("    ", Style::default()),
-                Span::raw(f.clone()),
+                Span::styled(f.clone(), Style::default().fg(THEME.text)),
             ]));
         }
 
@@ -60,27 +61,27 @@ impl<'a> SummaryWidget<'a> {
         if let Some(hash) = &s.git_hash {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("  Git: ", Style::default().fg(Color::Cyan)),
-                Span::styled(hash.clone(), Style::default().fg(Color::Magenta)),
+                Span::styled("  🔖 Git: ", Style::default().fg(THEME.primary)),
+                Span::styled(hash.clone(), Style::default().fg(THEME.secondary)),
             ]));
         }
 
         // Launch command hint
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("  Run: ", Style::default().fg(Color::Cyan)),
+            Span::styled("  🚀 Launch: ", Style::default().fg(THEME.primary)),
             Span::styled(
                 "docker-compose up",
                 Style::default()
-                    .fg(Color::White)
+                    .fg(THEME.text)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
 
         let block = Block::default()
-            .title(" Summary ")
+            .title(Span::styled(" Summary ", THEME.title_style()))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Green));
+            .border_style(THEME.border_style());
 
         frame.render_widget(Paragraph::new(lines).block(block), area);
     }

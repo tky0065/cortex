@@ -76,12 +76,6 @@ impl Orchestrator {
         verbose: bool,
         tx: Option<TuiSender>,
     ) -> Result<()> {
-        println!("Workflow: {} — {}", self.workflow.name(), self.workflow.description());
-
-        if verbose {
-            println!("Verbose logging enabled — writing to cortex.log");
-        }
-
         // Resolve the primary event sender (TUI or throw-away).
         let tx = tx.unwrap_or_else(|| channel().0);
 

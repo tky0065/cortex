@@ -19,7 +19,7 @@ pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
 
     let model = crate::providers::model_for_role("strategist", &options.config)?;
     let prompt = format!("Create a complete marketing strategy for:\n\n{}", brief);
-    let strategy = crate::providers::complete(model, PREAMBLE, &prompt)
+    let strategy = crate::providers::complete(model, PREAMBLE, &prompt, options, "strategist")
         .await
         .map_err(|e| anyhow::anyhow!("Strategist agent error: {e}"))?;
 

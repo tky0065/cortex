@@ -18,7 +18,7 @@ pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
         "Generate a complete specs.md for this project brief:\n\n{}",
         brief
     );
-    let specs = crate::providers::complete(model, PREAMBLE, &prompt)
+    let specs = crate::providers::complete(model, PREAMBLE, &prompt, options, "pm")
         .await
         .map_err(|e| anyhow::anyhow!("PM agent error: {e}"))?;
 

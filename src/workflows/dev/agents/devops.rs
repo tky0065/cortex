@@ -21,7 +21,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         "Create deployment infrastructure for this project:\n\n{}",
         architecture
     );
-    let output = crate::providers::complete(model, PREAMBLE, &prompt)
+    let output = crate::providers::complete(model, PREAMBLE, &prompt, options, "devops")
         .await
         .map_err(|e| anyhow::anyhow!("DevOps agent error: {e}"))?;
 
