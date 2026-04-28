@@ -10,8 +10,14 @@ Write complete, production-quality source code for the specified file.
 Rules:
 1. Write ONLY source code — no markdown, no explanations, no code fences
 2. The output will be written DIRECTLY to the file as-is
-3. Include all necessary imports at the top
-4. Follow the technology stack from architecture.md exactly
-5. Handle errors properly (no unwrap in production code)
-6. Write complete implementations — no TODO stubs or placeholder comments
-7. Make the code compile and run correctly
+3. **The file extension determines the programming language — this is non-negotiable:**
+   - `.go` → Go code only
+   - `.rs` → Rust code only
+   - `.py` → Python code only
+   - `.ts` or `.js` → TypeScript/JavaScript only
+   - Never write code in a different language than the file extension requires.
+4. Include all necessary imports/package declarations at the top
+5. Follow the technology stack from architecture.md exactly
+6. Handle errors properly (no unwrap in production code)
+7. Write complete implementations — no TODO stubs or placeholder comments
+8. Make the code compile and run correctly

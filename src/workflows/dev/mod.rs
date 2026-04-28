@@ -228,6 +228,12 @@ fn parse_clarification_needed(output: &str) -> Option<String> {
 }
 
 /// Parse the FILES_TO_CREATE section from architecture.md.
+///
+/// Handles multiple LLM output styles:
+///   `1. main.go`
+///   `1. **main.go** – entry point`
+///   `- `cmd/hello/main.go``
+///   `1. main.go  # comment`
 fn parse_files_to_create(arch: &str) -> Vec<String> {
     let mut in_section = false;
     let mut files = Vec::new();
@@ -242,20 +248,47 @@ fn parse_files_to_create(arch: &str) -> Vec<String> {
             if line.starts_with('#') {
                 break;
             }
-            let trimmed = line
+
+            // Strip leading list markers: `1.`, `-`, `*`, digits, spaces
+            let stripped = line
                 .trim()
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ' || c == '-')
-                // Strip markdown backticks that LLMs add around filenames
-                .trim_matches('`');
-            if !trimmed.is_empty() && trimmed.contains('.') && !trimmed.contains(' ') {
-                files.push(trimmed.to_string());
+                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ' || c == '-' || c == '*');
+
+            if stripped.is_empty() {
+                continue;
+            }
+
+            // Strip markdown bold/italic (`**`, `__`, `*`, backticks)
+            let no_md = stripped
+                .trim_start_matches('`')
+                .trim_start_matches("**")
+                .trim_start_matches('*')
+                .trim_start_matches("__");
+
+            // Take only the file path — stop at first space, ` –`, ` -`, ` #`, or `:`
+            // (handles "main.go – entry point", "main.go: does X", "main.go # comment")
+            let path_candidate = no_md
+                .split(|c: char| c == ' ' || c == '\t' || c == '#' || c == ':')
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| c == '`' || c == '*' || c == '_' || c == '.');
+
+            // Must look like a file path: non-empty, contains a dot or a slash, no forbidden chars
+            let is_valid = !path_candidate.is_empty()
+                && (path_candidate.contains('.') || path_candidate.contains('/'))
+                && !path_candidate.contains('*')
+                && !path_candidate.contains('"')
+                && !path_candidate.contains('(');
+
+            if is_valid {
+                files.push(path_candidate.to_string());
             }
         }
     }
 
-    // Fallback: if no FILES_TO_CREATE section found, return a default main file
+    // Fallback: could not parse FILES_TO_CREATE — use a generic entry point
     if files.is_empty() {
-        files.push("src/main.rs".to_string());
+        files.push("main.go".to_string());
     }
 
     files
@@ -282,7 +315,9 @@ fn extract_files_from_report(report: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_clarification_needed;
+    use super::{parse_clarification_needed, parse_files_to_create};
+
+    // ── parse_clarification_needed ────────────────────────────────────────
 
     #[test]
     fn detects_clarification_marker() {
@@ -303,5 +338,43 @@ mod tests {
     fn ignores_partial_match_inside_text() {
         let out = "## Overview\nCLARIFICATION_NEEDED: something buried in a paragraph";
         assert_eq!(parse_clarification_needed(out), None);
+    }
+
+    // ── parse_files_to_create ─────────────────────────────────────────────
+
+    #[test]
+    fn parses_plain_list() {
+        let arch = "## FILES_TO_CREATE\n1. go.mod\n2. main.go\n";
+        let files = parse_files_to_create(arch);
+        assert_eq!(files, vec!["go.mod", "main.go"]);
+    }
+
+    #[test]
+    fn parses_bold_with_description() {
+        // Format LLMs often produce: `**main.go** – entry point`
+        let arch = "## FILES_TO_CREATE\n1. **go.mod** – module file\n2. **main.go** – entry point\n";
+        let files = parse_files_to_create(arch);
+        assert_eq!(files, vec!["go.mod", "main.go"]);
+    }
+
+    #[test]
+    fn parses_backtick_paths() {
+        let arch = "## FILES_TO_CREATE\n- `cmd/hello/main.go`\n- `go.mod`\n";
+        let files = parse_files_to_create(arch);
+        assert_eq!(files, vec!["cmd/hello/main.go", "go.mod"]);
+    }
+
+    #[test]
+    fn stops_at_next_heading() {
+        let arch = "## FILES_TO_CREATE\n1. main.go\n## Key Dependencies\n2. should-be-ignored.go\n";
+        let files = parse_files_to_create(arch);
+        assert_eq!(files, vec!["main.go"]);
+    }
+
+    #[test]
+    fn fallback_when_section_missing() {
+        let arch = "## Technology Stack\nGo 1.22\n";
+        let files = parse_files_to_create(arch);
+        assert_eq!(files, vec!["main.go"]);
     }
 }
