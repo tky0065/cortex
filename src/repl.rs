@@ -1,39 +1,152 @@
 use anyhow::Result;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+use chrono::{DateTime, Utc};
 
 use crate::config::Config;
 use crate::tui::events::{TuiEvent, TuiSender};
 use crate::workflows;
 use crate::orchestrator::Orchestrator;
 
+const ASSISTANT_PREAMBLE: &str = "\
+You are Cortex, a helpful AI assistant embedded in an agentic software development CLI. \
+You help users understand the tool, suggest workflows, and answer questions about software development.\n\
+\n\
+Available slash commands the user can run:\n\
+  /start <workflow> \"<idea>\"  — launch a workflow (dev, marketing, prospecting, code-review)\n\
+  /resume <project-dir>         — resume an interrupted workflow\n\
+  /status                       — show current workflow status\n\
+  /abort                        — cancel the running workflow\n\
+  /continue                     — resume an interactive pause\n\
+  /config                       — print active configuration\n\
+  /model [<role> <model>]       — show or change a role's model (role: ceo/pm/tech_lead/developer/qa/devops/assistant/all)\n\
+  /provider [<name>]            — show or change the default provider (ollama/openrouter/groq/together)\n\
+  /logs                         — toggle log panel focus\n\
+  /help                         — show all commands\n\
+  /quit                         — exit cortex\n\
+\n\
+When the user describes a project idea, suggest the right /start command. \
+Keep answers concise and practical.";
+
+/// Information about a workflow session for history tracking.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionInfo {
+    /// Unique identifier for the session.
+    pub id: String,
+    /// Name of the workflow (dev, marketing, prospecting).
+    pub workflow: String,
+    /// Original user prompt/idea.
+    pub idea: String,
+    /// Project directory where the workflow ran.
+    pub directory: PathBuf,
+    /// When the session was started.
+    pub timestamp: DateTime<Utc>,
+    /// Current status of the session.
+    pub status: SessionStatus,
+    /// Optional git hash if available.
+    pub git_hash: Option<String>,
+}
+
+/// Status of a workflow session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SessionStatus {
+    /// Session is currently running.
+    Running,
+    /// Session completed successfully.
+    Completed,
+    /// Session was interrupted/aborted.
+    Interrupted,
+    /// Session failed with an error.
+    Failed,
+}
+
 /// Shared state for the currently-running workflow, if any.
-/// The REPL dispatch function holds an `Arc` to this so `/abort` and
-/// `/continue` can reach the in-flight orchestrator without a global.
 #[derive(Clone, Default)]
 pub struct ReplState {
     /// Cancel token for the running workflow (if any).
     pub cancel: Arc<Mutex<Option<CancellationToken>>>,
     /// Resume sender — calling `send(())` unblocks the next interactive pause.
     pub resume_tx: Arc<Mutex<Option<Arc<tokio::sync::mpsc::Sender<()>>>>>,
+    /// Conversation history for free-form chat mode (user + assistant messages).
+    pub chat_history: Arc<Mutex<Vec<rig::completion::Message>>>,
+    /// History of past workflow sessions.
+    pub session_history: Arc<Mutex<Vec<SessionInfo>>>,
+    /// Directory where session history is stored.
+    pub history_dir: PathBuf,
 }
 
 impl ReplState {
     pub fn new() -> Self {
-        Self::default()
+        let mut state = Self::default();
+        // Initialize history directory
+        if let Some(mut home) = dirs::home_dir() {
+            home.push(".cortex");
+            let _ = std::fs::create_dir_all(&home);
+            state.history_dir = home;
+        }
+        // Load existing session history
+        let _ = state.load_history();
+        state
+    }
+
+    /// Load session history from disk.
+    fn load_history(&mut self) -> Result<()> {
+        let history_path = self.history_dir.join("sessions.json");
+        if !history_path.exists() {
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(history_path)?;
+        let sessions: Vec<SessionInfo> = serde_json::from_str(&content)?;
+        *self.session_history.blocking_lock() = sessions;
+        Ok(())
+    }
+
+    /// Save session history to disk.
+    fn save_history(&self) -> Result<()> {
+        let history_path = self.history_dir.join("sessions.json");
+        let sessions = self.session_history.blocking_lock();
+        let content = serde_json::to_string_pretty(&*sessions)?;
+        std::fs::write(history_path, content)?;
+        Ok(())
+    }
+
+    /// Add a new session to the history.
+    pub async fn add_session(&self, session: SessionInfo) -> Result<()> {
+        let mut history = self.session_history.lock().await;
+        history.push(session);
+        // Keep only the last 50 sessions to prevent unbounded growth.
+        if history.len() > 50 {
+            let excess = history.len() - 50;
+            history.drain(0..excess);
+        }
+        // Persist to disk.
+        drop(history);
+        self.save_history()?;
+        Ok(())
     }
 }
 
-/// Dispatches a slash command entered in the TUI input bar.
+/// Dispatches a command or free-form message entered in the TUI input bar.
+/// - Input starting with `/` → slash command
+/// - Everything else        → conversational chat with the assistant agent
+///
 /// Returns `true` if the application should quit.
 pub async fn dispatch(
     cmd: &str,
     tx: &TuiSender,
-    config: Arc<Config>,
+    config: Arc<RwLock<Config>>,
     state: Arc<ReplState>,
 ) -> Result<bool> {
     let trimmed = cmd.trim();
+
+    // Route free-form input (not a slash command) to the chat assistant
+    if !trimmed.starts_with('/') {
+        return chat_message(trimmed, tx, config, state).await;
+    }
+
     let (command, rest) = trimmed
         .split_once(char::is_whitespace)
         .map(|(c, r)| (c, r.trim()))
@@ -51,6 +164,8 @@ pub async fn dispatch(
                 "  /abort                        — cancel the running workflow",
                 "  /continue                     — resume an interactive pause",
                 "  /config                       — print active configuration",
+                "  /model [<role> <model>]       — show or change a role's model",
+                "  /provider [<name>]            — show or change the default provider",
                 "  /logs                         — toggle log panel focus",
                 "  /quit                         — exit cortex",
             ];
@@ -64,18 +179,113 @@ pub async fn dispatch(
         }
 
         "/config" => {
+            let cfg = config.read().await;
             send(tx, TuiEvent::TokenChunk {
                 agent: "config".to_string(),
-                chunk: format!("  provider: {}", config.provider.default),
+                chunk: format!("  provider: {}", cfg.provider.default),
             });
             send(tx, TuiEvent::TokenChunk {
                 agent: "config".to_string(),
-                chunk: format!("  max_parallel_workers: {}", config.limits.max_parallel_workers),
+                chunk: format!("  ceo:        {}", cfg.models.ceo),
             });
             send(tx, TuiEvent::TokenChunk {
                 agent: "config".to_string(),
-                chunk: format!("  max_qa_iterations: {}", config.limits.max_qa_iterations),
+                chunk: format!("  pm:         {}", cfg.models.pm),
             });
+            send(tx, TuiEvent::TokenChunk {
+                agent: "config".to_string(),
+                chunk: format!("  tech_lead:  {}", cfg.models.tech_lead),
+            });
+            send(tx, TuiEvent::TokenChunk {
+                agent: "config".to_string(),
+                chunk: format!("  developer:  {}", cfg.models.developer),
+            });
+            send(tx, TuiEvent::TokenChunk {
+                agent: "config".to_string(),
+                chunk: format!("  qa:         {}", cfg.models.qa),
+            });
+            send(tx, TuiEvent::TokenChunk {
+                agent: "config".to_string(),
+                chunk: format!("  devops:     {}", cfg.models.devops),
+            });
+            send(tx, TuiEvent::TokenChunk {
+                agent: "config".to_string(),
+                chunk: format!("  assistant:  {}", cfg.models.assistant),
+            });
+            send(tx, TuiEvent::TokenChunk {
+                agent: "config".to_string(),
+                chunk: format!("  max_parallel_workers: {}", cfg.limits.max_parallel_workers),
+            });
+            send(tx, TuiEvent::TokenChunk {
+                agent: "config".to_string(),
+                chunk: format!("  max_qa_iterations: {}", cfg.limits.max_qa_iterations),
+            });
+        }
+
+        "/model" => {
+            if rest.is_empty() {
+                // Open the interactive model picker popup
+                send(tx, TuiEvent::OpenModelPicker);
+            } else {
+                // /model <role> <model-string>
+                let (role, model_str) = rest
+                    .split_once(char::is_whitespace)
+                    .map(|(r, m)| (r.trim(), m.trim()))
+                    .unwrap_or((rest, ""));
+
+                if model_str.is_empty() {
+                    send(tx, TuiEvent::Error {
+                        agent: "model".to_string(),
+                        message: "usage: /model <role> <model-string>  (role: ceo/pm/tech_lead/developer/qa/devops/assistant/all)".to_string(),
+                    });
+                    return Ok(false);
+                }
+
+                let mut cfg = config.write().await;
+                match cfg.set_model(role, model_str.to_string()) {
+                    Ok(()) => {
+                        if let Err(e) = cfg.save() {
+                            send(tx, TuiEvent::Error {
+                                agent: "model".to_string(),
+                                message: format!("saved in memory but failed to persist: {e}"),
+                            });
+                        } else {
+                            send(tx, TuiEvent::TokenChunk {
+                                agent: "model".to_string(),
+                                chunk: format!("  ✓ {} → {} (saved)", role, model_str),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        send(tx, TuiEvent::Error {
+                            agent: "model".to_string(),
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        "/provider" => {
+            if rest.is_empty() {
+                // Open the interactive provider picker popup
+                send(tx, TuiEvent::OpenProviderPicker);
+            } else {
+                let name = rest.to_string();
+                let mut cfg = config.write().await;
+                cfg.set_provider(name.clone());
+                if let Err(e) = cfg.save() {
+                    send(tx, TuiEvent::Error {
+                        agent: "provider".to_string(),
+                        message: format!("saved in memory but failed to persist: {e}"),
+                    });
+                } else {
+                    send(tx, TuiEvent::TokenChunk {
+                        agent: "provider".to_string(),
+                        chunk: format!("  ✓ provider → {} (saved)", name),
+                    });
+                }
+            }
         }
 
         "/start" | "/run" => {
@@ -90,6 +300,9 @@ pub async fn dispatch(
             // Parse: /start dev "my idea" OR /start "my idea" (defaults to dev)
             let (workflow_name, prompt) = parse_workflow_and_prompt(rest);
 
+            // Snapshot current config for this run
+            let config_snapshot = Arc::new(config.read().await.clone());
+
             match workflows::get_workflow(workflow_name) {
                 Err(e) => {
                     send(tx, TuiEvent::Error {
@@ -97,29 +310,71 @@ pub async fn dispatch(
                         message: e.to_string(),
                     });
                 }
-                Ok(wf) => {
-                    send(tx, TuiEvent::AgentStarted {
-                        agent: format!("workflow:{}", workflow_name),
-                    });
-                    let tx_clone = tx.clone();
-                    let orch = Orchestrator::new(wf, Arc::clone(&config));
+                 Ok(wf) => {
+                     send(tx, TuiEvent::AgentStarted {
+                         agent: format!("workflow:{}", workflow_name),
+                     });
+                     let tx_clone = tx.clone();
+                     let mut orch = Orchestrator::new(wf, config_snapshot);
+                     
+                     // Create session info for tracking
+                      let prompt_owned = prompt.to_string();
+                      let session_id = Uuid::new_v4().to_string();
+                      let session_info = SessionInfo {
+                          id: session_id.clone(),
+                          workflow: workflow_name.to_string(),
+                          idea: prompt_owned.clone(),
+                          directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                          timestamp: Utc::now(),
+                          status: SessionStatus::Running,
+                          git_hash: None,
+                      };
+                     
+                     // Register repl_state with the orchestrator so it can use it internally
+                     orch = orch.with_repl_state(state.clone());
+                     
+                     // Store the cancel token and resume sender so /abort and /continue work
+                     {
+                         let mut cancel_guard = state.cancel.lock().await;
+                         *cancel_guard = Some(orch.cancel_token());
+                     }
+                     {
+                         let mut resume_guard = state.resume_tx.lock().await;
+                         *resume_guard = Some(orch.resume_sender());
+                     }
 
-                    // Store the cancel token and resume sender so /abort and /continue work
-                    {
-                        let mut cancel_guard = state.cancel.lock().await;
-                        *cancel_guard = Some(orch.cancel_token());
-                    }
-                    {
-                        let mut resume_guard = state.resume_tx.lock().await;
-                        *resume_guard = Some(orch.resume_sender());
-                    }
+                     // Clone state for use inside the spawn
+                     let state_for_spawn = Arc::clone(&state);
 
-                    let prompt_owned = prompt.to_string();
-                    // Spawn so the TUI stays responsive
-                    tokio::spawn(async move {
-                        let _ = orch.run_with_sender(prompt_owned, false, Some(tx_clone)).await;
-                    });
-                }
+                     // Spawn so the TUI stays responsive
+                     tokio::spawn(async move {
+                         // Add session to history when workflow starts
+                         let _ = state_for_spawn.add_session(session_info.clone()).await;
+                         
+                         let result = orch.run_with_sender(prompt_owned.clone(), false, Some(tx_clone)).await;
+                         
+                         // Update session status when workflow completes
+                         {
+                             let mut history = state_for_spawn.session_history.lock().await;
+                             if let Some(session) = history.iter_mut().find(|s| s.id == session_id) {
+                                 match &result {
+                                     Ok(()) => session.status = SessionStatus::Completed,
+                                     Err(_) => session.status = SessionStatus::Failed,
+                                 }
+                                 // Try to get git hash if available
+                                 session.git_hash = Some(std::process::Command::new("git")
+                                     .arg("rev-parse")
+                                     .arg("HEAD")
+                                     .output()
+                                     .ok()
+                                     .and_then(|output| String::from_utf8(output.stdout).ok())
+                                     .map(|s| s.trim().to_string())
+                                     .unwrap_or_default());
+                             }
+                         }
+                         let _ = state_for_spawn.save_history();
+                     });
+                 }
             }
         }
 
@@ -135,21 +390,31 @@ pub async fn dispatch(
             });
         }
 
-        "/abort" => {
-            let mut cancel_guard = state.cancel.lock().await;
-            if let Some(token) = cancel_guard.take() {
-                token.cancel();
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "abort".to_string(),
-                    chunk: "  Abort signal sent — workflow will stop at the next checkpoint.".to_string(),
-                });
-            } else {
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "abort".to_string(),
-                    chunk: "  No workflow is currently running.".to_string(),
-                });
-            }
-        }
+         "/abort" => {
+             let mut cancel_guard = state.cancel.lock().await;
+             if let Some(token) = cancel_guard.take() {
+                 token.cancel();
+                 send(tx, TuiEvent::TokenChunk {
+                     agent: "abort".to_string(),
+                     chunk: "  Abort signal sent — workflow will stop at the next checkpoint.".to_string(),
+                 });
+                 
+                 // Update the last running session to Interrupted
+                 {
+                     let mut history = state.session_history.lock().await;
+                     if let Some(session) = history.iter_mut().last()
+                         && matches!(session.status, SessionStatus::Running) {
+                         session.status = SessionStatus::Interrupted;
+                     }
+                 }
+                 let _ = state.save_history();
+             } else {
+                 send(tx, TuiEvent::TokenChunk {
+                     agent: "abort".to_string(),
+                     chunk: "  No workflow is currently running.".to_string(),
+                 });
+             }
+         }
 
         "/continue" => {
             let resume_guard = state.resume_tx.lock().await;
@@ -177,43 +442,42 @@ pub async fn dispatch(
 
         "/resume" => {
             if rest.is_empty() {
-                send(tx, TuiEvent::Error {
-                    agent: "repl".to_string(),
-                    message: "usage: /resume <project-dir>".to_string(),
+                // Open the interactive resume picker popup
+                send(tx, TuiEvent::OpenResumePicker);
+            } else {
+                let project_dir = std::path::PathBuf::from(rest);
+                if !project_dir.exists() {
+                    send(tx, TuiEvent::Error {
+                        agent: "repl".to_string(),
+                        message: format!("directory does not exist: {}", project_dir.display()),
+                    });
+                    return Ok(false);
+                }
+
+                let config_snapshot = Arc::new(config.read().await.clone());
+                let wf = workflows::get_workflow("dev")?;
+                let tx_clone = tx.clone();
+                let orch = Orchestrator::new(wf, config_snapshot);
+
+                {
+                    let mut cancel_guard = state.cancel.lock().await;
+                    *cancel_guard = Some(orch.cancel_token());
+                }
+                {
+                    let mut resume_guard = state.resume_tx.lock().await;
+                    *resume_guard = Some(orch.resume_sender());
+                }
+
+                let prompt = format!("Resume and complete the project in: {}", project_dir.display());
+                tokio::spawn(async move {
+                    let _ = orch.run_with_sender(prompt, true, Some(tx_clone)).await;
                 });
-                return Ok(false);
-            }
-            let project_dir = std::path::PathBuf::from(rest);
-            if !project_dir.exists() {
-                send(tx, TuiEvent::Error {
+
+                send(tx, TuiEvent::TokenChunk {
                     agent: "repl".to_string(),
-                    message: format!("directory does not exist: {}", project_dir.display()),
+                    chunk: format!("  Resuming project at: {}", rest),
                 });
-                return Ok(false);
             }
-
-            let wf = workflows::get_workflow("dev")?;
-            let tx_clone = tx.clone();
-            let orch = Orchestrator::new(wf, Arc::clone(&config));
-
-            {
-                let mut cancel_guard = state.cancel.lock().await;
-                *cancel_guard = Some(orch.cancel_token());
-            }
-            {
-                let mut resume_guard = state.resume_tx.lock().await;
-                *resume_guard = Some(orch.resume_sender());
-            }
-
-            let prompt = format!("Resume and complete the project in: {}", project_dir.display());
-            tokio::spawn(async move {
-                let _ = orch.run_with_sender(prompt, true, Some(tx_clone)).await;
-            });
-
-            send(tx, TuiEvent::TokenChunk {
-                agent: "repl".to_string(),
-                chunk: format!("  Resuming project at: {}", rest),
-            });
         }
 
         other => {
@@ -242,4 +506,69 @@ fn parse_workflow_and_prompt(rest: &str) -> (&str, &str) {
         return ("dev", rest.trim_matches('"'));
     }
     ("dev", rest.trim_matches('"'))
+}
+
+// ---------------------------------------------------------------------------
+// Free-form chat handler
+// ---------------------------------------------------------------------------
+
+/// Sends a free-form user message to the assistant agent and streams the reply
+/// back to the TUI. Maintains per-session conversation history in `state`.
+async fn chat_message(
+    message: &str,
+    tx: &TuiSender,
+    config: Arc<RwLock<Config>>,
+    state: Arc<ReplState>,
+) -> Result<bool> {
+    if message.is_empty() {
+        return Ok(false);
+    }
+
+    let model = {
+        let cfg = config.read().await;
+        crate::providers::model_for_role("assistant", &cfg)?.to_string()
+    };
+
+    // Snapshot history before the call (avoid holding the lock across await)
+    let history_snapshot = {
+        state.chat_history.lock().await.clone()
+    };
+
+    send(tx, TuiEvent::AgentStarted { agent: "assistant".to_string() });
+
+    let result = crate::providers::complete_chat(
+        &model,
+        ASSISTANT_PREAMBLE,
+        history_snapshot,
+        message,
+    )
+    .await;
+
+    match result {
+        Ok(reply) => {
+            // Persist both turns to history
+            {
+                let mut hist = state.chat_history.lock().await;
+                hist.push(rig::completion::Message::user(message));
+                hist.push(rig::completion::Message::assistant(&reply));
+            }
+
+            // Stream reply line-by-line so the log panel shows it nicely
+            for line in reply.lines() {
+                send(tx, TuiEvent::TokenChunk {
+                    agent: "assistant".to_string(),
+                    chunk: line.to_string(),
+                });
+            }
+            send(tx, TuiEvent::AgentDone { agent: "assistant".to_string() });
+        }
+        Err(e) => {
+            send(tx, TuiEvent::Error {
+                agent: "assistant".to_string(),
+                message: format!("chat error: {e}"),
+            });
+        }
+    }
+
+    Ok(false)
 }

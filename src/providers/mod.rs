@@ -1,14 +1,11 @@
 #![allow(dead_code)]
 
-pub mod groq;
-pub mod ollama;
-pub mod openrouter;
-pub mod together;
+pub mod models;
 
 use anyhow::{bail, Result};
 use rig::client::{CompletionClient, Nothing};
-use rig::completion::Prompt;
-use rig::providers::ollama as rig_ollama;
+use rig::completion::{Chat, Message, Prompt};
+use rig::providers::ollama::{self as rig_ollama};
 
 use crate::config::Config;
 
@@ -27,6 +24,8 @@ pub fn model_for_role<'a>(role: &str, config: &'a Config) -> Result<&'a str> {
         "strategist" | "copywriter" | "analyst" | "social_media_manager" => Ok(&config.models.developer),
         // prospecting workflow roles — fall back to developer model
         "researcher" | "profiler" | "outreach_manager" => Ok(&config.models.developer),
+        // conversational assistant
+        "assistant" => Ok(&config.models.assistant),
         other => bail!("Unknown agent role: '{}'", other),
     }
 }
@@ -44,8 +43,7 @@ fn parse_model(model_str: &str) -> (&str, &str) {
 /// Single entry point for LLM completions. Parses the provider prefix from the
 /// model string in config and routes to the correct rig client.
 ///
-/// Supported prefixes: `ollama/`, `openrouter/`, `groq/`, `together/`.
-/// Falls back to Ollama when no prefix is present.
+/// Currently only supports Ollama provider.
 pub async fn complete(model_str: &str, preamble: &str, prompt: &str) -> Result<String> {
     let (provider, model) = parse_model(model_str);
     match provider {
@@ -55,22 +53,46 @@ pub async fn complete(model_str: &str, preamble: &str, prompt: &str) -> Result<S
             let agent = client.agent(model).preamble(preamble).build();
             agent.prompt(prompt).await.map_err(|e| anyhow::anyhow!("Ollama completion error: {e}"))
         }
-        "openrouter" => {
-            let client = openrouter::client()?;
+        // For backwards compatibility, treat unknown providers as Ollama
+        _other => {
+            let client = rig_ollama::Client::new(Nothing)
+                .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.prompt(prompt).await.map_err(|e| anyhow::anyhow!("OpenRouter completion error: {e}"))
+            agent.prompt(prompt).await.map_err(|e| anyhow::anyhow!("Ollama completion error: {e}"))
         }
-        "groq" => {
-            let client = groq::client()?;
+    }
+}
+
+/// Multi-turn chat completion. `history` is a list of prior `(user, assistant)` exchanges
+/// represented as `rig::completion::Message` values.
+pub async fn complete_chat(
+    model_str: &str,
+    preamble: &str,
+    history: Vec<Message>,
+    prompt: &str,
+) -> Result<String> {
+    let (provider, model) = parse_model(model_str);
+    let user_msg = Message::user(prompt);
+    match provider {
+        "ollama" => {
+            let client = rig_ollama::Client::new(Nothing)
+                .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.prompt(prompt).await.map_err(|e| anyhow::anyhow!("Groq completion error: {e}"))
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
         }
-        "together" => {
-            let client = together::client()?;
+        // For backwards compatibility, treat unknown providers as Ollama
+        _other => {
+            let client = rig_ollama::Client::new(Nothing)
+                .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.prompt(prompt).await.map_err(|e| anyhow::anyhow!("Together AI completion error: {e}"))
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
         }
-        other => bail!("Unknown provider prefix '{}' in model string '{}'", other, model_str),
     }
 }
 

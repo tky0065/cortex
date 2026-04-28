@@ -15,6 +15,8 @@ pub struct Orchestrator {
     resume_tx: Arc<tokio::sync::mpsc::Sender<()>>,
     /// Receiver half — shared with RunOptions so the workflow can await resume signals.
     resume_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<()>>>,
+    /// Reference to REPL state for updating session history (set via with_repl_state).
+    pub repl_state: Option<Arc<crate::repl::ReplState>>,
 }
 
 impl Orchestrator {
@@ -27,7 +29,14 @@ impl Orchestrator {
             cancel,
             resume_tx: Arc::new(tx),
             resume_rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            repl_state: None,
         }
+    }
+    
+    /// Set the REPL state reference for session tracking.
+    pub fn with_repl_state(mut self, repl_state: Arc<crate::repl::ReplState>) -> Self {
+        self.repl_state = Some(repl_state);
+        self
     }
 
     /// Cancel the running workflow.

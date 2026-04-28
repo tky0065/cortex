@@ -2,6 +2,7 @@ pub mod events;
 pub mod layout;
 pub mod widgets;
 
+use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
+use tokio::sync::RwLock;
 use tokio::time::{self, Duration};
 use tui_input::backend::crossterm::EventHandler;
 
@@ -32,9 +34,36 @@ use crate::tui::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
         input::InputBar,
         logs::{LogEntry, LogsWidget},
+        picker::{model_picker, provider_picker, resume_picker, PickerState, PickerWidget},
         pipeline::{AgentState, AgentStatus, PipelineWidget},
     },
 };
+
+// ---------------------------------------------------------------------------
+// Popup state machine
+// ---------------------------------------------------------------------------
+
+enum PopupState {
+    None,
+    ProviderPicker(PickerState),
+    /// First phase: pick a role. Second phase: pick a model from the provider's model list.
+    ModelPicker {
+        picker: PickerState,
+        /// While `Some`, the user is in phase 2 selecting a model for this role.
+        editing_role: Option<String>,
+        /// Searchable picker of models available for the current provider (phase 2).
+        model_list: Option<PickerState>,
+        /// Shown while models are being fetched.
+        is_loading: bool,
+    },
+    /// Prompt the user to enter an API key for a provider that requires one.
+    ApiKeyInput {
+        provider: String,
+        input: tui_input::Input,
+    },
+    /// Resume picker: shows session history for resuming workflows.
+    ResumePicker(PickerState),
+}
 
 // ---------------------------------------------------------------------------
 // App state
@@ -46,39 +75,50 @@ struct App {
     pipeline: Vec<AgentState>,
     active_agents: Vec<ActiveAgent>,
     repl_state: Arc<crate::repl::ReplState>,
-    /// Task 42: whether the interactive-pause popup is visible
+    config: Arc<RwLock<Config>>,
+    popup: PopupState,
+    /// Interactive-pause popup
     show_pause_popup: bool,
-    /// Task 42: message shown in the pause popup
     pause_message: String,
+    /// Cached model lists per provider, populated by background fetch.
+    model_cache: HashMap<String, Vec<String>>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(config: Arc<RwLock<Config>>) -> Self {
         Self {
             input_bar: InputBar::new(),
             logs: vec![LogEntry::system("cortex ready — type /help for commands.")],
             pipeline: Vec::new(),
             active_agents: Vec::new(),
             repl_state: Arc::new(crate::repl::ReplState::new()),
+            config,
+            popup: PopupState::None,
             show_pause_popup: false,
             pause_message: String::new(),
+            model_cache: HashMap::new(),
         }
     }
 
     fn draw(&self, frame: &mut Frame) {
         let layout = compute(frame);
 
+        let provider = self.config.try_read()
+            .map(|c| c.provider.default.clone())
+            .unwrap_or_else(|_| "ollama".to_string());
+
         PipelineWidget { agents: &self.pipeline }.render(frame, layout.pipeline);
         AgentPanelWidget { agents: &self.active_agents }.render(frame, layout.agents);
         LogsWidget { entries: &self.logs, filter: None }.render(frame, layout.logs);
         self.input_bar.render(frame, layout.input);
-        draw_status(frame, layout.status);
+        // Command palette floats above the input bar (drawn after so it's on top)
+        self.input_bar.render_palette(frame, frame.area(), layout.input);
+        draw_status(frame, layout.status, &provider);
 
-        // Task 42: overlay pause popup when active
+        // Interactive-pause overlay
         if self.show_pause_popup {
             let popup_area = centered_rect(60, 30, frame.area());
             frame.render_widget(Clear, popup_area);
-
             let body = format!(
                 "\n {}\n\n [C]ontinue    [A]bort",
                 self.pause_message
@@ -93,6 +133,30 @@ impl App {
                     .style(Style::default().fg(Color::White)),
                 popup_area,
             );
+        }
+
+        // Picker overlays (drawn last so they appear on top)
+        match &self.popup {
+            PopupState::None => {}
+            PopupState::ProviderPicker(state) => {
+                PickerWidget { state }.render(frame);
+            }
+            PopupState::ModelPicker { picker, editing_role, model_list, is_loading } => {
+                PickerWidget { state: picker }.render(frame);
+                if editing_role.is_some() {
+                    if *is_loading {
+                        draw_loading_overlay(frame);
+                    } else if let Some(ml) = model_list {
+                        PickerWidget { state: ml }.render(frame);
+                    }
+                }
+            }
+            PopupState::ApiKeyInput { provider, input } => {
+                draw_api_key_overlay(frame, provider, input);
+            }
+            PopupState::ResumePicker(state) => {
+                PickerWidget { state }.render(frame);
+            }
         }
     }
 
@@ -135,18 +199,21 @@ impl App {
             TuiEvent::PhaseComplete { phase } => {
                 self.logs.push(LogEntry::system(format!("[phase:{}] complete", phase)));
             }
-            TuiEvent::Error { agent, message } => {
-                self.set_pipeline_status(agent, AgentStatus::Error);
-                self.logs.push(LogEntry::agent(agent, format!("✗ {}", message)));
-            }
-            TuiEvent::InteractivePause { message } => {
-                // Task 42: show popup
-                self.show_pause_popup = true;
-                self.pause_message = message.clone();
-                self.logs.push(LogEntry::system(format!("[pause] {}", message)));
-            }
+             TuiEvent::Error { agent, message } => {
+                 self.set_pipeline_status(agent, AgentStatus::Error);
+                 self.logs.push(LogEntry::error(agent, message.clone()));
+             }
+             TuiEvent::ResumeSelected { session_id } => {
+                 // Log the selection; actual dispatch happens in handle_resume_picker.
+                 self.logs.push(LogEntry::system(format!("resume selected: {}", session_id)));
+             }
+             TuiEvent::InteractivePause { message } => {
+                 // Task 42: show popup
+                 self.show_pause_popup = true;
+                 self.pause_message = message.clone();
+                 self.logs.push(LogEntry::system(format!("[pause] {}", message)));
+             }
             TuiEvent::Resume => {
-                // Task 42: dismiss popup
                 self.show_pause_popup = false;
                 self.logs.push(LogEntry::system("workflow resumed"));
             }
@@ -161,6 +228,54 @@ impl App {
                     git_hash.as_deref().map(|h| format!(", git: {}", h)).unwrap_or_default(),
                 )));
             }
+            TuiEvent::OpenProviderPicker => {
+                let current = self.config.try_read()
+                    .map(|c| c.provider.default.clone())
+                    .unwrap_or_default();
+                self.popup = PopupState::ProviderPicker(provider_picker(&current));
+            }
+            TuiEvent::OpenModelPicker => {
+                let (ceo, pm, tl, dev, qa, devops, assistant) = self.config.try_read()
+                    .map(|c| (
+                        c.models.ceo.clone(),
+                        c.models.pm.clone(),
+                        c.models.tech_lead.clone(),
+                        c.models.developer.clone(),
+                        c.models.qa.clone(),
+                        c.models.devops.clone(),
+                        c.models.assistant.clone(),
+                    ))
+                    .unwrap_or_default();
+                let roles: &[(&str, String)] = &[
+                    ("ceo", ceo),
+                    ("pm", pm),
+                    ("tech_lead", tl),
+                    ("developer", dev),
+                    ("qa", qa),
+                    ("devops", devops),
+                    ("assistant", assistant),
+                ];
+                let refs: Vec<(&str, &str)> = roles.iter().map(|(r, m)| (*r, m.as_str())).collect();
+                self.popup = PopupState::ModelPicker {
+                    picker: model_picker(&refs),
+                    editing_role: None,
+                    model_list: None,
+                    is_loading: false,
+                };
+            }
+             TuiEvent::ModelsLoaded { provider, models } => {
+                 self.model_cache.insert(provider.clone(), models.clone());
+                 // If model picker is open in phase 2, populate its model list now.
+                 if let PopupState::ModelPicker { editing_role, model_list, is_loading, .. } = &mut self.popup
+                     && editing_role.is_some() {
+                     *is_loading = false;
+                     *model_list = Some(build_model_list_picker(provider, models));
+                 }
+             }
+             TuiEvent::OpenResumePicker => {
+                 let sessions = self.repl_state.session_history.blocking_lock().clone();
+                 self.popup = PopupState::ResumePicker(resume_picker(&sessions));
+             }
         }
     }
 
@@ -213,10 +328,21 @@ impl Tui {
     }
 
     /// Async event loop. Returns when the user presses Ctrl+C or types `/quit`.
-    pub async fn run(mut self, mut event_rx: TuiReceiver, tx: TuiSender, config: Arc<Config>) -> Result<()> {
-        let mut app = App::new();
+    pub async fn run(mut self, mut event_rx: TuiReceiver, tx: TuiSender, config: Arc<RwLock<Config>>) -> Result<()> {
+        let mut app = App::new(Arc::clone(&config));
         let mut stream = EventStream::new();
         let mut tick = time::interval(Duration::from_millis(100));
+
+        // Pre-fetch model list for the current provider in the background.
+        {
+            let provider = config.read().await.provider.default.clone();
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                if let Ok(models) = crate::providers::models::fetch_models(&provider).await {
+                    let _ = tx2.send(TuiEvent::ModelsLoaded { provider, models });
+                }
+            });
+        }
 
         loop {
             self.terminal.draw(|f| app.draw(f))?;
@@ -224,7 +350,7 @@ impl Tui {
             tokio::select! {
                 maybe = stream.next() => {
                     if let Some(Ok(event)) = maybe
-                        && Self::handle_input(&mut app, &event, &tx, Arc::clone(&config)).await {
+                        && Self::handle_input(&mut app, &event, &tx).await {
                         break;
                     }
                 }
@@ -239,38 +365,45 @@ impl Tui {
     }
 
     /// Returns `true` when the loop should exit.
-    async fn handle_input(app: &mut App, event: &Event, tx: &TuiSender, config: Arc<Config>) -> bool {
+    async fn handle_input(app: &mut App, event: &Event, tx: &TuiSender) -> bool {
         let Event::Key(key) = event else { return false };
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
         }
 
-        // Task 42: when the pause popup is visible, 'c'/'C' continues and 'a'/'A' aborts.
+         // --- Picker popups (highest priority) ---
+         match &app.popup {
+             PopupState::ProviderPicker(_) => {
+                 return Self::handle_provider_picker(app, key, tx).await;
+             }
+             PopupState::ModelPicker { .. } => {
+                 return Self::handle_model_picker(app, key, tx).await;
+             }
+             PopupState::ApiKeyInput { .. } => {
+                 return Self::handle_api_key_input(app, key, tx).await;
+             }
+             PopupState::ResumePicker(_) => {
+                 return Self::handle_resume_picker(app, key, tx).await;
+             }
+             PopupState::None => {}
+         }
+
+        // --- Pause popup ---
         if app.show_pause_popup {
             match key.code {
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     app.show_pause_popup = false;
-                    match crate::repl::dispatch("/continue", tx, config, Arc::clone(&app.repl_state)).await {
+                    match crate::repl::dispatch("/continue", tx, Arc::clone(&app.config), Arc::clone(&app.repl_state)).await {
                         Ok(should_quit) => return should_quit,
-                        Err(e) => {
-                            let _ = tx.send(TuiEvent::Error {
-                                agent: "repl".to_string(),
-                                message: e.to_string(),
-                            });
-                        }
+                        Err(e) => { let _ = tx.send(TuiEvent::Error { agent: "repl".to_string(), message: e.to_string() }); }
                     }
                 }
                 KeyCode::Char('a') | KeyCode::Char('A') => {
                     app.show_pause_popup = false;
-                    match crate::repl::dispatch("/abort", tx, config, Arc::clone(&app.repl_state)).await {
+                    match crate::repl::dispatch("/abort", tx, Arc::clone(&app.config), Arc::clone(&app.repl_state)).await {
                         Ok(should_quit) => return should_quit,
-                        Err(e) => {
-                            let _ = tx.send(TuiEvent::Error {
-                                agent: "repl".to_string(),
-                                message: e.to_string(),
-                            });
-                        }
+                        Err(e) => { let _ = tx.send(TuiEvent::Error { agent: "repl".to_string(), message: e.to_string() }); }
                     }
                 }
                 _ => {}
@@ -278,26 +411,401 @@ impl Tui {
             return false;
         }
 
+        // When the command palette is open, intercept all navigation keys.
+        // Enter selects into the input bar (doesn't dispatch yet).
+        if app.input_bar.palette_open() {
+            match key.code {
+                KeyCode::Up   => { app.input_bar.palette_up();   return false; }
+                KeyCode::Down => { app.input_bar.palette_down(); return false; }
+                KeyCode::Tab  => { app.input_bar.palette_down(); return false; }
+                KeyCode::Esc  => { app.input_bar.dismiss_completions(); return false; }
+                KeyCode::Enter => {
+                    if app.input_bar.palette_select().is_some() {
+                        return false; // filled in — user presses Enter again to dispatch
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            match key.code {
+                KeyCode::Up    => { app.input_bar.history_up();          return false; }
+                KeyCode::Down  => { app.input_bar.history_down();        return false; }
+                KeyCode::Tab   => { app.input_bar.complete();            return false; }
+                KeyCode::Esc   => { app.input_bar.dismiss_completions(); return false; }
+                _ => {}
+            }
+        }
+
+        // --- Normal REPL dispatch (palette is closed at this point) ---
         if key.code == KeyCode::Enter {
             let cmd = app.input_bar.input.value().to_string();
             if !cmd.is_empty() {
                 app.logs.push(LogEntry::system(format!("> {}", cmd)));
+                app.input_bar.push_history(cmd.clone());
                 app.input_bar.input = tui_input::Input::default();
-
-                match crate::repl::dispatch(&cmd, tx, config, Arc::clone(&app.repl_state)).await {
+                match crate::repl::dispatch(&cmd, tx, Arc::clone(&app.config), Arc::clone(&app.repl_state)).await {
                     Ok(should_quit) => return should_quit,
-                    Err(e) => {
-                        let _ = tx.send(TuiEvent::Error {
-                            agent: "repl".to_string(),
-                            message: e.to_string(),
-                        });
-                    }
+                    Err(e) => { let _ = tx.send(TuiEvent::Error { agent: "repl".to_string(), message: e.to_string() }); }
                 }
             }
             return false;
         }
 
         app.input_bar.input.handle_event(event);
+        false
+    }
+
+    // -------------------------------------------------------------------------
+    // Provider picker key handler
+    // -------------------------------------------------------------------------
+
+    async fn handle_provider_picker(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        tx: &TuiSender,
+    ) -> bool {
+        let PopupState::ProviderPicker(ref mut state) = app.popup else { return false };
+
+        match key.code {
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Up => state.move_up(),
+            KeyCode::Down => state.move_down(),
+            KeyCode::Backspace => state.pop_search(),
+            KeyCode::Enter => {
+                if let Some(id) = state.selected_id() {
+                    let id_clone = id.clone();
+                    // Providers that require an API key — always prompt so user can update it
+                    const NEEDS_KEY: &[&str] = &["openrouter", "groq", "together"];
+                    let needs_key = NEEDS_KEY.contains(&id_clone.as_str());
+
+                    if needs_key {
+                        // Always show the key input popup (allows re-entering a wrong key)
+                        app.popup = PopupState::ApiKeyInput {
+                            provider: id_clone,
+                            input: tui_input::Input::default(),
+                        };
+                        return false;
+                    }
+
+                    app.popup = PopupState::None;
+                    // Apply & persist
+                    let mut cfg = app.config.write().await;
+                    cfg.set_provider(id_clone.clone());
+                    match cfg.save() {
+                        Ok(()) => {
+                            let _ = tx.send(TuiEvent::TokenChunk {
+                                agent: "provider".to_string(),
+                                chunk: format!("  ✓ provider → {} (saved)", id_clone),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(TuiEvent::Error {
+                                agent: "provider".to_string(),
+                                message: format!("failed to save config: {e}"),
+                            });
+                        }
+                    }
+                    // Kick off background model fetch for the new provider
+                    let tx2 = tx.clone();
+                    let provider_for_fetch = id_clone.clone();
+                    tokio::spawn(async move {
+                        match crate::providers::models::fetch_models(&provider_for_fetch).await {
+                            Ok(models) => {
+                                let _ = tx2.send(TuiEvent::ModelsLoaded {
+                                    provider: provider_for_fetch,
+                                    models,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx2.send(TuiEvent::Error {
+                                    agent: "models".to_string(),
+                                    message: format!("model fetch failed: {e}"),
+                                });
+                            }
+                        }
+                    });
+                }
+            }
+            KeyCode::Char(c) => state.push_search(c),
+            _ => {}
+        }
+        false
+    }
+
+    // -------------------------------------------------------------------------
+    // API key input key handler
+    // -------------------------------------------------------------------------
+
+    async fn handle_api_key_input(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        tx: &TuiSender,
+    ) -> bool {
+        let PopupState::ApiKeyInput { ref provider, ref mut input } = app.popup else { return false };
+        let provider = provider.clone();
+
+        match key.code {
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Enter => {
+                let api_key = input.value().trim().to_string();
+                app.popup = PopupState::None;
+                let mut cfg = app.config.write().await;
+
+                if api_key.is_empty() {
+                    // Blank = keep existing key, just switch the provider
+                    cfg.set_provider(provider.clone());
+                    cfg.apply_api_keys_to_env();
+                    let _ = cfg.save();
+                    let _ = tx.send(TuiEvent::TokenChunk {
+                        agent: "provider".to_string(),
+                        chunk: format!("  ✓ provider → {} (existing key kept)", provider),
+                    });
+                    drop(cfg);
+                } else {
+                // Set API key and apply to env immediately
+                match cfg.set_api_key(&provider, api_key.clone()) {
+                    Ok(()) => {
+                        cfg.apply_api_keys_to_env();
+                        cfg.set_provider(provider.clone());
+                        match cfg.save() {
+                            Ok(()) => {
+                                let _ = tx.send(TuiEvent::TokenChunk {
+                                    agent: "provider".to_string(),
+                                    chunk: format!("  ✓ provider → {} • API key saved", provider),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(TuiEvent::Error {
+                                    agent: "provider".to_string(),
+                                    message: format!("failed to save config: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(TuiEvent::Error {
+                            agent: "provider".to_string(),
+                            message: e.to_string(),
+                        });
+                    }
+                }
+                drop(cfg);
+                }
+                // Kick off background model fetch for the new provider
+                let tx2 = tx.clone();
+                let prov = provider.clone();
+                tokio::spawn(async move {
+                    match crate::providers::models::fetch_models(&prov).await {
+                        Ok(models) => {
+                            let _ = tx2.send(TuiEvent::ModelsLoaded { provider: prov, models });
+                        }
+                        Err(e) => {
+                            let _ = tx2.send(TuiEvent::Error {
+                                agent: "models".to_string(),
+                                message: format!("model fetch failed: {e}"),
+                            });
+                        }
+                    }
+                });
+            }
+            KeyCode::Backspace => {
+                use tui_input::backend::crossterm::EventHandler;
+                input.handle_event(&crossterm::event::Event::Key(*key));
+            }
+            KeyCode::Char(_) => {
+                use tui_input::backend::crossterm::EventHandler;
+                input.handle_event(&crossterm::event::Event::Key(*key));
+            }
+            _ => {}
+        }
+        false
+    }
+
+     // -------------------------------------------------------------------------
+     // Resume picker key handler
+     // -------------------------------------------------------------------------
+
+     async fn handle_resume_picker(
+         app: &mut App,
+         key: &crossterm::event::KeyEvent,
+         tx: &TuiSender,
+     ) -> bool {
+         let PopupState::ResumePicker(ref mut state) = app.popup else { return false };
+
+         match key.code {
+             KeyCode::Esc => {
+                 app.popup = PopupState::None;
+             }
+             KeyCode::Up => state.move_up(),
+             KeyCode::Down => state.move_down(),
+             KeyCode::Backspace => state.pop_search(),
+             KeyCode::Enter => {
+                 if let Some(session_id) = state.selected_id() {
+                     app.popup = PopupState::None;
+                     // Look up the directory for this session and dispatch /resume <dir>
+                     let dir = {
+                         let history = app.repl_state.session_history.blocking_lock();
+                         history.iter()
+                             .find(|s| s.id == session_id)
+                             .map(|s| s.directory.display().to_string())
+                     };
+                     if let Some(dir_str) = dir {
+                         let cmd = format!("/resume {}", dir_str);
+                         match crate::repl::dispatch(
+                             &cmd,
+                             tx,
+                             Arc::clone(&app.config),
+                             Arc::clone(&app.repl_state),
+                         ).await {
+                             Ok(should_quit) => return should_quit,
+                             Err(e) => {
+                                 let _ = tx.send(TuiEvent::Error {
+                                     agent: "resume".to_string(),
+                                     message: e.to_string(),
+                                 });
+                             }
+                         }
+                     } else {
+                         let _ = tx.send(TuiEvent::Error {
+                             agent: "resume".to_string(),
+                             message: format!("session not found: {}", session_id),
+                         });
+                     }
+                 }
+             }
+             KeyCode::Char(c) => state.push_search(c),
+             _ => {}
+         }
+         false
+     }
+
+     // -------------------------------------------------------------------------
+     // Model picker key handler
+     // -------------------------------------------------------------------------
+
+     async fn handle_model_picker(
+         app: &mut App,
+         key: &crossterm::event::KeyEvent,
+         tx: &TuiSender,
+     ) -> bool {
+        let PopupState::ModelPicker { ref mut picker, ref mut editing_role, ref mut model_list, ref mut is_loading } = app.popup
+        else { return false };
+
+        if let Some(role) = editing_role.clone() {
+            // Phase 2: picking a model from the list
+            match key.code {
+                KeyCode::Esc => {
+                    // Back to role selection
+                    *editing_role = None;
+                    *model_list = None;
+                    *is_loading = false;
+                }
+                KeyCode::Up => {
+                    if let Some(ml) = model_list { ml.move_up(); }
+                }
+                KeyCode::Down => {
+                    if let Some(ml) = model_list { ml.move_down(); }
+                }
+                KeyCode::Backspace => {
+                    if let Some(ml) = model_list { ml.pop_search(); }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(ml) = model_list { ml.push_search(c); }
+                }
+                KeyCode::Enter => {
+                    let raw_model = model_list
+                        .as_ref()
+                        .and_then(|ml| ml.selected_id())
+                        .unwrap_or_default();
+                    if !raw_model.is_empty() {
+                        // Qualify with provider prefix so parse_model() routes correctly.
+                        // OpenRouter model IDs (e.g. "qwen/qwen3-coder:free") contain "/"
+                        // which would otherwise be misread as an unknown provider prefix.
+                        let provider = app.config.try_read()
+                            .map(|c| c.provider.default.clone())
+                            .unwrap_or_else(|_| "ollama".to_string());
+                        let model_str = qualify_model_string(&raw_model, &provider);
+                        app.popup = PopupState::None;
+                        let mut cfg = app.config.write().await;
+                        match cfg.set_model(&role, model_str.clone()) {
+                            Ok(()) => {
+                                match cfg.save() {
+                                    Ok(()) => {
+                                        let _ = tx.send(TuiEvent::TokenChunk {
+                                            agent: "model".to_string(),
+                                            chunk: format!("  ✓ {} → {} (saved)", role, model_str),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(TuiEvent::Error {
+                                            agent: "model".to_string(),
+                                            message: format!("saved in memory but failed to persist: {e}"),
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(TuiEvent::Error {
+                                    agent: "model".to_string(),
+                                    message: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            // Phase 1: selecting a role
+            match key.code {
+                KeyCode::Esc => {
+                    app.popup = PopupState::None;
+                }
+                KeyCode::Up => picker.move_up(),
+                KeyCode::Down => picker.move_down(),
+                KeyCode::Backspace => picker.pop_search(),
+                KeyCode::Enter => {
+                    if let Some(role) = picker.selected_id() {
+                        // Check cache first
+                        let provider = app.config.try_read()
+                            .map(|c| c.provider.default.clone())
+                            .unwrap_or_else(|_| "ollama".to_string());
+                        if let Some(models) = app.model_cache.get(&provider) {
+                            *model_list = Some(build_model_list_picker(&provider, models));
+                            *is_loading = false;
+                        } else {
+                            // Not cached yet — fetch in background
+                            *is_loading = true;
+                            let tx2 = tx.clone();
+                            let prov = provider.clone();
+                            tokio::spawn(async move {
+                                match crate::providers::models::fetch_models(&prov).await {
+                                    Ok(models) => {
+                                        let _ = tx2.send(TuiEvent::ModelsLoaded {
+                                            provider: prov,
+                                            models,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        let _ = tx2.send(TuiEvent::Error {
+                                            agent: "models".to_string(),
+                                            message: format!("model fetch failed: {e}"),
+                                        });
+                                    }
+                                }
+                            });
+                        }
+                        *editing_role = Some(role);
+                    }
+                }
+                KeyCode::Char(c) => picker.push_search(c),
+                _ => {}
+            }
+        }
         false
     }
 }
@@ -315,15 +823,152 @@ impl Drop for Tui {
 }
 
 // ---------------------------------------------------------------------------
+// Model list picker builder
+// ---------------------------------------------------------------------------
+
+fn build_model_list_picker(provider: &str, models: &[String]) -> crate::tui::widgets::picker::PickerState {
+    use crate::tui::widgets::picker::{PickerGroup, PickerItem, PickerState};
+    let items: Vec<PickerItem> = models
+        .iter()
+        .map(|id| PickerItem {
+            id: id.clone(),
+            label: id.clone(),
+            description: None,
+            checked: false,
+        })
+        .collect();
+    PickerState::new(
+        format!("Models — {}", provider),
+        vec![PickerGroup { title: provider.to_string(), items }],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Provider-prefix helpers
+// ---------------------------------------------------------------------------
+
+const KNOWN_PROVIDER_PREFIXES: &[&str] = &["ollama", "openrouter", "groq", "together"];
+
+/// Ensures a raw model ID (e.g. `"qwen/qwen3-coder:free"`) is stored with a
+/// provider prefix (e.g. `"openrouter/qwen/qwen3-coder:free"`).  If the model
+/// string already begins with a known prefix it is returned as-is.
+fn qualify_model_string(model: &str, provider: &str) -> String {
+    let already_prefixed = KNOWN_PROVIDER_PREFIXES
+        .iter()
+        .any(|p| model.starts_with(&format!("{p}/")));
+    if already_prefixed {
+        model.to_string()
+    } else {
+        format!("{provider}/{model}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// API key input overlay
+// ---------------------------------------------------------------------------
+
+fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::Input) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+
+    // Build a fixed-height (11 rows), 50%-wide rect centered on screen.
+    let screen = frame.area();
+    const POPUP_H: u16 = 11;
+    const POPUP_W_PCT: u16 = 50;
+    let popup_w = screen.width * POPUP_W_PCT / 100;
+    let popup_x = screen.x + (screen.width.saturating_sub(popup_w)) / 2;
+    let popup_y = screen.y + screen.height.saturating_sub(POPUP_H) / 2;
+    let area = Rect::new(popup_x, popup_y, popup_w, POPUP_H.min(screen.height));
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(" 🔑  API Key — {provider} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(255, 200, 50)))
+        .style(Style::default().bg(Color::Rgb(18, 18, 18)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // inner is POPUP_H - 2 (borders) = 9 rows
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // top padding
+            Constraint::Length(1), // hint
+            Constraint::Length(1), // spacing
+            Constraint::Length(3), // input box (border + 1 line of text + border)
+            Constraint::Length(1), // spacing
+            Constraint::Length(1), // footer hint
+            Constraint::Min(0),    // leftover
+        ])
+        .split(inner);
+
+    // Hint
+    frame.render_widget(
+        Paragraph::new(" Paste your API key (blank = keep existing).")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[1],
+    );
+
+    // Masked input field — show dots for typed chars, placeholder when empty
+    let typed = input.value();
+    let display: String = if typed.is_empty() {
+        String::from(" Enter API key…")
+    } else {
+        format!(" {}", "•".repeat(typed.len()))
+    };
+    let input_style = if typed.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    frame.render_widget(
+        Paragraph::new(display)
+            .style(input_style)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(255, 200, 50))),
+            ),
+        chunks[3],
+    );
+
+    // Footer
+    frame.render_widget(
+        Paragraph::new(" Enter to save  •  Esc to cancel")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[5],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Loading overlay
+// ---------------------------------------------------------------------------
+
+fn draw_loading_overlay(frame: &mut Frame) {
+    use crate::tui::widgets::picker;
+    let area = picker::centered_rect(40, 12, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" Loading models… ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(180, 80, 20)))
+        .style(Style::default().bg(Color::Rgb(20, 20, 20)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new("  Fetching model list from provider…")
+            .style(Style::default().fg(Color::DarkGray)),
+        inner,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Status bar
 // ---------------------------------------------------------------------------
 
-fn draw_status(frame: &mut Frame, area: ratatui::layout::Rect) {
-    use ratatui::{
-        style::{Color, Style},
-        widgets::Paragraph,
-    };
-    let text = " cortex v0.1.0  │  provider: ollama  │  Ctrl+C or /quit to exit ";
+fn draw_status(frame: &mut Frame, area: ratatui::layout::Rect, provider: &str) {
+    let text = format!(" cortex v0.1.0  │  provider: {}  │  Ctrl+C or /quit to exit ", provider);
     frame.render_widget(
         Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         area,

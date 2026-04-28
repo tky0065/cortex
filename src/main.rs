@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tokio::sync::RwLock;
 
 use config::Config;
 use orchestrator::Orchestrator;
@@ -38,12 +39,24 @@ enum Commands {
         /// Workflow to use (default: dev)
         #[arg(long, default_value = "dev")]
         workflow: String,
+        /// Override model for all agents, e.g. groq/llama3-70b-8192 (not saved)
+        #[arg(long)]
+        model: Option<String>,
+        /// Override default provider prefix, e.g. openrouter (not saved)
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Run an explicit workflow (alias for start --workflow)
     Run {
         #[arg(long)]
         workflow: String,
         prompt: String,
+        /// Override model for all agents, e.g. groq/llama3-70b-8192 (not saved)
+        #[arg(long)]
+        model: Option<String>,
+        /// Override default provider prefix, e.g. openrouter (not saved)
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Resume an interrupted workflow from an existing project directory
     Resume {
@@ -54,23 +67,26 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Arc::new(Config::load()?);
+    let config = Config::load()?;
     let cli = Cli::parse();
     let verbose = cli.verbose;
 
     match cli.command {
         None => {
+            let shared = Arc::new(RwLock::new(config));
             let (tx, rx) = tui::events::channel();
-            tui::Tui::new()?.run(rx, tx, Arc::clone(&config)).await?;
+            tui::Tui::new()?.run(rx, tx, Arc::clone(&shared)).await?;
         }
-        Some(Commands::Start { idea, auto, workflow }) => {
+        Some(Commands::Start { idea, auto, workflow, model, provider }) => {
+            let config = apply_overrides(config, model, provider);
             let wf = workflows::get_workflow(&workflow)?;
-            let orch = Orchestrator::new(wf, Arc::clone(&config));
+            let orch = Orchestrator::new(wf, Arc::new(config));
             orch.run_with_opts(idea, auto, verbose, None).await?;
         }
-        Some(Commands::Run { workflow, prompt }) => {
+        Some(Commands::Run { workflow, prompt, model, provider }) => {
+            let config = apply_overrides(config, model, provider);
             let wf = workflows::get_workflow(&workflow)?;
-            let orch = Orchestrator::new(wf, Arc::clone(&config));
+            let orch = Orchestrator::new(wf, Arc::new(config));
             orch.run_with_opts(prompt, false, verbose, None).await?;
         }
         Some(Commands::Resume { project_dir }) => {
@@ -83,7 +99,7 @@ async fn main() -> Result<()> {
             }
             let orch = Orchestrator::new(
                 workflows::get_workflow("dev")?,
-                Arc::clone(&config),
+                Arc::new(config),
             );
             let prompt = format!(
                 "Resume and complete the project in: {}",
@@ -94,4 +110,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Apply one-shot `--model` / `--provider` overrides without persisting to disk.
+fn apply_overrides(mut config: Config, model: Option<String>, provider: Option<String>) -> Config {
+    if let Some(m) = model {
+        // `--model` sets all roles to the given model string
+        let _ = config.set_model("all", m);
+    }
+    if let Some(p) = provider {
+        config.set_provider(p);
+    }
+    config
 }

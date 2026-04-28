@@ -22,6 +22,16 @@ pub enum TuiEvent {
         files: Vec<String>,
         git_hash: Option<String>,
     },
+    /// Open the interactive provider picker popup.
+    OpenProviderPicker,
+    /// Open the interactive model picker popup.
+    OpenModelPicker,
+    /// Open the interactive resume picker popup.
+    OpenResumePicker,
+    /// Emitted when a session is selected from the resume picker.
+    ResumeSelected { session_id: String },
+    /// Fired (from a background task) when the model list for a provider has been fetched.
+    ModelsLoaded { provider: String, models: Vec<String> },
 }
 
 pub type TuiSender = mpsc::UnboundedSender<TuiEvent>;
