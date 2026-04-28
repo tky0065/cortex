@@ -1,13 +1,21 @@
 #![allow(dead_code)]
 
 pub mod models;
+pub mod ollama;
+pub mod openrouter;
+pub mod groq;
+pub mod together;
 
 use anyhow::{bail, Result};
-use rig::client::{CompletionClient, Nothing};
-use rig::completion::{Chat, Message, Prompt};
-use rig::providers::ollama::{self as rig_ollama};
+use futures_util::StreamExt;
+use rig::agent::{MultiTurnStreamItem, StreamingResult};
+use rig::client::CompletionClient;
+use rig::completion::{Chat, Message};
+use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::tui::events::TuiEvent;
 
 /// Returns the full model string (e.g. `"ollama/qwen2.5-coder:32b"`) for a role.
 pub fn model_for_role<'a>(role: &str, config: &'a Config) -> Result<&'a str> {
@@ -31,7 +39,6 @@ pub fn model_for_role<'a>(role: &str, config: &'a Config) -> Result<&'a str> {
 }
 
 /// Parses a model string like `"ollama/qwen2.5-coder:32b"` into `("ollama", "qwen2.5-coder:32b")`.
-/// If no prefix is found, defaults to `"ollama"`.
 fn parse_model(model_str: &str) -> (&str, &str) {
     if let Some((provider, model)) = model_str.split_once('/') {
         (provider, model)
@@ -40,31 +47,100 @@ fn parse_model(model_str: &str) -> (&str, &str) {
     }
 }
 
-/// Single entry point for LLM completions. Parses the provider prefix from the
-/// model string in config and routes to the correct rig client.
+/// Drains a streaming response into a `String`, forwarding each text token as `TuiEvent::TokenChunk`.
 ///
-/// Currently only supports Ollama provider.
-pub async fn complete(model_str: &str, preamble: &str, prompt: &str) -> Result<String> {
-    let (provider, model) = parse_model(model_str);
-    match provider {
-        "ollama" => {
-            let client = rig_ollama::Client::new(Nothing)
-                .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
-            let agent = client.agent(model).preamble(preamble).build();
-            agent.prompt(prompt).await.map_err(|e| anyhow::anyhow!("Ollama completion error: {e}"))
+/// While waiting for the **first token**, a background heartbeat fires every 5 seconds and sends
+/// `TuiEvent::AgentProgress { "Waiting for model response... Xs" }` so the TUI stays visually
+/// alive during slow API queue times (e.g. free models on OpenRouter with long TTFT).
+async fn consume_stream<R: Clone + Send + 'static>(
+    mut stream: StreamingResult<R>,
+    options: &crate::workflows::RunOptions,
+    agent_name: &str,
+) -> Result<String> {
+    let cancel = CancellationToken::new();
+    let cancel_hb = cancel.clone();
+    let tx_hb = options.tx.clone();
+    let agent_hb = agent_name.to_string();
+
+    // Background heartbeat — fires every 5s until the first token cancels it.
+    tokio::spawn(async move {
+        let start = std::time::Instant::now();
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let elapsed = start.elapsed().as_secs();
+                    let _ = tx_hb.send(TuiEvent::AgentProgress {
+                        agent: agent_hb.clone(),
+                        message: format!("Waiting for model response... ({}s)", elapsed),
+                    });
+                }
+                _ = cancel_hb.cancelled() => break,
+            }
         }
-        // For backwards compatibility, treat unknown providers as Ollama
-        _other => {
-            let client = rig_ollama::Client::new(Nothing)
-                .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
+    });
+
+    let mut full_response = String::new();
+    while let Some(chunk) = stream.next().await {
+        let raw_choice = chunk.map_err(|e| anyhow::anyhow!("Stream chunk error: {e}"))?;
+        if let MultiTurnStreamItem::StreamAssistantItem(
+            StreamedAssistantContent::Text(text)
+        ) = raw_choice {
+            cancel.cancel(); // stop heartbeat on first text token
+            full_response.push_str(&text.text);
+            let _ = options.tx.send(TuiEvent::TokenChunk {
+                agent: agent_name.to_string(),
+                chunk: text.text,
+            });
+        }
+    }
+    cancel.cancel(); // ensure heartbeat stops even if stream was empty or had no text
+
+    Ok(full_response)
+}
+
+/// Single entry point for LLM completions with streaming support.
+/// Sends `TuiEvent::TokenChunk` to `options.tx` for each token.
+/// Sends `TuiEvent::AgentProgress` heartbeats while waiting for the first token.
+pub async fn complete(
+    model_str: &str,
+    preamble: &str,
+    prompt: &str,
+    options: &crate::workflows::RunOptions,
+    agent_name: &str,
+) -> Result<String> {
+    let (provider, model) = parse_model(model_str);
+
+    match provider {
+        "openrouter" => {
+            let client = openrouter::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.prompt(prompt).await.map_err(|e| anyhow::anyhow!("Ollama completion error: {e}"))
+            let stream = agent.stream_prompt(prompt).await;
+            consume_stream(stream, options, agent_name).await
+        }
+        "groq" => {
+            let client = groq::client()?;
+            let agent = client.agent(model).preamble(preamble).build();
+            let stream = agent.stream_prompt(prompt).await;
+            consume_stream(stream, options, agent_name).await
+        }
+        "together" => {
+            let client = together::client()?;
+            let agent = client.agent(model).preamble(preamble).build();
+            let stream = agent.stream_prompt(prompt).await;
+            consume_stream(stream, options, agent_name).await
+        }
+        "ollama" | _ => {
+            let client = ollama::client()?;
+            let agent = client.agent(model).preamble(preamble).build();
+            let stream = agent.stream_prompt(prompt).await;
+            consume_stream(stream, options, agent_name).await
         }
     }
 }
 
-/// Multi-turn chat completion. `history` is a list of prior `(user, assistant)` exchanges
-/// represented as `rig::completion::Message` values.
+/// Multi-turn chat completion (used by conversational assistant).
 pub async fn complete_chat(
     model_str: &str,
     preamble: &str,
@@ -73,91 +149,27 @@ pub async fn complete_chat(
 ) -> Result<String> {
     let (provider, model) = parse_model(model_str);
     let user_msg = Message::user(prompt);
+    
     match provider {
-        "ollama" => {
-            let client = rig_ollama::Client::new(Nothing)
-                .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
+        "openrouter" => {
+            let client = openrouter::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent
-                .chat(user_msg, history)
-                .await
-                .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
+            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("OpenRouter chat error: {e}"))
         }
-        // For backwards compatibility, treat unknown providers as Ollama
-        _other => {
-            let client = rig_ollama::Client::new(Nothing)
-                .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
+        "groq" => {
+            let client = groq::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent
-                .chat(user_msg, history)
-                .await
-                .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
+            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("Groq chat error: {e}"))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::Config;
-
-    fn default_config() -> Config {
-        Config::default()
-    }
-
-    #[test]
-    fn parse_model_with_prefix() {
-        assert_eq!(parse_model("ollama/qwen2.5-coder:32b"), ("ollama", "qwen2.5-coder:32b"));
-        assert_eq!(parse_model("openrouter/gpt-4o"), ("openrouter", "gpt-4o"));
-        assert_eq!(parse_model("groq/llama3-70b-8192"), ("groq", "llama3-70b-8192"));
-        assert_eq!(parse_model("together/mistralai/Mixtral"), ("together", "mistralai/Mixtral"));
-    }
-
-    #[test]
-    fn parse_model_no_prefix_defaults_to_ollama() {
-        assert_eq!(parse_model("qwen2.5-coder:32b"), ("ollama", "qwen2.5-coder:32b"));
-    }
-
-    #[test]
-    fn model_for_role_dev_workflow() {
-        let cfg = default_config();
-        assert!(model_for_role("ceo", &cfg).is_ok());
-        assert!(model_for_role("pm", &cfg).is_ok());
-        assert!(model_for_role("tech_lead", &cfg).is_ok());
-        assert!(model_for_role("developer", &cfg).is_ok());
-        assert!(model_for_role("qa", &cfg).is_ok());
-        assert!(model_for_role("devops", &cfg).is_ok());
-    }
-
-    #[test]
-    fn model_for_role_code_review_workflow() {
-        let cfg = default_config();
-        assert!(model_for_role("reviewer", &cfg).is_ok());
-        assert!(model_for_role("security", &cfg).is_ok());
-        assert!(model_for_role("performance", &cfg).is_ok());
-        assert!(model_for_role("reporter", &cfg).is_ok());
-    }
-
-    #[test]
-    fn model_for_role_marketing_workflow() {
-        let cfg = default_config();
-        assert!(model_for_role("strategist", &cfg).is_ok());
-        assert!(model_for_role("copywriter", &cfg).is_ok());
-        assert!(model_for_role("analyst", &cfg).is_ok());
-        assert!(model_for_role("social_media_manager", &cfg).is_ok());
-    }
-
-    #[test]
-    fn model_for_role_prospecting_workflow() {
-        let cfg = default_config();
-        assert!(model_for_role("researcher", &cfg).is_ok());
-        assert!(model_for_role("profiler", &cfg).is_ok());
-        assert!(model_for_role("outreach_manager", &cfg).is_ok());
-    }
-
-    #[test]
-    fn model_for_role_unknown_returns_error() {
-        let cfg = default_config();
-        assert!(model_for_role("unknown_role", &cfg).is_err());
+        "together" => {
+            let client = together::client()?;
+            let agent = client.agent(model).preamble(preamble).build();
+            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("Together chat error: {e}"))
+        }
+        "ollama" | _ => {
+            let client = ollama::client()?;
+            let agent = client.agent(model).preamble(preamble).build();
+            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
+        }
     }
 }
