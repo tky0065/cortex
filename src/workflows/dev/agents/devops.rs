@@ -1,9 +1,6 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
-use rig::client::{CompletionClient, Nothing};
-use rig::completion::Prompt;
-use rig::providers::ollama as rig_ollama;
 
 use crate::tui::events::TuiEvent;
 use crate::tools::filesystem::FileSystem;
@@ -16,23 +13,14 @@ const PREAMBLE: &str = include_str!("../prompts/devops.md");
 pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> Result<()> {
     let _ = options.tx.send(TuiEvent::AgentStarted { agent: "devops".into() });
 
-    let client = rig_ollama::Client::new(Nothing)
-        .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
     let model = crate::providers::model_for_role("devops", &options.config)?;
-
-    let agent = client.agent(model).preamble(PREAMBLE).build();
-
     let prompt = format!(
         "Create deployment infrastructure for this project:\n\n{}",
         architecture
     );
-
-    let output = agent
-        .prompt(prompt.as_str())
-        .await
+    let output = crate::providers::complete(model, PREAMBLE, &prompt).await
         .map_err(|e| anyhow::anyhow!("DevOps agent error: {e}"))?;
 
-    // Parse and write the files
     parse_and_write_files(&output, fs)?;
 
     let _ = options.tx.send(TuiEvent::TokenChunk {
@@ -40,7 +28,6 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         chunk: "Deployment files created".into(),
     });
 
-    // git init + add + commit
     git_commit(options).await?;
 
     let _ = options.tx.send(TuiEvent::AgentDone { agent: "devops".into() });
@@ -62,20 +49,17 @@ fn parse_and_write_files(output: &str, fs: &FileSystem) -> Result<()> {
 async fn git_commit(options: &RunOptions) -> Result<()> {
     let dir = &options.project_dir;
 
-    // git init (ignore error if already initialized)
     let _ = terminal::run("git", &["init"], Some(dir.as_path()), Some(30)).await;
 
-    // git add
     let add_out = terminal::run("git", &["add", "."], Some(dir.as_path()), Some(30)).await?;
     if !add_out.success {
         let _ = options.tx.send(TuiEvent::Error {
             agent: "devops".into(),
             message: format!("git add failed: {}", add_out.stderr),
         });
-        return Ok(()); // non-fatal
+        return Ok(());
     }
 
-    // git commit
     let commit_out = terminal::run(
         "git",
         &["commit", "-m", "chore: initial commit by cortex devops agent"],

@@ -46,6 +46,7 @@ pub async fn dispatch(
             let lines = vec![
                 "  /start <workflow> \"<idea>\"  — launch a workflow",
                 "  /run   <workflow> \"<prompt>\" — alias for /start",
+                "  /resume <project-dir>         — resume an interrupted workflow",
                 "  /status                       — show current workflow status",
                 "  /abort                        — cancel the running workflow",
                 "  /continue                     — resume an interactive pause",
@@ -171,6 +172,47 @@ pub async fn dispatch(
             send(tx, TuiEvent::TokenChunk {
                 agent: "logs".to_string(),
                 chunk: "  Log panel focus toggled.".to_string(),
+            });
+        }
+
+        "/resume" => {
+            if rest.is_empty() {
+                send(tx, TuiEvent::Error {
+                    agent: "repl".to_string(),
+                    message: "usage: /resume <project-dir>".to_string(),
+                });
+                return Ok(false);
+            }
+            let project_dir = std::path::PathBuf::from(rest);
+            if !project_dir.exists() {
+                send(tx, TuiEvent::Error {
+                    agent: "repl".to_string(),
+                    message: format!("directory does not exist: {}", project_dir.display()),
+                });
+                return Ok(false);
+            }
+
+            let wf = workflows::get_workflow("dev")?;
+            let tx_clone = tx.clone();
+            let orch = Orchestrator::new(wf, Arc::clone(&config));
+
+            {
+                let mut cancel_guard = state.cancel.lock().await;
+                *cancel_guard = Some(orch.cancel_token());
+            }
+            {
+                let mut resume_guard = state.resume_tx.lock().await;
+                *resume_guard = Some(orch.resume_sender());
+            }
+
+            let prompt = format!("Resume and complete the project in: {}", project_dir.display());
+            tokio::spawn(async move {
+                let _ = orch.run_with_sender(prompt, true, Some(tx_clone)).await;
+            });
+
+            send(tx, TuiEvent::TokenChunk {
+                agent: "repl".to_string(),
+                chunk: format!("  Resuming project at: {}", rest),
             });
         }
 

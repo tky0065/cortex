@@ -168,7 +168,13 @@ Legend: 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Nice to have
 
 ---
 
-## Ordre d'implémentation recommandé
+## Phase 13 — Correctifs post-audit
+
+| # | Priorité | Tâche | Statut |
+|---|----------|-------|--------|
+| 59 | 🔴 | `providers/mod.rs` : fonction `complete()` qui parse le préfixe provider (`ollama/`, `openrouter/`, `groq/`, `together/`) et route vers le bon client rig — remplace le `rig_ollama::Client::new()` hardcodé dans tous les agents | ✅ Done |
+| 60 | 🟠 | `repl.rs` : ajouter le handler `/resume <project-dir>` manquant dans le dispatcher REPL | ✅ Done |
+| 61 | 🟡 | `providers/mod.rs` : ajouter les rôles marketing/prospecting (`strategist`, `copywriter`, `analyst`, `social_media_manager`, `researcher`, `profiler`, `outreach_manager`) dans `model_for_role()` — corriger les agents qui appelaient `model_for_role("developer", ...)` | ✅ Done |
 
 ```
 1→2→4          Cargo.toml + main.rs + config.rs (skeleton qui compile)
