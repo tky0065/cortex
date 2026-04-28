@@ -263,7 +263,9 @@ fn parse_files_to_create(arch: &str) -> Vec<String> {
             }
             let trimmed = line
                 .trim()
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ' || c == '-');
+                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ' || c == '-')
+                // Strip markdown backticks that LLMs add around filenames
+                .trim_matches('`');
             if !trimmed.is_empty() && trimmed.contains('.') && !trimmed.contains(' ') {
                 files.push(trimmed.to_string());
             }
@@ -283,9 +285,11 @@ fn extract_files_from_report(report: &str) -> Vec<String> {
     let mut files = Vec::new();
     for line in report.lines() {
         if line.trim_start().starts_with('-') {
-            // Lines like: "- src/main.rs:42 HIGH ..."
+            // Lines like: "- src/main.rs:42 HIGH ..." or "- `src/main.rs`:42 HIGH ..."
             if let Some(file_part) = line.split_whitespace().nth(1) {
-                let file = file_part.split(':').next().unwrap_or("").to_string();
+                let file = file_part.split(':').next().unwrap_or("")
+                    .trim_matches('`')
+                    .to_string();
                 if file.contains('.') && !file.is_empty() && !files.contains(&file) {
                     files.push(file);
                 }

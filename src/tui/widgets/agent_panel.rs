@@ -62,6 +62,10 @@ impl ActiveAgent {
     }
 
     pub fn push_chunk(&mut self, chunk: &str) {
+        // Clear the heartbeat "Waiting for model response..." status on first token
+        if self.current_action.starts_with("Waiting for model response") {
+            self.current_action = "Generating...".to_string();
+        }
         self.stream_buffer.push_str(chunk);
         // Advance progress by a small amount per chunk (cap at 95 — finish() sets 100)
         if self.progress < 95 {
