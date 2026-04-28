@@ -1,0 +1,75 @@
+#![allow(dead_code)]
+
+use anyhow::Result;
+use rig::client::{CompletionClient, Nothing};
+use rig::completion::Prompt;
+use rig::providers::ollama as rig_ollama;
+
+use crate::tui::events::TuiEvent;
+use crate::tools::filesystem::FileSystem;
+use crate::workflows::RunOptions;
+
+const PREAMBLE: &str = include_str!("../prompts/developer.md");
+
+/// Implement a single source file given the architecture context.
+pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> Result<String> {
+    let agent_name = format!("developer:{}", file_path);
+    let _ = options.tx.send(TuiEvent::AgentStarted { agent: agent_name.clone() });
+
+    let client = rig_ollama::Client::new(Nothing)
+        .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
+    let model = crate::providers::model_for_role("developer", &options.config)?;
+
+    let agent = client.agent(model).preamble(PREAMBLE).build();
+
+    let prompt = format!(
+        "Architecture:\n{}\n\nImplement this file: {}\n\nWrite only the complete source code.",
+        architecture, file_path
+    );
+
+    let code = agent
+        .prompt(prompt.as_str())
+        .await
+        .map_err(|e| anyhow::anyhow!("Developer agent error for '{}': {}", file_path, e))?;
+
+    let _ = options.tx.send(TuiEvent::TokenChunk {
+        agent: agent_name.clone(),
+        chunk: format!("{} implemented ({} chars)", file_path, code.len()),
+    });
+    let _ = options.tx.send(TuiEvent::AgentDone { agent: agent_name });
+
+    Ok(code)
+}
+
+/// Fix issues reported by QA for a specific file.
+pub async fn fix(
+    file_path: &str,
+    current_code: &str,
+    qa_report: &str,
+    options: &RunOptions,
+    fs: &FileSystem,
+) -> Result<()> {
+    let agent_name = format!("developer:fix:{}", file_path);
+    let _ = options.tx.send(TuiEvent::AgentStarted { agent: agent_name.clone() });
+
+    let client = rig_ollama::Client::new(Nothing)
+        .map_err(|e| anyhow::anyhow!("Ollama init failed: {e}"))?;
+    let model = crate::providers::model_for_role("developer", &options.config)?;
+
+    let agent = client.agent(model).preamble(PREAMBLE).build();
+
+    let prompt = format!(
+        "Fix the following issues in {}.\n\nCurrent code:\n{}\n\nQA Report:\n{}\n\nWrite the complete fixed source code.",
+        file_path, current_code, qa_report
+    );
+
+    let fixed = agent
+        .prompt(prompt.as_str())
+        .await
+        .map_err(|e| anyhow::anyhow!("Developer fix error for '{}': {}", file_path, e))?;
+
+    fs.write(file_path, &fixed)?;
+
+    let _ = options.tx.send(TuiEvent::AgentDone { agent: agent_name });
+    Ok(())
+}
