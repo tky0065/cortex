@@ -12,25 +12,10 @@ use crate::orchestrator::Orchestrator;
 use crate::tui::events::{TuiEvent, TuiSender};
 use crate::workflows;
 
-const ASSISTANT_PREAMBLE: &str = "\
-You are Cortex, a helpful AI assistant embedded in an agentic software development CLI. \
-You help users understand the tool, suggest workflows, and answer questions about software development.\n\
-\n\
-Available slash commands the user can run:\n\
-  /start <workflow> \"<idea>\"  — launch a workflow (dev, marketing, prospecting, code-review)\n\
-  /resume <project-dir>         — resume an interrupted workflow\n\
-  /status                       — show current workflow status\n\
-  /abort                        — cancel the running workflow\n\
-  /continue                     — resume an interactive pause\n\
-  /config                       — print active configuration\n\
-  /model [<role> <model>]       — show or change a role's model (role: ceo/pm/tech_lead/developer/qa/devops/assistant/all)\n\
-  /provider [<name>]            — show or change the default provider (ollama/openrouter/groq/together)\n\
-  /logs                         — toggle log panel focus\n\
-  /help                         — show all commands\n\
-  /quit                         — exit cortex\n\
-\n\
-When the user describes a project idea, suggest the right /start command. \
-Keep answers concise and practical.";
+// ASSISTANT_PREAMBLE is the system prompt for the agentic assistant loop.
+// It lives in assistant.rs and is re-exported here for reference in tests / help text.
+#[allow(dead_code)]
+const ASSISTANT_PREAMBLE: &str = crate::assistant::PREAMBLE;
 
 /// Information about a workflow session for history tracking.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -674,8 +659,8 @@ fn is_known_agent_role(name: &str) -> bool {
 // Free-form chat handler
 // ---------------------------------------------------------------------------
 
-/// Sends a free-form user message to the assistant agent and streams the reply
-/// back to the TUI. Maintains per-session conversation history in `state`.
+/// Sends a free-form user message to the assistant agent and runs the agentic
+/// loop (tool calls, file I/O, terminal commands). Maintains conversation history.
 async fn chat_message(
     message: &str,
     tx: &TuiSender,
@@ -700,17 +685,9 @@ async fn chat_message(
             agent: "assistant".to_string(),
         },
     );
-    send(
-        tx,
-        TuiEvent::AgentProgress {
-            agent: "assistant".to_string(),
-            message: "Preparation de la reponse".to_string(),
-        },
-    );
 
     let result =
-        crate::providers::complete_chat(&model, ASSISTANT_PREAMBLE, history_snapshot, message)
-            .await;
+        crate::assistant::run(message, history_snapshot, &model, tx, Arc::clone(&config)).await;
 
     match result {
         Ok(reply) => {
@@ -728,16 +705,6 @@ async fn chat_message(
                     summary: crate::workflows::summarize_output(&reply),
                 },
             );
-            // Stream reply line-by-line so the log panel shows it nicely
-            for line in reply.lines() {
-                send(
-                    tx,
-                    TuiEvent::TokenChunk {
-                        agent: "assistant".to_string(),
-                        chunk: line.to_string(),
-                    },
-                );
-            }
             send(
                 tx,
                 TuiEvent::AgentDone {
@@ -750,7 +717,7 @@ async fn chat_message(
                 tx,
                 TuiEvent::Error {
                     agent: "assistant".to_string(),
-                    message: format!("chat error: {e}"),
+                    message: format!("assistant error: {e}"),
                 },
             );
         }

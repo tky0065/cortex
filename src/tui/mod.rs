@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers},
+    event::{Event, EventStream, KeyCode, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -131,6 +131,7 @@ impl App {
         .render(frame, layout.pipeline);
         AgentPanelWidget {
             agents: &self.active_agents,
+            focused_agent: self.log_filter.as_deref(),
         }
         .render(frame, layout.agents);
         LogsWidget {
@@ -404,6 +405,35 @@ impl App {
             a.status = status;
         }
     }
+
+    /// Collect all visible text (logs + active agents content) into one string.
+    fn collect_all_text(&self) -> String {
+        let mut out = String::new();
+
+        // Logs section
+        for entry in &self.logs {
+            let agent_tag = entry
+                .agent
+                .as_deref()
+                .map(|a| format!("[{}] ", a))
+                .unwrap_or_default();
+            out.push_str(&format!("{} {}{}\n", entry.timestamp, agent_tag, entry.message));
+        }
+
+        // Active agents section
+        for agent in &self.active_agents {
+            let content = if !agent.summary.is_empty() {
+                &agent.summary
+            } else {
+                &agent.stream_buffer
+            };
+            if !content.is_empty() {
+                out.push_str(&format!("\n--- {} ---\n{}\n", agent.name, content));
+            }
+        }
+
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +471,7 @@ impl Tui {
     pub fn new() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -495,6 +525,16 @@ impl Tui {
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
+        }
+
+        // Ctrl+Y — copy all visible text (logs + agent content) to the system clipboard
+        if key.code == KeyCode::Char('y') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let text = app.collect_all_text();
+            match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+                Ok(()) => app.logs.push(LogEntry::system("✓ copied to clipboard")),
+                Err(e) => app.logs.push(LogEntry::system(format!("clipboard error: {}", e))),
+            }
+            return false;
         }
 
         // --- Picker popups (highest priority) ---
@@ -1106,8 +1146,7 @@ impl Drop for Tui {
         let _ = disable_raw_mode();
         let _ = execute!(
             self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
+            LeaveAlternateScreen
         );
         let _ = self.terminal.show_cursor();
     }

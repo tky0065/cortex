@@ -24,8 +24,10 @@ pub struct RunOptions {
     #[allow(dead_code)]
     pub resume_tx: Arc<tokio::sync::mpsc::Sender<()>>,
     /// Receiver side of the resume channel, wrapped in Mutex for shared access across clones.
+    #[allow(dead_code)]
     pub resume_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<()>>>,
     /// Sender used by the TUI to deliver a text answer back to a waiting agent.
+    #[allow(dead_code)]
     pub answer_tx: Arc<tokio::sync::mpsc::Sender<String>>,
     /// Receiver side of the answer channel — agents await here after emitting UserQuestion.
     pub answer_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<String>>>,
@@ -36,7 +38,9 @@ pub struct RunOptions {
 
 #[async_trait]
 pub trait Workflow: Send + Sync {
+    #[allow(dead_code)]
     fn name(&self) -> &str;
+    #[allow(dead_code)]
     fn description(&self) -> &str;
     async fn run(&self, prompt: String, options: RunOptions) -> Result<()>;
 }

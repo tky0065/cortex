@@ -1,3 +1,4 @@
+mod assistant;
 mod config;
 mod context;
 mod orchestrator;

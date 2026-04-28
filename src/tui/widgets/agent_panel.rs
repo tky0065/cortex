@@ -90,6 +90,7 @@ impl ActiveAgent {
 /// Renders the agents panel — one block per active agent with a progress gauge.
 pub struct AgentPanelWidget<'a> {
     pub agents: &'a [ActiveAgent],
+    pub focused_agent: Option<&'a str>,
 }
 
 impl<'a> AgentPanelWidget<'a> {
@@ -110,18 +111,50 @@ impl<'a> AgentPanelWidget<'a> {
             vertical: 1,
         });
 
-        // Divide inner area equally among active agents (max 6 visible)
+        // ── Focused Mode ─────────────────────────────────────────────────────
+        if let Some(target) = self.focused_agent {
+            // Match if agent name equals target OR starts with target (e.g. "developer" matches "developer:src/main.rs")
+            if let Some(agent) = self.agents.iter().find(|a| a.name == target || a.name.starts_with(&format!("{}:", target))) {
+                render_agent_block(frame, agent, inner);
+                return;
+            }
+        }
+
+        // ── Grid Mode ────────────────────────────────────────────────────────
+        // Divide inner area into a grid based on active agents (max 6 visible)
         let count = self.agents.len().min(6);
-        let constraints: Vec<Constraint> = (0..count)
-            .map(|_| Constraint::Ratio(1, count as u32))
+        let (rows, cols) = match count {
+            1 => (1, 1),
+            2 => (1, 2),
+            3 | 4 => (2, 2),
+            5 | 6 => (2, 3),
+            _ => (2, 3),
+        };
+
+        let row_constraints: Vec<Constraint> = (0..rows)
+            .map(|_| Constraint::Ratio(1, rows as u32))
             .collect();
-        let cells = Layout::default()
+        let col_constraints: Vec<Constraint> = (0..cols)
+            .map(|_| Constraint::Ratio(1, cols as u32))
+            .collect();
+
+        let row_rects = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(constraints)
+            .constraints(row_constraints)
             .split(inner);
 
-        for (i, agent) in self.agents.iter().take(count).enumerate() {
-            render_agent_block(frame, agent, cells[i]);
+        for r in 0..rows {
+            let col_rects = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(col_constraints.clone())
+                .split(row_rects[r]);
+
+            for c in 0..cols {
+                let index = r * cols + c;
+                if index < count {
+                    render_agent_block(frame, &self.agents[index], col_rects[c]);
+                }
+            }
         }
     }
 }
@@ -279,7 +312,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                AgentPanelWidget { agents: &[] }.render(f, area);
+                AgentPanelWidget { agents: &[], focused_agent: None }.render(f, area);
             })
             .unwrap();
     }
@@ -304,7 +337,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                AgentPanelWidget { agents: &agents }.render(f, area);
+                AgentPanelWidget { agents: &agents, focused_agent: None }.render(f, area);
             })
             .unwrap();
     }
@@ -349,7 +382,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                AgentPanelWidget { agents: &agents }.render(f, area);
+                AgentPanelWidget { agents: &agents, focused_agent: None }.render(f, area);
             })
             .unwrap();
     }

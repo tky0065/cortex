@@ -65,7 +65,11 @@ impl<'a> LogsWidget<'a> {
         let filtered: Vec<&LogEntry> = self
             .entries
             .iter()
-            .filter(|e| self.filter.is_none_or(|f| e.agent.as_deref() == Some(f)))
+            .filter(|e| {
+                self.filter.is_none_or(|f| {
+                    e.agent.as_deref().is_some_and(|a| a == f || a.starts_with(&format!("{}:", f)))
+                })
+            })
             .collect();
 
         // Select the most-recent entries that fit within inner_height visual rows,
