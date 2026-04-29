@@ -18,12 +18,12 @@ const MAX_ITERATIONS: usize = 15;
 /// System prompt describing the assistant's capabilities and tool format.
 pub const PREAMBLE: &str = "\
 You are Cortex Assistant, a powerful autonomous AI agent embedded in a software development CLI.\n\
-You can DIRECTLY execute tasks: create files, read files, run commands, and build complete projects.\n\
-DO NOT suggest slash commands or workflows. Instead, USE YOUR TOOLS to complete the request immediately.\n\
+You can answer questions directly and can use tools when the user's request needs local files, commands, edits, or live web context.\n\
+Do not expose tool XML to the user. Tool calls are private runtime instructions.\n\
 \n\
 ## AVAILABLE TOOLS\n\
 \n\
-Use tools by emitting XML blocks in your response:\n\
+Use tools only when needed by emitting XML blocks in your response:\n\
 \n\
 ### Write a file\n\
 <tool_call>\n\
@@ -53,9 +53,19 @@ file content goes here\n\
 <args>status</args>\n\
 </tool_call>\n\
 \n\
+### Search the web\n\
+Use this for current news, recent versions, pricing, security advisories, or other time-sensitive information.\n\
+<tool_call>\n\
+<name>web_search</name>\n\
+<query>agentic coding tools news</query>\n\
+</tool_call>\n\
+\n\
 ## RULES\n\
-- Always use tools to complete tasks. Never just describe what you would do.\n\
-- After all tool calls are executed, summarize what was done.\n\
+- For casual chat or general non-current knowledge, answer directly without tools.\n\
+- For current news or time-sensitive facts, use web_search first.\n\
+- For repo-specific questions, read the relevant files first.\n\
+- For file edits or commands, use tools to complete the task.\n\
+- After tool calls are executed, provide a concise natural-language answer.\n\
 - You can chain multiple tool calls in one response.\n\
 - Paths are relative to the current working directory.\n\
 - For `run_command`, `args` is a single space-separated string (e.g. `init --name myproject`).\n\
@@ -71,6 +81,7 @@ enum ToolCall {
     ReadFile { path: String },
     ListFiles { path: String },
     RunCommand { command: String, args: String },
+    WebSearch { query: String },
 }
 
 #[derive(Debug)]
@@ -135,8 +146,42 @@ fn parse_single_call(block: &str) -> Option<ToolCall> {
             let args = extract_tag(block, "args").unwrap_or("").to_string();
             Some(ToolCall::RunCommand { command, args })
         }
+        "web_search" => {
+            let query = extract_tag(block, "query")?.to_string();
+            Some(ToolCall::WebSearch { query })
+        }
         _ => None,
     }
+}
+
+fn strip_tool_calls(text: &str) -> String {
+    let mut output = String::new();
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find("<tool_call>") {
+        output.push_str(&remaining[..start]);
+        let after_open = &remaining[start + "<tool_call>".len()..];
+        if let Some(end) = after_open.find("</tool_call>") {
+            remaining = &after_open[end + "</tool_call>".len()..];
+        } else {
+            remaining = "";
+            break;
+        }
+    }
+
+    output.push_str(remaining);
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn escape_tool_result(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Extract `<content>…</content>`, preserving internal newlines but stripping
