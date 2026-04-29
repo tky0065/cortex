@@ -506,6 +506,29 @@ impl Tui {
             });
         }
 
+        {
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                if let Ok(status) = crate::updater::check_latest().await
+                    && status.update_available
+                {
+                    let _ = tx2.send(TuiEvent::AgentStarted {
+                        agent: "update".to_string(),
+                    });
+                    let _ = tx2.send(TuiEvent::AgentSummary {
+                        agent: "update".to_string(),
+                        summary: format!(
+                            "Update available: {} -> {}. Run /update to install.",
+                            status.current, status.latest
+                        ),
+                    });
+                    let _ = tx2.send(TuiEvent::AgentDone {
+                        agent: "update".to_string(),
+                    });
+                }
+            });
+        }
+
         loop {
             self.terminal.draw(|f| app.draw(f))?;
 

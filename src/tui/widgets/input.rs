@@ -27,6 +27,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "/websearch",
         "Toggle web search for all agents (enable|disable)",
     ),
+    ("/update", "Check for or install Cortex updates"),
     ("/focus", "Focus logs by agent"),
     ("/clear", "Clear visible logs"),
     ("/logs", "Toggle log panel"),
@@ -336,6 +337,7 @@ const REQUIRES_ARGS: &[&str] = &[
     "/focus",
     "/apikey",
     "/websearch",
+    "/update",
     "/model",
     "/provider",
 ];

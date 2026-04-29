@@ -9,25 +9,26 @@ Cortex is an agentic CLI written in Rust that simulates a full software developm
 ## Table of Contents
 
 1. [Installation](#1-installation)
-2. [Quick Start](#2-quick-start)
-3. [Configuration](#3-configuration)
-4. [Usage Modes](#4-usage-modes)
-   - [REPL (interactive)](#41-repl-interactive)
-   - [One-shot CLI](#42-one-shot-cli)
-   - [Resume an interrupted run](#43-resume-an-interrupted-run)
-5. [Web Search](#5-web-search)
-6. [Workflows](#6-workflows)
-   - [dev](#61-dev--software-development)
-   - [marketing](#62-marketing--content-campaign)
-   - [prospecting](#63-prospecting--freelance-outreach)
-   - [code-review](#64-code-review--code-audit)
-7. [Providers & Models](#7-providers--models)
-8. [Architecture Internals](#8-architecture-internals)
-9. [Security & Sandboxing](#9-security--sandboxing)
-10. [Verbose Logging](#10-verbose-logging)
-11. [Running Tests](#11-running-tests)
-12. [Release Process](#12-release-process)
-13. [Output Structure](#13-output-structure)
+2. [Updating](#2-updating)
+3. [Quick Start](#3-quick-start)
+4. [Configuration](#4-configuration)
+5. [Usage Modes](#5-usage-modes)
+   - [REPL (interactive)](#51-repl-interactive)
+   - [One-shot CLI](#52-one-shot-cli)
+   - [Resume an interrupted run](#53-resume-an-interrupted-run)
+6. [Web Search](#6-web-search)
+7. [Workflows](#7-workflows)
+   - [dev](#71-dev--software-development)
+   - [marketing](#72-marketing--content-campaign)
+   - [prospecting](#73-prospecting--freelance-outreach)
+   - [code-review](#74-code-review--code-audit)
+8. [Providers & Models](#8-providers--models)
+9. [Architecture Internals](#9-architecture-internals)
+10. [Security & Sandboxing](#10-security--sandboxing)
+11. [Verbose Logging](#11-verbose-logging)
+12. [Running Tests](#12-running-tests)
+13. [Release Process](#13-release-process)
+14. [Output Structure](#14-output-structure)
 
 ---
 
@@ -80,7 +81,35 @@ cargo build --release
 
 ---
 
-## 2. Quick Start
+## 2. Updating
+
+Cortex checks for a newer GitHub Release when the TUI starts. If an update exists, it prints a non-blocking log message:
+
+```text
+Update available: 0.1.2 -> v0.1.3. Run /update to install.
+```
+
+Update from the terminal:
+
+```bash
+cortex update --check
+cortex update
+cortex update --version v0.1.3
+```
+
+Update from the REPL:
+
+```text
+/update check
+/update
+/update v0.1.3
+```
+
+The updater downloads the matching GitHub Release archive, verifies `SHA256SUMS`, and replaces the current `cortex` binary. On Windows, restart the terminal after updating.
+
+---
+
+## 3. Quick Start
 
 ```bash
 # Launch the interactive REPL
@@ -97,7 +126,7 @@ The generated project appears under `./cortex-output/<slugified-idea>/`.
 
 ---
 
-## 3. Configuration
+## 4. Configuration
 
 Cortex reads `~/.cortex/config.toml` at startup. If the file does not exist it is **created automatically** with sensible defaults.
 
@@ -174,9 +203,9 @@ export WEB_SEARCH_API_KEY="BSA..."
 
 ---
 
-## 4. Usage Modes
+## 5. Usage Modes
 
-### 4.1 REPL (interactive)
+### 5.1 REPL (interactive)
 
 ```bash
 cortex
@@ -215,7 +244,7 @@ The workflow name can be omitted (defaults to `dev`):
 /start "build a chat app"
 ```
 
-### 4.2 One-shot CLI
+### 5.2 One-shot CLI
 
 ```bash
 # Fully autonomous (no interactive pauses)
@@ -234,7 +263,7 @@ cortex run --workflow code-review ./my-project
 cortex -v start "build a todo app" --auto
 ```
 
-### 4.3 Resume an interrupted run
+### 5.3 Resume an interrupted run
 
 ```bash
 # CLI
@@ -248,7 +277,7 @@ Cortex re-runs the dev workflow with a prompt that asks the agents to continue f
 
 ---
 
-## 5. Web Search
+## 6. Web Search
 
 When enabled, every agent automatically enriches its prompt with live web search results before calling the LLM. This lets agents use up-to-date information: latest library versions, recent CVEs, current pricing, new best practices, etc.
 
@@ -303,9 +332,9 @@ If web search is enabled but no API key is set (or the key is empty), the agent 
 
 ---
 
-## 6. Workflows
+## 7. Workflows
 
-### 6.1 `dev` — Software Development
+### 7.1 `dev` — Software Development
 
 The flagship workflow. Simulates a complete dev team from idea to deployable repo.
 
@@ -349,7 +378,7 @@ Output: ./cortex-output/<project-name>/
 
 ---
 
-### 6.2 `marketing` — Content Campaign
+### 7.2 `marketing` — Content Campaign
 
 Produces a full marketing campaign from a product/service description.
 
@@ -375,7 +404,7 @@ Produces a full marketing campaign from a product/service description.
 
 ---
 
-### 6.3 `prospecting` — Freelance Outreach
+### 7.3 `prospecting` — Freelance Outreach
 
 Automates the identification and outreach process for freelance prospects.
 
@@ -406,7 +435,7 @@ rate       = "€600/day"
 
 ---
 
-### 6.4 `code-review` — Code Audit
+### 7.4 `code-review` — Code Audit
 
 Runs a multi-angle audit on an existing codebase.
 
@@ -437,7 +466,7 @@ Files larger than 8 KB are automatically truncated to protect context windows.
 
 ---
 
-## 7. Providers & Models
+## 8. Providers & Models
 
 ### Role → Model mapping
 
@@ -470,7 +499,7 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 
 ---
 
-## 8. Architecture Internals
+## 9. Architecture Internals
 
 ```
 main.rs
@@ -531,7 +560,7 @@ The REPL's `/continue` sends `()` to `resume_tx`, unblocking the channel receive
 
 ---
 
-## 9. Security & Sandboxing
+## 10. Security & Sandboxing
 
 ### Filesystem sandbox
 All file I/O is mediated through `FileSystem` (`src/tools/filesystem.rs`).
@@ -554,7 +583,7 @@ API keys can be read from environment variables or stored locally in `~/.cortex/
 
 ---
 
-## 10. Verbose Logging
+## 11. Verbose Logging
 
 Add `-v` to any command to write full agent I/O to `cortex.log` in the working directory:
 
@@ -567,10 +596,10 @@ The log file is appended (not overwritten) and each session is marked with a Uni
 
 ---
 
-## 11. Running Tests
+## 12. Running Tests
 
 ```bash
-cargo test                          # all 64 tests
+cargo test                          # all tests
 cargo test <test_name>              # single test, e.g. cargo test parse_model_with_prefix
 cargo clippy -- -D warnings         # lint (warnings treated as errors)
 cargo fmt                           # format
@@ -585,12 +614,13 @@ Test coverage areas:
 | `tools::filesystem` | path traversal, read/write roundtrip |
 | `tools::terminal` | allowlist enforcement |
 | `tools::web_search` | empty query, offline stub |
+| `updater` | version comparison, archive naming, checksum parsing |
 | `orchestrator` | event ordering, parallel delivery, lifecycle |
 | `tui::widgets` | headless rendering (pipeline, agent panel, logs, input) |
 
 ---
 
-## 12. Release Process
+## 13. Release Process
 
 Cortex releases are published through GitHub Releases.
 
@@ -616,7 +646,7 @@ The `.github/workflows/release.yml` workflow builds macOS, Linux, and Windows bi
 
 ---
 
-## 13. Output Structure
+## 14. Output Structure
 
 All output lands under `./cortex-output/` relative to the directory where `cortex` was run.
 

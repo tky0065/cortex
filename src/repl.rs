@@ -156,6 +156,7 @@ pub async fn dispatch(
                 "  /provider [<name>]            — show or change the default provider",
                 "  /apikey <provider> <key>      — set an API key (openrouter/groq/together/web_search)",
                 "  /websearch [enable|disable]   — toggle web search context injection for all agents",
+                "  /update [check|<version>]      — check for or install Cortex updates",
                 "  /focus <agent>                — show only logs for one agent",
                 "  /clear                        — clear visible logs",
                 "  /logs                         — toggle log panel focus",
@@ -333,6 +334,10 @@ pub async fn dispatch(
                     }
                 }
             }
+        }
+
+        "/update" => {
+            handle_update_command(rest, tx).await;
         }
 
         "/apikey" => {
@@ -747,6 +752,168 @@ pub async fn dispatch(
 
 fn send(tx: &TuiSender, event: TuiEvent) {
     let _ = tx.send(event);
+}
+
+async fn handle_update_command(rest: &str, tx: &TuiSender) {
+    send(
+        tx,
+        TuiEvent::AgentStarted {
+            agent: "update".to_string(),
+        },
+    );
+
+    let arg = rest.trim();
+    if arg.is_empty() || arg == "install" {
+        match crate::updater::check_latest().await {
+            Ok(status) if !status.update_available => {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "update".to_string(),
+                        chunk: format!("  cortex is up to date ({})", status.current),
+                    },
+                );
+                send(
+                    tx,
+                    TuiEvent::AgentDone {
+                        agent: "update".to_string(),
+                    },
+                );
+            }
+            Ok(status) => match crate::updater::update(Some(&status.latest)).await {
+                Ok(outcome) => {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "update".to_string(),
+                            chunk: format!(
+                                "  updated cortex {} -> {} at {}",
+                                outcome.previous,
+                                outcome.installed,
+                                outcome.binary_path.display()
+                            ),
+                        },
+                    );
+                    if outcome.restart_required {
+                        send(
+                            tx,
+                            TuiEvent::TokenChunk {
+                                agent: "update".to_string(),
+                                chunk: "  restart your terminal to use the new version".to_string(),
+                            },
+                        );
+                    }
+                    send(
+                        tx,
+                        TuiEvent::AgentDone {
+                            agent: "update".to_string(),
+                        },
+                    );
+                }
+                Err(e) => {
+                    send(
+                        tx,
+                        TuiEvent::Error {
+                            agent: "update".to_string(),
+                            message: e.to_string(),
+                        },
+                    );
+                }
+            },
+            Err(e) => {
+                send(
+                    tx,
+                    TuiEvent::Error {
+                        agent: "update".to_string(),
+                        message: e.to_string(),
+                    },
+                );
+            }
+        }
+        return;
+    }
+
+    if arg == "check" || arg == "--check" {
+        match crate::updater::check_latest().await {
+            Ok(status) if status.update_available => {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "update".to_string(),
+                        chunk: format!(
+                            "  update available: {} -> {}. Run /update to install.",
+                            status.current, status.latest
+                        ),
+                    },
+                );
+                send(
+                    tx,
+                    TuiEvent::AgentDone {
+                        agent: "update".to_string(),
+                    },
+                );
+            }
+            Ok(status) => {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "update".to_string(),
+                        chunk: format!("  cortex is up to date ({})", status.current),
+                    },
+                );
+                send(
+                    tx,
+                    TuiEvent::AgentDone {
+                        agent: "update".to_string(),
+                    },
+                );
+            }
+            Err(e) => {
+                send(
+                    tx,
+                    TuiEvent::Error {
+                        agent: "update".to_string(),
+                        message: e.to_string(),
+                    },
+                );
+            }
+        }
+        return;
+    }
+
+    let version = arg.trim_start_matches("--version").trim();
+    let version = if version.is_empty() { arg } else { version };
+    match crate::updater::update(Some(version)).await {
+        Ok(outcome) => {
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "update".to_string(),
+                    chunk: format!(
+                        "  updated cortex {} -> {} at {}",
+                        outcome.previous,
+                        outcome.installed,
+                        outcome.binary_path.display()
+                    ),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::AgentDone {
+                    agent: "update".to_string(),
+                },
+            );
+        }
+        Err(e) => {
+            send(
+                tx,
+                TuiEvent::Error {
+                    agent: "update".to_string(),
+                    message: e.to_string(),
+                },
+            );
+        }
+    }
 }
 
 /// Parses `dev "build a todo app"` or `"build a todo app"` (defaults to dev).

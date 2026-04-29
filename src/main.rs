@@ -6,6 +6,7 @@ mod providers;
 mod repl;
 mod tools;
 mod tui;
+mod updater;
 mod workflows;
 
 use std::sync::Arc;
@@ -64,6 +65,15 @@ enum Commands {
         /// Path to a previously started cortex project directory
         project_dir: std::path::PathBuf,
     },
+    /// Check for or install Cortex updates from GitHub Releases
+    Update {
+        /// Only check whether an update is available
+        #[arg(long)]
+        check: bool,
+        /// Install a specific release tag, e.g. v0.1.3
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -115,6 +125,40 @@ async fn main() -> Result<()> {
                 project_dir.display()
             );
             orch.run_with_opts(prompt, true, verbose, None).await?;
+        }
+        Some(Commands::Update { check, version }) => {
+            if check {
+                let status = updater::check_latest().await?;
+                if status.update_available {
+                    println!(
+                        "Update available: {} -> {}. Run `cortex update` to install.",
+                        status.current, status.latest
+                    );
+                } else {
+                    println!("Cortex is up to date ({})", status.current);
+                }
+            } else {
+                let install_version = if version.is_none() {
+                    let status = updater::check_latest().await?;
+                    if !status.update_available {
+                        println!("Cortex is up to date ({})", status.current);
+                        return Ok(());
+                    }
+                    Some(status.latest)
+                } else {
+                    version
+                };
+                let outcome = updater::update(install_version.as_deref()).await?;
+                println!(
+                    "Updated cortex {} -> {} at {}",
+                    outcome.previous,
+                    outcome.installed,
+                    outcome.binary_path.display()
+                );
+                if outcome.restart_required {
+                    println!("Restart your terminal to use the new version.");
+                }
+            }
         }
     }
 
