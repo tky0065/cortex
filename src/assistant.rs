@@ -200,7 +200,11 @@ fn extract_content_tag(block: &str) -> Option<String> {
 // Tool executor
 // ---------------------------------------------------------------------------
 
-async fn execute_tool(call: &ToolCall, sandbox: &FileSystem) -> ToolResult {
+async fn execute_tool(
+    call: &ToolCall,
+    sandbox: &FileSystem,
+    config: Arc<RwLock<Config>>,
+) -> ToolResult {
     match call {
         ToolCall::WriteFile { path, content } => {
             let display = format!("write_file({})", path);
@@ -291,6 +295,47 @@ async fn execute_tool(call: &ToolCall, sandbox: &FileSystem) -> ToolResult {
                 },
             }
         }
+        ToolCall::WebSearch { query } => {
+            let display = format!("web_search({})", query);
+            let config = config.read().await;
+            if !config.tools.web_search_enabled {
+                return ToolResult {
+                    call: display,
+                    output: "error: web search is disabled. Enable it with /websearch enable and configure a Brave Search API key with /apikey web_search <key>.".to_string(),
+                    success: false,
+                };
+            }
+            if config.api_keys.web_search.is_none() {
+                return ToolResult {
+                    call: display,
+                    output: "error: web search is enabled but no Brave Search API key is configured. Use /apikey web_search <key>.".to_string(),
+                    success: false,
+                };
+            }
+
+            let context = crate::tools::web_search::fetch_context(query, &config).await;
+            let success = !context.trim().is_empty();
+            ToolResult {
+                call: display,
+                output: if success {
+                    context
+                } else {
+                    "error: web search returned no results.".to_string()
+                },
+                success,
+            }
+        }
+    }
+}
+
+fn describe_tool(call: &ToolCall) -> String {
+    match call {
+        ToolCall::WriteFile { path, .. } => format!("writing {}", path),
+        ToolCall::ReadFile { path } => format!("reading {}", path),
+        ToolCall::ListFiles { path } => format!("listing {}", path),
+        ToolCall::RunCommand { command, args } if args.is_empty() => format!("running {}", command),
+        ToolCall::RunCommand { command, args } => format!("running {} {}", command, args),
+        ToolCall::WebSearch { query } => format!("searching web for {}", query),
     }
 }
 
@@ -310,8 +355,6 @@ pub async fn run(
     tx: &TuiSender,
     config: Arc<RwLock<Config>>,
 ) -> Result<String> {
-    let _ = config; // may be used in future for sandbox config
-
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let sandbox = FileSystem::new(&cwd);
 
@@ -343,30 +386,47 @@ pub async fn run(
         )
         .await?;
 
-        // Stream the LLM reply to the TUI
-        for line in reply.lines() {
+        // ── Parse tool calls ─────────────────────────────────────────────────
+        let calls = parse_tool_calls(&reply);
+        if calls.is_empty() {
+            let visible = strip_tool_calls(&reply);
+            if !visible.is_empty() {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "assistant".to_string(),
+                        chunk: visible.clone(),
+                    },
+                );
+            }
+            final_reply = visible;
+            // No tool calls → task is done
+            break;
+        }
+
+        let visible = strip_tool_calls(&reply);
+        if !visible.is_empty() {
             send(
                 tx,
                 TuiEvent::TokenChunk {
                     agent: "assistant".to_string(),
-                    chunk: line.to_string(),
+                    chunk: visible,
                 },
             );
-        }
-
-        final_reply = reply.clone();
-
-        // ── Parse tool calls ─────────────────────────────────────────────────
-        let calls = parse_tool_calls(&reply);
-        if calls.is_empty() {
-            // No tool calls → task is done
-            break;
         }
 
         // ── Execute tools ─────────────────────────────────────────────────────
         let mut results_block = String::new();
         for call in &calls {
-            let result = execute_tool(call, &sandbox).await;
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "assistant".to_string(),
+                    chunk: format!("{}...", describe_tool(call)),
+                },
+            );
+
+            let result = execute_tool(call, &sandbox, Arc::clone(&config)).await;
 
             let status_icon = if result.success { "✓" } else { "✗" };
             send(
@@ -380,25 +440,9 @@ pub async fn run(
             // Append to results block for next LLM turn
             results_block.push_str(&format!(
                 "<tool_result>\n<call>{}</call>\n<output>{}</output>\n</tool_result>\n",
-                result.call, result.output
+                escape_tool_result(&result.call),
+                escape_tool_result(&result.output)
             ));
-
-            // Show first 3 lines of output as a log hint
-            let preview: String = result
-                .output
-                .lines()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(" | ");
-            if !preview.is_empty() {
-                send(
-                    tx,
-                    TuiEvent::TokenChunk {
-                        agent: "assistant".to_string(),
-                        chunk: format!("    → {}", preview),
-                    },
-                );
-            }
         }
 
         // ── Prepare next turn: push assistant reply + tool results ────────────
@@ -406,7 +450,7 @@ pub async fn run(
         conv_history.push(rig::completion::Message::assistant(&reply));
 
         current_message = format!(
-            "Here are the tool results:\n{}\nContinue the task or summarize if complete.",
+            "Here are the tool results:\n{}\nContinue the task if more tools are needed. Otherwise, provide the final answer in natural language. Do not include tool_call XML.",
             results_block
         );
     }
@@ -474,6 +518,47 @@ Done."#;
         } else {
             panic!("Expected RunCommand");
         }
+    }
+
+    #[test]
+    fn parses_web_search_call() {
+        let text = r#"
+<tool_call>
+<name>web_search</name>
+<query>agentic coding tools news</query>
+</tool_call>
+"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        if let ToolCall::WebSearch { query } = &calls[0] {
+            assert_eq!(query, "agentic coding tools news");
+        } else {
+            panic!("Expected WebSearch");
+        }
+    }
+
+    #[test]
+    fn strips_tool_calls_from_visible_text() {
+        let text = r#"I'll inspect that.
+<tool_call><name>read_file</name><path>AGENTS.md</path></tool_call>
+Then I will summarize."#;
+
+        let visible = strip_tool_calls(text);
+        assert_eq!(visible, "I'll inspect that.\nThen I will summarize.");
+        assert!(!visible.contains("<tool_call>"));
+        assert!(!visible.contains("read_file"));
+    }
+
+    #[test]
+    fn strips_only_tool_call_when_no_visible_text() {
+        let text = "<tool_call><name>read_file</name><path>AGENTS.md</path></tool_call>";
+        assert_eq!(strip_tool_calls(text), "");
+    }
+
+    #[test]
+    fn escapes_tool_results_for_feedback() {
+        let escaped = escape_tool_result("<name>read_file</name> & data");
+        assert_eq!(escaped, "&lt;name&gt;read_file&lt;/name&gt; &amp; data");
     }
 
     #[test]
