@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cortex — Documentation</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="styles.css?v=2" />
+<link rel="stylesheet" href="docs.css?v=2" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <span class="dot"></span>
+      <span>cortex</span>
+      <span style="color: var(--fg-dim); font-weight: 400; margin-left: 6px;">docs</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="docs.html" style="color: var(--fg);">Docs</a>
+    </div>
+    <a class="nav-cta" href="https://github.com/tky0065/cortex" target="_blank" rel="noopener">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<div id="docs-mount"></div>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useRef, useMemo } = React;
+
+const SECTIONS = [
+  { group: "Get started", items: [
+    { id: "introduction", label: "Introduction" },
+    { id: "installation", label: "Installation" },
+    { id: "quick-start", label: "Quick start" },
+  ]},
+  { group: "Configuration", items: [
+    { id: "config", label: "Config file" },
+    { id: "models", label: "Model strings" },
+    { id: "api-keys", label: "API keys" },
+  ]},
+  { group: "Usage", items: [
+    { id: "repl", label: "REPL commands" },
+    { id: "cli", label: "One-shot CLI" },
+    { id: "resume", label: "Resuming a run" },
+    { id: "web-search", label: "Web search" },
+  ]},
+  { group: "Workflows", items: [
+    { id: "wf-dev", label: "dev" },
+    { id: "wf-marketing", label: "marketing" },
+    { id: "wf-prospecting", label: "prospecting" },
+    { id: "wf-code-review", label: "code-review" },
+  ]},
+  { group: "Reference", items: [
+    { id: "providers-ref", label: "Providers" },
+    { id: "architecture-ref", label: "Architecture" },
+    { id: "security", label: "Security" },
+    { id: "output", label: "Output structure" },
+    { id: "build", label: "Build from source" },
+  ]},
+];
+
+function CopyLine({ cmd }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className={`copy-line ${copied ? "copied" : ""}`} onClick={() => {
+      navigator.clipboard?.writeText(cmd);
+      setCopied(true); setTimeout(() => setCopied(false), 1200);
+    }}>
+      <span className="prompt">$</span>
+      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cmd}</span>
+      <span className="label">{copied ? "Copied" : "Copy"}</span>
+    </div>
+  );
+}
+
+function Sidebar({ active, query, onQuery }) {
+  return (
+    <aside className="docs-sidebar">
+      <input
+        className="docs-search"
+        placeholder="Search docs…"
+        value={query}
+        onChange={(e) => onQuery(e.target.value)}
+      />
+      {SECTIONS.map((g) => {
+        const items = g.items.filter((it) =>
+          !query || it.label.toLowerCase().includes(query.toLowerCase()) || g.group.toLowerCase().includes(query.toLowerCase())
+        );
+        if (!items.length) return null;
+        return (
+          <div className="docs-sidebar__group" key={g.group}>
+            <div className="docs-sidebar__title">{g.group}</div>
+            <ul className="docs-sidebar__list">
+              {items.map((it) => (
+                <li key={it.id}>
+                  <a href={`#${it.id}`} className={active === it.id ? "is-active" : ""}>{it.label}</a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </aside>
+  );
+}
+
+function TOC({ active }) {
+  const allItems = SECTIONS.flatMap((g) => g.items);
+  return (
+    <aside className="docs-toc">
+      <div className="docs-toc__title">On this page</div>
+      <ul className="docs-toc__list">
+        {allItems.slice(0, 10).map((it) => (
+          <li key={it.id}>
+            <a href={`#${it.id}`} className={active === it.id ? "is-active" : ""}>{it.label}</a>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
+}
+
+function Content() {
+  return (
+    <main className="docs-content">
+      <span className="docs-eyebrow">Documentation · v0.1.0</span>
+      <h1>Cortex</h1>
+      <p style={{ fontSize: 18, color: "var(--fg)" }}>An agentic CLI written in Rust that simulates a full software-development company. Give it a natural-language idea; it orchestrates specialized AI agents to produce a complete, deployable project.</p>
+
+      <section id="introduction" className="docs-section">
+        <h2>Introduction</h2>
+        <p>Cortex runs like a REPL by default — type <code>cortex</code> to launch the TUI. Inside, you give it an idea via a slash command and watch six specialized agents take it from brief to deployable repo: <strong>CEO → PM → Tech Lead → Developer ×N → QA → DevOps</strong>.</p>
+        <p>Each agent reads only the files it needs from disk — never the full transcript. This <em>file-as-memory</em> pattern keeps context windows bounded even on multi-hour runs.</p>
+      </section>
+
+      <section id="installation" className="docs-section">
+        <h2>Installation</h2>
+        <h3>macOS &amp; Linux</h3>
+        <CopyLine cmd="curl -fsSL https://raw.githubusercontent.com/tky0065/cortex/main/install.sh | sh" />
+        <p>Downloads the right binary from GitHub Releases, verifies its SHA-256 checksum, and installs to <code>~/.local/bin/cortex</code>. If that directory isn't on your <code>PATH</code>:</p>
+        <CopyLine cmd='export PATH="$HOME/.local/bin:$PATH"' />
+
+        <h3>Windows</h3>
+        <CopyLine cmd='powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tky0065/cortex/main/install.ps1 | iex"' />
+        <p>Installs <code>cortex.exe</code> to <code>%USERPROFILE%\.cortex\bin</code> and adds that directory to your user <code>PATH</code> if needed.</p>
+
+        <h3>Runtime prerequisites</h3>
+        <table>
+          <thead><tr><th>Requirement</th><th>When needed</th></tr></thead>
+          <tbody>
+            <tr><td>Ollama</td><td>Default local provider</td></tr>
+            <tr><td>OpenRouter / Groq / Together</td><td>Remote model providers</td></tr>
+            <tr><td>Brave Search API</td><td>Optional web search context</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="quick-start" className="docs-section">
+        <h2>Quick start</h2>
+        <CopyLine cmd="cortex" />
+        <p>Inside the REPL:</p>
+        <CopyLine cmd='/start dev "build a REST API for a todo-list app in Rust"' />
+        <p>Or one-shot from the terminal:</p>
+        <CopyLine cmd='cortex start "build a CLI password manager in Go" --auto --workflow dev' />
+        <p>The generated project lands at <code>./cortex-output/&lt;slugified-idea&gt;/</code>.</p>
+      </section>
+
+      <section id="config" className="docs-section">
+        <h2>Config file</h2>
+        <p>Cortex reads <code>~/.cortex/config.toml</code> at startup. If the file doesn't exist it's <strong>created automatically</strong> with sensible defaults.</p>
+        <pre><code>{`[provider]
+default = "ollama"
+
+[models]
+ceo       = "ollama/qwen2.5-coder:32b"
+pm        = "ollama/qwen2.5-coder:32b"
+tech_lead = "ollama/qwen2.5-coder:32b"
+developer = "ollama/qwen2.5-coder:32b"
+qa        = "ollama/qwen2.5-coder:14b"
+devops    = "ollama/qwen2.5-coder:14b"
+
+[limits]
+max_qa_iterations    = 5
+max_tokens_per_call  = 8192
+max_parallel_workers = 4
+
+[tools]
+web_search_enabled = false
+
+[api_keys]
+# openrouter = "sk-or-..."
+# groq       = "gsk_..."
+# together   = "tg-..."
+# web_search = "BSA..."`}</code></pre>
+      </section>
+
+      <section id="models" className="docs-section">
+        <h2>Model strings</h2>
+        <p>Every model value follows the format <code>"&lt;provider&gt;/&lt;model-name&gt;"</code>. Supported provider prefixes:</p>
+        <table>
+          <thead><tr><th>Prefix</th><th>Backend</th><th>Env var</th></tr></thead>
+          <tbody>
+            <tr><td>ollama/</td><td>Local Ollama instance</td><td>—</td></tr>
+            <tr><td>openrouter/</td><td>OpenRouter API</td><td>OPENROUTER_API_KEY</td></tr>
+            <tr><td>groq/</td><td>Groq API</td><td>GROQ_API_KEY</td></tr>
+            <tr><td>together/</td><td>Together AI</td><td>TOGETHER_API_KEY</td></tr>
+          </tbody>
+        </table>
+        <p>If no prefix is given, <code>ollama</code> is assumed. You can mix providers per role:</p>
+        <pre><code>{`[models]
+ceo       = "openrouter/anthropic/claude-3-opus"
+developer = "ollama/qwen2.5-coder:32b"
+qa        = "groq/llama3-70b-8192"`}</code></pre>
+      </section>
+
+      <section id="api-keys" className="docs-section">
+        <h2>API keys</h2>
+        <p>Keys can be set two ways:</p>
+        <h3>Option A — REPL command (persisted)</h3>
+        <pre><code>{`/apikey openrouter sk-or-...
+/apikey groq       gsk_...
+/apikey together   tg-...
+/apikey web_search BSA...`}</code></pre>
+        <h3>Option B — environment variables (session-only)</h3>
+        <pre><code>{`export OPENROUTER_API_KEY="sk-or-..."
+export GROQ_API_KEY="gsk_..."
+export TOGETHER_API_KEY="tg-..."
+export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
+      </section>
+
+      <section id="repl" className="docs-section">
+        <h2>REPL commands</h2>
+        <p>Launch with <code>cortex</code>. A full-screen TUI opens; type slash commands in the input bar at the bottom.</p>
+        <table>
+          <thead><tr><th>Command</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>/start &lt;workflow&gt; "&lt;idea&gt;"</td><td>Launch a workflow</td></tr>
+            <tr><td>/run &lt;workflow&gt; "&lt;prompt&gt;"</td><td>Alias for /start</td></tr>
+            <tr><td>/resume &lt;dir&gt;</td><td>Resume an interrupted workflow</td></tr>
+            <tr><td>/status</td><td>Show whether a workflow is running</td></tr>
+            <tr><td>/abort</td><td>Cancel at the next checkpoint</td></tr>
+            <tr><td>/continue</td><td>Resume an interactive pause</td></tr>
+            <tr><td>/config</td><td>Display active config values</td></tr>
+            <tr><td>/model [&lt;role&gt; &lt;model&gt;]</td><td>Show or change a role's model</td></tr>
+            <tr><td>/provider [&lt;name&gt;]</td><td>Show or change the default provider</td></tr>
+            <tr><td>/apikey &lt;provider&gt; &lt;key&gt;</td><td>Set an API key</td></tr>
+            <tr><td>/websearch [enable|disable]</td><td>Toggle web search injection</td></tr>
+            <tr><td>/logs</td><td>Toggle log panel focus</td></tr>
+            <tr><td>/quit</td><td>Exit Cortex</td></tr>
+          </tbody>
+        </table>
+        <p>The workflow name can be omitted (defaults to <code>dev</code>):</p>
+        <CopyLine cmd='/start "build a chat app"' />
+      </section>
+
+      <section id="cli" className="docs-section">
+        <h2>One-shot CLI</h2>
+        <p>Skip the REPL and pass the prompt directly:</p>
+        <pre><code>{`# Fully autonomous (no interactive pauses)
+cortex start "build a Discord bot in Python" --auto --workflow dev
+
+# Interactive (pauses after specs + architecture)
+cortex start "build a REST API" --workflow dev
+
+# Marketing workflow
+cortex start "launch campaign for my SaaS" --auto --workflow marketing
+
+# Code review
+cortex run --workflow code-review ./my-project
+
+# Verbose (writes all agent I/O to cortex.log)
+cortex -v start "build a todo app" --auto`}</code></pre>
+      </section>
+
+      <section id="resume" className="docs-section">
+        <h2>Resuming a run</h2>
+        <CopyLine cmd="cortex resume ./cortex-output/build-a-todo-app" />
+        <p>Cortex re-runs the dev workflow with a prompt that asks the agents to continue from existing files. Best used when a run was aborted mid-way.</p>
+      </section>
+
+      <section id="web-search" className="docs-section">
+        <h2>Web search</h2>
+        <p>When enabled, every agent enriches its prompt with live web-search results before calling the LLM — useful for latest library versions, recent CVEs, current pricing, etc.</p>
+        <p>Cortex uses the Brave Search API (free tier: 2,000 queries/month). Cortex extracts a query from the first ~200 characters of the agent's input, fetches the top 5 results, and appends them as a Markdown block.</p>
+        <h3>Setup</h3>
+        <pre><code>{`/apikey web_search <your-brave-key>
+/websearch enable`}</code></pre>
+        <p>Or in <code>config.toml</code>:</p>
+        <pre><code>{`[tools]
+web_search_enabled = true
+
+[api_keys]
+web_search = "BSA..."`}</code></pre>
+        <blockquote>If web search is enabled but no key is set, agents run normally without web context — no errors are raised.</blockquote>
+      </section>
+
+      <section id="wf-dev" className="docs-section">
+        <h2>Workflow: <span className="mono">dev</span></h2>
+        <p>The flagship workflow. Simulates a complete dev team from idea to deployable repo.</p>
+        <pre><code>{`User idea
+   │
+   ▼
+[CEO]          → executive brief
+   │
+   ▼
+[PM]           → specs.md     ── interactive pause ──
+   │
+   ▼
+[Tech Lead]    → architecture.md  ── interactive pause ──
+   │
+   ▼
+[Developer ×N] → src/*  (parallel, semaphore-bounded)
+   │           ── interactive pause ──
+   ▼
+[QA ↔ Dev]    QA reads files → report; Dev fixes flagged files (loop, max 5×)
+   │
+   ▼
+[DevOps]       → Dockerfile, docker-compose.yml, git commit`}</code></pre>
+        <h3>Outputs</h3>
+        <table>
+          <thead><tr><th>File</th><th>Producer</th></tr></thead>
+          <tbody>
+            <tr><td>specs.md</td><td>PM</td></tr>
+            <tr><td>architecture.md</td><td>Tech Lead</td></tr>
+            <tr><td>src/*</td><td>Developer workers</td></tr>
+            <tr><td>Dockerfile</td><td>DevOps</td></tr>
+            <tr><td>docker-compose.yml</td><td>DevOps</td></tr>
+          </tbody>
+        </table>
+        <p><strong>QA loop:</strong> QA approves by including <code>RECOMMENDATION: APPROVE</code> in its report. The loop is hard-capped at <code>max_qa_iterations</code> (default 5) regardless.</p>
+      </section>
+
+      <section id="wf-marketing" className="docs-section">
+        <h2>Workflow: <span className="mono">marketing</span></h2>
+        <p>Produces a full marketing campaign from a product description.</p>
+        <pre><code>{`[Strategist]   → strategy.md  (positioning, audience, messaging)
+       │
+       ├─── [Copywriter]  → posts.md   (blog, social, ads)  ─┐
+       │                                                     │ (parallel)
+       └─── [Analyst]     → metrics.md (KPIs)              ──┘
+                │
+                ▼
+       [Social Media Mgr] → calendar.md`}</code></pre>
+        <p>Output directory: <code>./cortex-output/marketing-campaign/</code></p>
+      </section>
+
+      <section id="wf-prospecting" className="docs-section">
+        <h2>Workflow: <span className="mono">prospecting</span></h2>
+        <blockquote>RGPD: only public data is used. Email send is dry-run by default.</blockquote>
+        <pre><code>{`[Researcher]      → prospects.md
+       │
+       ├─── [Profiler ×N]   → profiles/<name>.md  ─┐
+       │                                            │ (parallel)
+       └─── [Copywriter ×N] → emails/<name>.md   ──┘
+                │
+                ▼
+       [Outreach Mgr]  → outreach_report.md`}</code></pre>
+        <p>Optional <code>profile.toml</code> in the project directory injects your background into the researcher's prompt:</p>
+        <pre><code>{`name       = "Alice Martin"
+stack      = ["Rust", "TypeScript", "Kubernetes"]
+experience = "5 years backend, 2 years DevOps"
+rate       = "€600/day"`}</code></pre>
+      </section>
+
+      <section id="wf-code-review" className="docs-section">
+        <h2>Workflow: <span className="mono">code-review</span></h2>
+        <p>Runs a multi-angle audit on an existing codebase.</p>
+        <CopyLine cmd="cortex run --workflow code-review ./my-project" />
+        <pre><code>{`[Reviewer]      → review_notes.md
+       │
+       ├─── [Security]    → security findings ─┐
+       │                                        │ (parallel)
+       └─── [Performance] → perf findings    ──┘
+                │
+                ▼
+       [Reporter]  → code_review_report.md`}</code></pre>
+        <p>Scanned: <code>.rs .ts .tsx .js .jsx .py .go .java .kt .swift .c .cpp .h</code></p>
+        <p>Skipped: <code>target/  node_modules/  .git/  dist/  build/  .next/</code></p>
+        <p>Files larger than 8 KB are auto-truncated to protect context windows.</p>
+      </section>
+
+      <section id="providers-ref" className="docs-section">
+        <h2>Providers</h2>
+        <p>The <code>providers::complete(model_str, preamble, prompt)</code> function parses the prefix of the model string and selects the correct rig client:</p>
+        <pre><code>{`"ollama/qwen2.5-coder:32b"   → rig_ollama::Client      (no API key)
+"openrouter/gpt-4o"           → rig_openrouter::Client  (OPENROUTER_API_KEY)
+"groq/llama3-70b-8192"        → groq::Client            (GROQ_API_KEY)
+"together/mistralai/Mixtral"  → together::Client        (TOGETHER_API_KEY)`}</code></pre>
+        <h3>Role → model fallbacks</h3>
+        <p>Roles without a dedicated config key fall back to a related one:</p>
+        <table>
+          <thead><tr><th>Role</th><th>Falls back to</th></tr></thead>
+          <tbody>
+            <tr><td>reviewer / security / performance / reporter</td><td>models.qa</td></tr>
+            <tr><td>strategist / copywriter / analyst / social_media_manager</td><td>models.developer</td></tr>
+            <tr><td>researcher / profiler / outreach_manager</td><td>models.developer</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="architecture-ref" className="docs-section">
+        <h2>Architecture</h2>
+        <pre><code>{`main.rs
+ └── Orchestrator
+       └── Box<dyn Workflow>   ← resolved by get_workflow("dev" | "marketing" | …)
+             └── agents (async fns)
+                   └── providers::complete() → LLM call`}</code></pre>
+        <h3>Key components</h3>
+        <p><strong>Orchestrator</strong> — holds the <code>CancellationToken</code> (for <code>/abort</code>) and the resume <code>mpsc</code> channel (for <code>/continue</code>).</p>
+        <p><strong>RunOptions</strong> — threaded through every workflow and agent: <code>config</code>, <code>tx</code>, <code>project_dir</code>, <code>cancel</code>, <code>resume_tx</code>, <code>auto</code>, <code>verbose</code>.</p>
+        <p><strong>TUI event bus</strong> — all agent output flows through <code>TuiEvent</code> over <code>mpsc::UnboundedSender</code>: <code>WorkflowStarted</code>, <code>AgentStarted</code>, <code>TokenChunk</code>, <code>AgentDone</code>, <code>PhaseComplete</code>, <code>InteractivePause</code>, <code>Resume</code>, <code>Error</code>.</p>
+        <p><strong>Parallel workers</strong> — the developer phase uses <code>tokio::spawn</code> + <code>Arc&lt;Semaphore&gt;</code> to run up to <code>max_parallel_workers</code> concurrently. Each worker writes its output file immediately.</p>
+      </section>
+
+      <section id="security" className="docs-section">
+        <h2>Security &amp; sandboxing</h2>
+        <h3>Filesystem sandbox</h3>
+        <p>All file I/O is mediated through <code>FileSystem</code>. Paths are checked <strong>before</strong> and <strong>after</strong> normalization. Any path containing <code>../</code>, an absolute root, or a Windows drive prefix is rejected immediately. All writes stay inside the workflow's <code>project_dir</code>.</p>
+        <h3>Terminal allowlist</h3>
+        <p>The terminal tool validates every command against a hardcoded allowlist before execution:</p>
+        <pre><code>cargo  go  npm  pip  git  docker</code></pre>
+        <p>LLM output is treated as untrusted input. Any command not on this list is rejected.</p>
+        <h3>API keys</h3>
+        <p>Keys can be read from environment variables or stored locally in <code>~/.cortex/config.toml</code> via <code>/apikey</code>. Never commit keys to source control.</p>
+      </section>
+
+      <section id="output" className="docs-section">
+        <h2>Output structure</h2>
+        <p>All output lands under <code>./cortex-output/</code> relative to where <code>cortex</code> was run.</p>
+        <h3>dev</h3>
+        <pre><code>{`cortex-output/
+└── build-a-todo-rest-api/
+    ├── specs.md
+    ├── architecture.md
+    ├── src/
+    │   ├── main.rs
+    │   └── ...
+    ├── Dockerfile
+    └── docker-compose.yml`}</code></pre>
+        <h3>marketing</h3>
+        <pre><code>{`cortex-output/
+└── marketing-campaign/
+    ├── strategy.md
+    ├── posts.md
+    ├── metrics.md
+    └── calendar.md`}</code></pre>
+        <h3>prospecting</h3>
+        <pre><code>{`cortex-output/
+└── prospecting-campaign/
+    ├── prospects.md
+    ├── profiles/
+    │   ├── alice-martin.md
+    │   └── bob-jones.md
+    ├── emails/
+    │   ├── alice-martin.md
+    │   └── bob-jones.md
+    └── outreach_report.md`}</code></pre>
+      </section>
+
+      <section id="build" className="docs-section">
+        <h2>Build from source</h2>
+        <pre><code>{`git clone https://github.com/tky0065/cortex.git
+cd cortex
+cargo build --release
+./target/release/cortex --version`}</code></pre>
+        <h3>Tests</h3>
+        <pre><code>{`cargo test                    # all 64 tests
+cargo clippy -- -D warnings   # lint
+cargo fmt                     # format
+cargo check                   # fast type/borrow check`}</code></pre>
+      </section>
+
+      <div style={{ marginTop: "var(--space-10)", paddingTop: "var(--space-5)", borderTop: "1px solid var(--line-soft)", display: "flex", justifyContent: "space-between", color: "var(--fg-mute)", fontSize: 13.5 }}>
+        <a href="index.html" style={{ borderBottom: "none" }}>← Back to home</a>
+        <a href="https://github.com/tky0065/cortex" target="_blank" rel="noopener" style={{ borderBottom: "none" }}>View source on GitHub →</a>
+      </div>
+    </main>
+  );
+}
+
+function App() {
+  const [active, setActive] = useState("introduction");
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    const ids = SECTIONS.flatMap((g) => g.items.map((i) => i.id));
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((e) => e.isIntersecting);
+        if (visible.length) {
+          visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+          setActive(visible[0].target.id);
+        }
+      },
+      { rootMargin: "-80px 0px -60% 0px" }
+    );
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) obs.observe(el);
+    });
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <div className="docs-layout">
+      <Sidebar active={active} query={query} onQuery={setQuery} />
+      <Content />
+      <TOC active={active} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("docs-mount")).render(<App />);
+</script>
+
+</body>
+</html>

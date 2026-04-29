@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cortex — Your entire team, in one command.</title>
+<meta name="description" content="Cortex is an agentic CLI written in Rust that simulates a full software development company. Give it a natural-language idea; it orchestrates specialized AI agents to produce a complete, deployable project." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="styles.css?v=2" />
+<link rel="stylesheet" href="tui-demo.css?v=2" />
+<link rel="stylesheet" href="landing.css?v=2" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <span class="dot"></span>
+      <span>cortex</span>
+      <span style="color: var(--fg-dim); font-weight: 400; margin-left: 6px;">v0.1.0</span>
+    </a>
+    <div class="nav-links">
+      <a href="#agents">Agents</a>
+      <a href="#workflows">Workflows</a>
+      <a href="docs.html">Docs</a>
+    </div>
+    <a class="nav-cta" href="https://github.com/tky0065/cortex" target="_blank" rel="noopener">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div id="hero-bg-mount"></div>
+  <div class="container">
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <span class="eyebrow hero-tag"><span class="pulse"></span>Agentic CLI · Built in Rust</span>
+        <h1 class="h-display hero-title">Your entire team,<br/><span class="accent">in one command.</span></h1>
+        <p class="hero-sub">An agentic CLI in Rust. Give it an idea; six AI agents ship a complete, deployable project.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#install">$ install cortex</a>
+          <a class="btn" href="docs.html">Read the docs →</a>
+        </div>
+      </div>
+      <div class="hero-tui-wrap" id="tui-mount"></div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="agents-mount"></div>
+  <div id="workflows-mount"></div>
+  <div id="install-mount"></div>
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div>
+        <div class="nav-brand" style="margin-bottom: 8px;">
+          <span class="dot"></span>
+          <span>cortex</span>
+        </div>
+        <div style="color: var(--fg-dim); font-size: 13px;">MIT licensed · Built in Rust · v0.1.0</div>
+      </div>
+      <div style="display: flex; gap: 28px; flex-wrap: wrap; font-size: 13px;">
+        <a href="#agents" style="color: var(--fg-mute);">Agents</a>
+        <a href="#workflows" style="color: var(--fg-mute);">Workflows</a>
+        <a href="docs.html" style="color: var(--fg-mute);">Docs</a>
+        <a href="https://github.com/tky0065/cortex" target="_blank" rel="noopener" style="color: var(--fg-mute);">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<div id="tweaks-mount"></div>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="tui-demo.jsx"></script>
+<script type="text/babel" src="landing-sections.jsx"></script>
+<script type="text/babel" src="hero-bg.jsx"></script>
+<script type="text/babel" data-presets="env,react">
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accent": "green",
+  "density": "compact",
+  "demoSpeed": 1
+}/*EDITMODE-END*/;
+
+const ACCENT_PRESETS = {
+  green:  { c: "oklch(0.78 0.16 145)", c2: "oklch(0.78 0.14 70)" },
+  amber:  { c: "oklch(0.80 0.15 75)",  c2: "oklch(0.78 0.14 30)" },
+  cyan:   { c: "oklch(0.80 0.13 200)", c2: "oklch(0.78 0.14 50)" },
+  violet: { c: "oklch(0.74 0.16 295)", c2: "oklch(0.78 0.14 55)" },
+};
+
+function App() {
+  const [tweaks, setTweak] = window.useTweaks(TWEAK_DEFAULTS);
+
+  React.useEffect(() => {
+    const root = document.documentElement;
+    const preset = ACCENT_PRESETS[tweaks.accent] || ACCENT_PRESETS.green;
+    root.style.setProperty("--accent", preset.c);
+    root.style.setProperty("--accent-2", preset.c2);
+    root.style.setProperty("--accent-soft", preset.c.replace(")", " / 0.12)"));
+    root.style.setProperty("--density", tweaks.density === "compact" ? "0.85" : "1");
+  }, [tweaks.accent, tweaks.density]);
+
+  const T = window;
+  return (
+    <T.TweaksPanel title="Tweaks">
+      <T.TweakSection title="Accent">
+        <T.TweakRadio
+          value={tweaks.accent}
+          onChange={(v) => setTweak("accent", v)}
+          options={[
+            { value: "green", label: "Green" },
+            { value: "amber", label: "Amber" },
+            { value: "cyan", label: "Cyan" },
+            { value: "violet", label: "Violet" },
+          ]}
+        />
+      </T.TweakSection>
+      <T.TweakSection title="Density">
+        <T.TweakRadio
+          value={tweaks.density}
+          onChange={(v) => setTweak("density", v)}
+          options={[
+            { value: "cozy", label: "Cozy" },
+            { value: "compact", label: "Compact" },
+          ]}
+        />
+      </T.TweakSection>
+      <T.TweakSection title="Demo speed">
+        <T.TweakSlider
+          value={tweaks.demoSpeed}
+          onChange={(v) => setTweak("demoSpeed", v)}
+          min={0.5} max={2.5} step={0.25}
+          format={(v) => v.toFixed(2) + "×"}
+        />
+      </T.TweakSection>
+    </T.TweaksPanel>
+  );
+}
+
+const m = (id, el) => ReactDOM.createRoot(document.getElementById(id)).render(el);
+
+// Mount tweaks app — also drives the TUI re-render via window.__demoSpeed
+let currentSpeed = 1;
+function TUIRoot() {
+  const [, force] = React.useState(0);
+  React.useEffect(() => {
+    const i = setInterval(() => {
+      const stored = JSON.parse(localStorage.getItem("__edit_mode_state") || "{}");
+      const sp = stored.demoSpeed || 1;
+      if (sp !== currentSpeed) { currentSpeed = sp; force((x) => x + 1); }
+    }, 400);
+    return () => clearInterval(i);
+  }, []);
+  return <window.TUIDemo speed={currentSpeed} />;
+}
+
+m("hero-bg-mount", <window.HeroBackground />);
+m("tui-mount", <TUIRoot />);
+m("agents-mount", <window.AgentsSection />);
+m("workflows-mount", <window.WorkflowsSection />);
+m("install-mount", <window.InstallSection />);
+m("tweaks-mount", <App />);
+</script>
+
+</body>
+</html>
