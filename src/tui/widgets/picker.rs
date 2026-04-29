@@ -6,7 +6,7 @@ use crate::tui::theme::THEME;
 ///   - a live search bar
 ///   - grouped rows (section headers + items)
 ///   - the currently-active item highlighted in orange
-///   - a checkmark (✓) beside items that are "checked"
+///   - a stable checkbox column beside items that are "checked"
 ///
 /// Caller maintains `PickerState` and drives it with `PickerState::handle_*` helpers.
 use ratatui::{
@@ -113,6 +113,50 @@ impl PickerState {
             .get(self.cursor)
             .map(|(_, item)| item.id.clone())
     }
+
+    pub fn checked_ids(&self) -> Vec<String> {
+        self.groups
+            .iter()
+            .flat_map(|group| group.items.iter())
+            .filter(|item| item.checked)
+            .map(|item| item.id.clone())
+            .collect()
+    }
+
+    pub fn checked_count(&self) -> usize {
+        self.groups
+            .iter()
+            .flat_map(|group| group.items.iter())
+            .filter(|item| item.checked)
+            .count()
+    }
+
+    pub fn toggle_selected(&mut self) -> Option<(String, bool)> {
+        let id = self.selected_id()?;
+        for item in self
+            .groups
+            .iter_mut()
+            .flat_map(|group| group.items.iter_mut())
+        {
+            if item.id == id {
+                item.checked = !item.checked;
+                return Some((id, item.checked));
+            }
+        }
+        None
+    }
+
+    pub fn remove_item(&mut self, id: &str) {
+        for group in &mut self.groups {
+            group.items.retain(|item| item.id != id);
+        }
+        let len = self.filtered().len();
+        if len == 0 {
+            self.cursor = 0;
+        } else if self.cursor >= len {
+            self.cursor = len - 1;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -186,14 +230,20 @@ impl<'a> PickerWidget<'a> {
             }
 
             let is_cursor = flat_idx == self.state.cursor;
-            let check = if item.checked {
-                Span::styled(" ✓ ", Style::default().fg(THEME.success))
-            } else {
-                Span::raw("   ")
-            };
-
-            let (label_style, desc_style, row_bg) = if is_cursor {
+            let (cursor_style, check_style, label_style, desc_style, row_bg) = if is_cursor {
                 (
+                    Style::default()
+                        .bg(THEME.primary)
+                        .fg(THEME.bg)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .bg(THEME.primary)
+                        .fg(if item.checked {
+                            THEME.success
+                        } else {
+                            THEME.bg
+                        })
+                        .add_modifier(Modifier::BOLD),
                     Style::default()
                         .bg(THEME.primary)
                         .fg(THEME.bg)
@@ -205,14 +255,29 @@ impl<'a> PickerWidget<'a> {
                 )
             } else {
                 (
+                    Style::default().fg(THEME.muted),
+                    Style::default()
+                        .fg(if item.checked {
+                            THEME.success
+                        } else {
+                            THEME.muted
+                        })
+                        .add_modifier(if item.checked {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                     Style::default().fg(THEME.text),
                     Style::default().fg(THEME.muted),
                     Color::Reset,
                 )
             };
 
+            let cursor = if is_cursor { ">" } else { " " };
+            let check = if item.checked { "[x]" } else { "[ ]" };
             let mut spans = vec![
-                check,
+                Span::styled(format!(" {} ", cursor), cursor_style),
+                Span::styled(format!("{} ", check), check_style),
                 Span::styled(format!(" {} ", item.label), label_style),
             ];
             if let Some(desc) = &item.description {
@@ -411,4 +476,33 @@ pub fn resume_picker(sessions: &[crate::repl::SessionInfo]) -> PickerState {
     }
 
     PickerState::new("Resume a session  esc to close", groups)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggle_selected_updates_checked_count() {
+        let mut state = PickerState::new(
+            "Skills",
+            vec![PickerGroup {
+                title: "Remote".to_string(),
+                items: vec![PickerItem {
+                    id: "remote:find-skills".to_string(),
+                    label: "find-skills".to_string(),
+                    description: None,
+                    checked: false,
+                }],
+            }],
+        );
+
+        assert_eq!(state.checked_count(), 0);
+        assert_eq!(
+            state.toggle_selected(),
+            Some(("remote:find-skills".to_string(), true))
+        );
+        assert_eq!(state.checked_count(), 1);
+        assert_eq!(state.checked_ids(), vec!["remote:find-skills"]);
+    }
 }

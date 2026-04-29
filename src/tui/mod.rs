@@ -3,7 +3,7 @@ pub mod layout;
 pub mod theme;
 pub mod widgets;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Stdout};
 use std::sync::Arc;
 
@@ -65,12 +65,23 @@ enum PopupState {
     },
     /// Resume picker: shows session history for resuming workflows.
     ResumePicker(PickerState),
+    /// Skill picker: browse skills.sh and manage installed skills.
+    SkillPicker(SkillPickerState),
     /// An agent is asking the user a clarification question; wait for text answer.
     QuestionInput {
         agent: String,
         question: String,
         input: tui_input::Input,
     },
+}
+
+struct SkillPickerState {
+    picker: PickerState,
+    original_enabled: HashMap<String, bool>,
+    remote_by_id: HashMap<String, crate::skills::RemoteSkill>,
+    installed_names: HashSet<String>,
+    scope: crate::skills::SkillScope,
+    loading: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +106,8 @@ struct App {
     tokens_total: usize,
     /// When the current workflow started
     start_time: Option<std::time::Instant>,
+    /// Frame counter for animations (incremented every 100ms tick)
+    tick_count: u64,
 }
 
 impl App {
@@ -113,6 +126,7 @@ impl App {
             model_cache: HashMap::new(),
             tokens_total: 0,
             start_time: None,
+            tick_count: 0,
         }
     }
 
@@ -132,6 +146,7 @@ impl App {
         AgentPanelWidget {
             agents: &self.active_agents,
             focused_agent: self.log_filter.as_deref(),
+            tick_count: self.tick_count,
         }
         .render(frame, layout.agents);
         LogsWidget {
@@ -198,6 +213,19 @@ impl App {
             }
             PopupState::ResumePicker(state) => {
                 PickerWidget { state }.render(frame);
+            }
+            PopupState::SkillPicker(state) => {
+                PickerWidget {
+                    state: &state.picker,
+                }
+                .render(frame);
+                if state.loading {
+                    draw_loading_overlay_with(
+                        frame,
+                        " Loading skills… ",
+                        "  Fetching skills.sh results…",
+                    );
+                }
             }
             PopupState::QuestionInput {
                 agent,
@@ -381,6 +409,30 @@ impl App {
                 let sessions = self.repl_state.session_history.lock().unwrap().clone();
                 self.popup = PopupState::ResumePicker(resume_picker(&sessions));
             }
+            TuiEvent::OpenSkillPicker => {
+                self.popup = PopupState::SkillPicker(build_skill_picker(Vec::new(), true));
+            }
+            TuiEvent::SkillsCatalogLoaded { skills } => {
+                if let PopupState::SkillPicker(state) = &mut self.popup {
+                    state.loading = false;
+                    replace_remote_skill_group(state, "skills.sh Leaderboard", skills.clone());
+                }
+            }
+            TuiEvent::SkillSearchLoaded { query, skills } => {
+                if let PopupState::SkillPicker(state) = &mut self.popup
+                    && state.picker.search == *query
+                {
+                    state.loading = false;
+                    replace_remote_skill_group(state, "Search results", skills.clone());
+                }
+            }
+            TuiEvent::SkillPickerError { message } => {
+                if let PopupState::SkillPicker(state) = &mut self.popup {
+                    state.loading = false;
+                }
+                self.logs
+                    .push(LogEntry::system(format!("skill picker error: {}", message)));
+            }
             TuiEvent::ClearLogs => {
                 self.logs.clear();
                 self.log_filter = None;
@@ -542,7 +594,9 @@ impl Tui {
                 Some(ev) = event_rx.recv() => {
                     app.on_orchestrator_event(ev);
                 }
-                _ = tick.tick() => {}
+                _ = tick.tick() => {
+                    app.tick_count += 1;
+                }
             }
         }
 
@@ -582,6 +636,9 @@ impl Tui {
             }
             PopupState::ResumePicker(_) => {
                 return Self::handle_resume_picker(app, key, tx).await;
+            }
+            PopupState::SkillPicker(_) => {
+                return Self::handle_skill_picker(app, key, tx).await;
             }
             PopupState::QuestionInput { .. } => {
                 return Self::handle_question_input(app, key, tx).await;
@@ -988,6 +1045,95 @@ impl Tui {
     }
 
     // -------------------------------------------------------------------------
+    // Skill picker key handler
+    // -------------------------------------------------------------------------
+
+    async fn handle_skill_picker(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        tx: &TuiSender,
+    ) -> bool {
+        let PopupState::SkillPicker(ref mut state) = app.popup else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Up => state.picker.move_up(),
+            KeyCode::Down => state.picker.move_down(),
+            KeyCode::Backspace => {
+                state.picker.pop_search();
+                queue_skill_search(state, tx);
+            }
+            KeyCode::Char(' ') => {
+                state.picker.toggle_selected();
+                refresh_skill_picker_title(state);
+            }
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                state.scope = match state.scope {
+                    crate::skills::SkillScope::Global => crate::skills::SkillScope::Project,
+                    crate::skills::SkillScope::Project => crate::skills::SkillScope::Global,
+                };
+                refresh_skill_picker_title(state);
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                if let Some(id) = state.picker.selected_id()
+                    && let Some(name) = id.strip_prefix("local:")
+                {
+                    match crate::skills::remove(name, None) {
+                        Ok(record) => {
+                            state.picker.remove_item(&id);
+                            state.original_enabled.remove(name);
+                            state.installed_names.remove(name);
+                            refresh_skill_picker_title(state);
+                            app.logs
+                                .push(LogEntry::system(format!("removed skill {}", record.name)));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(TuiEvent::SkillPickerError {
+                                message: e.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let checked = state
+                    .picker
+                    .checked_ids()
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                let local_changes = state
+                    .original_enabled
+                    .iter()
+                    .filter_map(|(name, original)| {
+                        let id = format!("local:{name}");
+                        let desired = checked.contains(&id);
+                        (desired != *original).then(|| (name.clone(), desired))
+                    })
+                    .collect::<Vec<_>>();
+                let remote_installs = checked
+                    .iter()
+                    .filter_map(|id| id.strip_prefix("remote:"))
+                    .filter_map(|id| state.remote_by_id.get(id).cloned())
+                    .collect::<Vec<_>>();
+                let scope = state.scope;
+
+                app.popup = PopupState::None;
+                apply_skill_picker_changes(local_changes, remote_installs, scope, tx.clone());
+            }
+            KeyCode::Char(c) => {
+                state.picker.push_search(c);
+                queue_skill_search(state, tx);
+            }
+            _ => {}
+        }
+        false
+    }
+
+    // -------------------------------------------------------------------------
     // Model picker key handler
     // -------------------------------------------------------------------------
 
@@ -1209,6 +1355,243 @@ fn build_model_list_picker(
     )
 }
 
+fn build_skill_picker(
+    remote_skills: Vec<crate::skills::RemoteSkill>,
+    loading: bool,
+) -> SkillPickerState {
+    use crate::tui::widgets::picker::{PickerGroup, PickerItem};
+
+    let installed = crate::skills::list().unwrap_or_default();
+    let scope = default_skill_scope_for_ui();
+    let mut original_enabled = HashMap::new();
+    let mut installed_names = HashSet::new();
+    let installed_items = installed
+        .into_iter()
+        .map(|record| {
+            original_enabled.insert(record.name.clone(), record.enabled);
+            installed_names.insert(record.name.clone());
+            PickerItem {
+                id: format!("local:{}", record.name),
+                label: record.name,
+                description: Some(format!(
+                    "{} [{}]",
+                    record.description,
+                    skill_scope_label(record.scope)
+                )),
+                checked: record.enabled,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut state = SkillPickerState {
+        picker: PickerState::new(
+            skill_picker_title(scope, loading, 0),
+            vec![
+                PickerGroup {
+                    title: "Installed".to_string(),
+                    items: installed_items,
+                },
+                PickerGroup {
+                    title: "skills.sh Leaderboard".to_string(),
+                    items: Vec::new(),
+                },
+            ],
+        ),
+        original_enabled,
+        remote_by_id: HashMap::new(),
+        installed_names,
+        scope,
+        loading,
+    };
+    replace_remote_skill_group(&mut state, "skills.sh Leaderboard", remote_skills);
+    state.loading = loading;
+    refresh_skill_picker_title(&mut state);
+    state
+}
+
+fn replace_remote_skill_group(
+    state: &mut SkillPickerState,
+    title: &str,
+    skills: Vec<crate::skills::RemoteSkill>,
+) {
+    use crate::tui::widgets::picker::{PickerGroup, PickerItem};
+
+    state.remote_by_id.clear();
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+    for skill in skills {
+        if skill.is_duplicate || !seen.insert(skill.id.clone()) {
+            continue;
+        }
+        if state.installed_names.contains(&skill.slug) {
+            continue;
+        }
+        let install_count = if skill.installs == 1 {
+            "1 install".to_string()
+        } else {
+            format!("{} installs", skill.installs)
+        };
+        let source_kind = if skill.source_type.is_empty() {
+            skill.source.clone()
+        } else {
+            format!("{} · {}", skill.source, skill.source_type)
+        };
+        items.push(PickerItem {
+            id: format!("remote:{}", skill.id),
+            label: skill.name.clone(),
+            description: Some(format!("{} · {}", source_kind, install_count)),
+            checked: false,
+        });
+        state.remote_by_id.insert(skill.id.clone(), skill);
+    }
+
+    state
+        .picker
+        .groups
+        .retain(|group| group.title == "Installed");
+    state.picker.groups.push(PickerGroup {
+        title: title.to_string(),
+        items,
+    });
+    state.picker.cursor = 0;
+    refresh_skill_picker_title(state);
+}
+
+fn queue_skill_search(state: &mut SkillPickerState, tx: &TuiSender) {
+    let query = state.picker.search.trim().to_string();
+    if query.chars().count() < 2 {
+        state.loading = false;
+        refresh_skill_picker_title(state);
+        return;
+    }
+
+    state.loading = true;
+    refresh_skill_picker_title(state);
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        match crate::skills::search_remote_skills(&query).await {
+            Ok(skills) => {
+                let _ = tx_clone.send(TuiEvent::SkillSearchLoaded { query, skills });
+            }
+            Err(e) => {
+                let _ = tx_clone.send(TuiEvent::SkillPickerError {
+                    message: e.to_string(),
+                });
+            }
+        }
+    });
+}
+
+fn apply_skill_picker_changes(
+    local_changes: Vec<(String, bool)>,
+    remote_installs: Vec<crate::skills::RemoteSkill>,
+    scope: crate::skills::SkillScope,
+    tx: TuiSender,
+) {
+    tokio::spawn(async move {
+        if local_changes.is_empty() && remote_installs.is_empty() {
+            return;
+        }
+
+        let _ = tx.send(TuiEvent::AgentStarted {
+            agent: "skill".to_string(),
+        });
+
+        for (name, enabled) in local_changes {
+            match crate::skills::set_enabled(&name, None, enabled) {
+                Ok(record) => {
+                    let action = if enabled { "enabled" } else { "disabled" };
+                    let _ = tx.send(TuiEvent::TokenChunk {
+                        agent: "skill".to_string(),
+                        chunk: format!(
+                            "  {} {} [{}]",
+                            action,
+                            record.name,
+                            skill_scope_label(record.scope)
+                        ),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(TuiEvent::Error {
+                        agent: "skill".to_string(),
+                        message: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        for remote in remote_installs {
+            let source = crate::skills::remote_install_display(&remote);
+            let _ = tx.send(TuiEvent::TokenChunk {
+                agent: "skill".to_string(),
+                chunk: format!("  installing {} from {}...", remote.name, source),
+            });
+            match crate::skills::install_remote_skill(&remote, Some(scope)).await {
+                Ok(record) => {
+                    let _ = tx.send(TuiEvent::TokenChunk {
+                        agent: "skill".to_string(),
+                        chunk: format!(
+                            "  installed {} [{}]",
+                            record.name,
+                            skill_scope_label(record.scope)
+                        ),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(TuiEvent::Error {
+                        agent: "skill".to_string(),
+                        message: format!("failed to install {}: {}", remote.name, e),
+                    });
+                }
+            }
+        }
+
+        let _ = tx.send(TuiEvent::AgentDone {
+            agent: "skill".to_string(),
+        });
+    });
+}
+
+fn refresh_skill_picker_title(state: &mut SkillPickerState) {
+    state.picker.title =
+        skill_picker_title(state.scope, state.loading, state.picker.checked_count());
+}
+
+fn skill_picker_title(scope: crate::skills::SkillScope, loading: bool, selected: usize) -> String {
+    let loading = if loading { " · loading" } else { "" };
+    let selected = if selected == 1 {
+        " · 1 selected".to_string()
+    } else if selected > 1 {
+        format!(" · {} selected", selected)
+    } else {
+        String::new()
+    };
+    format!(
+        "Skills [{}]{}{}  space toggle · enter apply · d remove · g scope · esc cancel",
+        skill_scope_label(scope),
+        loading,
+        selected
+    )
+}
+
+fn default_skill_scope_for_ui() -> crate::skills::SkillScope {
+    if std::env::current_dir()
+        .map(|cwd| cwd.join(".git").exists() || cwd.join("Cargo.toml").exists())
+        .unwrap_or(false)
+    {
+        crate::skills::SkillScope::Project
+    } else {
+        crate::skills::SkillScope::Global
+    }
+}
+
+fn skill_scope_label(scope: crate::skills::SkillScope) -> &'static str {
+    match scope {
+        crate::skills::SkillScope::Global => "global",
+        crate::skills::SkillScope::Project => "project",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Provider-prefix helpers
 // ---------------------------------------------------------------------------
@@ -1312,19 +1695,26 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
 // ---------------------------------------------------------------------------
 
 fn draw_loading_overlay(frame: &mut Frame) {
+    draw_loading_overlay_with(
+        frame,
+        " Loading models… ",
+        "  Fetching model list from provider…",
+    );
+}
+
+fn draw_loading_overlay_with(frame: &mut Frame, title: &str, body: &str) {
     use crate::tui::widgets::picker;
     let area = picker::centered_rect(40, 12, frame.area());
     frame.render_widget(Clear, area);
     let block = Block::default()
-        .title(Span::styled(" Loading models… ", THEME.title_style()))
+        .title(Span::styled(title.to_string(), THEME.title_style()))
         .borders(Borders::ALL)
         .border_style(THEME.border_style())
         .style(Style::default().bg(THEME.bg));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(
-        Paragraph::new("  Fetching model list from provider…")
-            .style(Style::default().fg(THEME.muted)),
+        Paragraph::new(body.to_string()).style(Style::default().fg(THEME.muted)),
         inner,
     );
 }

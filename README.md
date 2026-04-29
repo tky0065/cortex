@@ -4,6 +4,14 @@
 
 Cortex is an agentic CLI written in Rust that simulates a full software development company. You give it a natural-language idea; it orchestrates specialized AI agents to produce a complete, deployable project.
 
+## What's new in 0.1.4
+
+- `cortex init` / `/init` scans the current project and maintains `AGENTS.md` as durable agent context.
+- Project `AGENTS.md` is injected into workflow agents and assistant prompts before planning or editing.
+- Cortex skills can be managed from the CLI or TUI and injected into relevant prompts.
+- Assistant responses stream in the TUI while private tool-call XML stays hidden.
+- The TUI command palette, skill picker, status widgets, and agent panels have been expanded.
+
 ---
 
 ## Table of Contents
@@ -15,20 +23,23 @@ Cortex is an agentic CLI written in Rust that simulates a full software developm
 5. [Usage Modes](#5-usage-modes)
    - [REPL (interactive)](#51-repl-interactive)
    - [One-shot CLI](#52-one-shot-cli)
-   - [Resume an interrupted run](#53-resume-an-interrupted-run)
-6. [Web Search](#6-web-search)
-7. [Workflows](#7-workflows)
-   - [dev](#71-dev--software-development)
-   - [marketing](#72-marketing--content-campaign)
-   - [prospecting](#73-prospecting--freelance-outreach)
-   - [code-review](#74-code-review--code-audit)
-8. [Providers & Models](#8-providers--models)
-9. [Architecture Internals](#9-architecture-internals)
-10. [Security & Sandboxing](#10-security--sandboxing)
-11. [Verbose Logging](#11-verbose-logging)
-12. [Running Tests](#12-running-tests)
-13. [Release Process](#13-release-process)
-14. [Output Structure](#14-output-structure)
+   - [Initialize project context](#53-initialize-project-context)
+   - [Resume an interrupted run](#54-resume-an-interrupted-run)
+6. [Project Context](#6-project-context)
+7. [Skills](#7-skills)
+8. [Web Search](#8-web-search)
+9. [Workflows](#9-workflows)
+   - [dev](#91-dev--software-development)
+   - [marketing](#92-marketing--content-campaign)
+   - [prospecting](#93-prospecting--freelance-outreach)
+   - [code-review](#94-code-review--code-audit)
+10. [Providers & Models](#10-providers--models)
+11. [Architecture Internals](#11-architecture-internals)
+12. [Security & Sandboxing](#12-security--sandboxing)
+13. [Verbose Logging](#13-verbose-logging)
+14. [Running Tests](#14-running-tests)
+15. [Release Process](#15-release-process)
+16. [Output Structure](#16-output-structure)
 
 ---
 
@@ -86,7 +97,7 @@ cargo build --release
 Cortex checks for a newer GitHub Release when the TUI starts. If an update exists, it prints a non-blocking log message:
 
 ```text
-Update available: 0.1.2 -> v0.1.3. Run /update to install.
+Update available: 0.1.3 -> v0.1.4. Run /update to install.
 ```
 
 Update from the terminal:
@@ -94,7 +105,7 @@ Update from the terminal:
 ```bash
 cortex update --check
 cortex update
-cortex update --version v0.1.3
+cortex update --version v0.1.4
 ```
 
 Update from the REPL:
@@ -102,7 +113,7 @@ Update from the REPL:
 ```text
 /update check
 /update
-/update v0.1.3
+/update v0.1.4
 ```
 
 The updater downloads the matching GitHub Release archive, verifies `SHA256SUMS`, and replaces the current `cortex` binary. On Windows, restart the terminal after updating.
@@ -149,6 +160,8 @@ max_parallel_workers = 4   # concurrent developer/profiler workers
 
 [tools]
 web_search_enabled = false  # set to true or use /websearch enable in the REPL
+skills_enabled = true       # inject relevant installed skills into agent prompts
+max_skill_context_chars = 12000
 
 [api_keys]
 # openrouter = "sk-or-..."
@@ -218,6 +231,7 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/start <workflow> "<idea>"` | Launch a workflow |
 | `/run <workflow> "<prompt>"` | Alias for `/start` |
 | `/resume <project-dir>` | Resume an interrupted workflow |
+| `/init [--force]` | Scan the current project and generate/update `AGENTS.md` |
 | `/status` | Show whether a workflow is running |
 | `/abort` | Cancel the running workflow at the next checkpoint |
 | `/continue` | Resume an interactive pause |
@@ -226,6 +240,10 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/provider [<name>]` | Show or change the default provider |
 | `/apikey <provider> <key>` | Set an API key (openrouter / groq / together / web_search) |
 | `/websearch [enable\|disable]` | Toggle web search context injection for all agents |
+| `/skill` / `/skills` | Browse, install, enable, disable, and remove Cortex skills |
+| `/update [check\|<version>]` | Check for or install Cortex updates |
+| `/focus <agent>` | Show only logs for one agent |
+| `/clear` | Clear visible logs |
 | `/logs` | Toggle log panel focus |
 | `/quit` or `/exit` | Exit Cortex |
 
@@ -259,11 +277,26 @@ cortex start "launch campaign for my SaaS" --auto --workflow marketing
 # Code review
 cortex run --workflow code-review ./my-project
 
+# Initialize project context for future Cortex agents
+cortex init
+
 # Verbose (writes all agent I/O to cortex.log)
 cortex -v start "build a todo app" --auto
 ```
 
-### 5.3 Resume an interrupted run
+### 5.3 Initialize project context
+
+```bash
+# CLI
+cortex init
+
+# REPL
+/init
+```
+
+`init` scans the current project, detects stack and commands, and generates or updates `AGENTS.md`. If `AGENTS.md` already exists, Cortex preserves manual content and refreshes only the Cortex-managed section between stable markers. Future agents automatically receive this file as project context before planning or changing code.
+
+### 5.4 Resume an interrupted run
 
 ```bash
 # CLI
@@ -277,7 +310,46 @@ Cortex re-runs the dev workflow with a prompt that asks the agents to continue f
 
 ---
 
-## 6. Web Search
+## 6. Project Context
+
+`cortex init` prepares an existing or new project for future Cortex changes.
+
+```bash
+cortex init
+# or inside the REPL:
+/init
+```
+
+The command scans the current directory, detects stack, manifests, commands, and project layout, then creates or updates `AGENTS.md`. Manual content is preserved; Cortex only refreshes the managed section between:
+
+```md
+<!-- cortex:init:start -->
+...
+<!-- cortex:init:end -->
+```
+
+Future workflow agents and the assistant automatically receive the current directory's `AGENTS.md` as durable project context before planning or editing. `init` skips dependency folders, generated artifacts, VCS metadata, agent caches, binary files, and likely secret files. If the LLM returns empty output or provider generation fails, Cortex writes a deterministic fallback section instead of leaving `AGENTS.md` empty.
+
+---
+
+## 7. Skills
+
+Cortex skills are reusable local instructions that can be installed globally or per project and injected into relevant agent prompts.
+
+```bash
+cortex skill list
+cortex skill add <owner/repo|path|url> --project
+cortex skill enable <name> --project
+cortex skill disable <name> --project
+cortex skill remove <name> --project
+cortex skill create <name> --description "When to use this skill" --project
+```
+
+Inside the TUI, `/skill` opens the skill browser/manager and `/skill <subcommand>` runs the same management commands from the REPL. Project-scoped skills are preferred over global skills with the same name. Skill injection is controlled by `tools.skills_enabled` and bounded by `tools.max_skill_context_chars`.
+
+---
+
+## 8. Web Search
 
 When enabled, every agent automatically enriches its prompt with live web search results before calling the LLM. This lets agents use up-to-date information: latest library versions, recent CVEs, current pricing, new best practices, etc.
 
@@ -332,9 +404,9 @@ If web search is enabled but no API key is set (or the key is empty), the agent 
 
 ---
 
-## 7. Workflows
+## 9. Workflows
 
-### 7.1 `dev` — Software Development
+### 9.1 `dev` — Software Development
 
 The flagship workflow. Simulates a complete dev team from idea to deployable repo.
 
@@ -378,7 +450,7 @@ Output: ./cortex-output/<project-name>/
 
 ---
 
-### 7.2 `marketing` — Content Campaign
+### 9.2 `marketing` — Content Campaign
 
 Produces a full marketing campaign from a product/service description.
 
@@ -404,7 +476,7 @@ Produces a full marketing campaign from a product/service description.
 
 ---
 
-### 7.3 `prospecting` — Freelance Outreach
+### 9.3 `prospecting` — Freelance Outreach
 
 Automates the identification and outreach process for freelance prospects.
 
@@ -435,7 +507,7 @@ rate       = "€600/day"
 
 ---
 
-### 7.4 `code-review` — Code Audit
+### 9.4 `code-review` — Code Audit
 
 Runs a multi-angle audit on an existing codebase.
 
@@ -466,7 +538,7 @@ Files larger than 8 KB are automatically truncated to protect context windows.
 
 ---
 
-## 8. Providers & Models
+## 10. Providers & Models
 
 ### Role → Model mapping
 
@@ -499,7 +571,7 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 
 ---
 
-## 9. Architecture Internals
+## 11. Architecture Internals
 
 ```
 main.rs
@@ -543,8 +615,13 @@ All agent output flows through `TuiEvent` over an `mpsc::UnboundedSender`:
 | `Resume` | `/continue` was received |
 | `Error { agent, message }` | An error occurred |
 
+#### Assistant and streamed chat
+Free-form REPL messages are routed to the assistant loop. Visible assistant text streams through the TUI while private `<tool_call>` XML is filtered from display, so tool use stays internal and the user sees only natural-language output and command/file operation summaries.
+
 #### File-as-memory pattern
 Agents never receive the full accumulated transcript. Each downstream agent reads only its required input from disk (`specs.md`, `architecture.md`). This keeps context windows bounded and predictable.
+
+When a project-level `AGENTS.md` exists in the current working directory, Cortex also injects it into every agent preamble as durable project context. Generate or refresh it with `cortex init` or `/init`.
 
 #### Parallel workers
 The developer phase (and prospecting's profiler/copywriter phase) uses `tokio::spawn` + `Arc<Semaphore>` to run up to `max_parallel_workers` workers concurrently. Each worker writes its output file immediately to disk.
@@ -560,7 +637,7 @@ The REPL's `/continue` sends `()` to `resume_tx`, unblocking the channel receive
 
 ---
 
-## 10. Security & Sandboxing
+## 12. Security & Sandboxing
 
 ### Filesystem sandbox
 All file I/O is mediated through `FileSystem` (`src/tools/filesystem.rs`).
@@ -583,7 +660,7 @@ API keys can be read from environment variables or stored locally in `~/.cortex/
 
 ---
 
-## 11. Verbose Logging
+## 13. Verbose Logging
 
 Add `-v` to any command to write full agent I/O to `cortex.log` in the working directory:
 
@@ -596,7 +673,7 @@ The log file is appended (not overwritten) and each session is marked with a Uni
 
 ---
 
-## 12. Running Tests
+## 14. Running Tests
 
 ```bash
 cargo test                          # all tests
@@ -617,10 +694,12 @@ Test coverage areas:
 | `updater` | version comparison, archive naming, checksum parsing |
 | `orchestrator` | event ordering, parallel delivery, lifecycle |
 | `tui::widgets` | headless rendering (pipeline, agent panel, logs, input) |
+| `project_context` | `AGENTS.md` merge, fallback generation, scanner exclusions |
+| `skills` | install parsing, scope handling, relevance scoring |
 
 ---
 
-## 13. Release Process
+## 15. Release Process
 
 Cortex releases are published through GitHub Releases.
 
@@ -638,7 +717,7 @@ cargo fmt
 4. Create and push a version tag:
 
 ```bash
-git tag v0.1.0
+git tag v0.1.4
 git push origin main --tags
 ```
 
@@ -646,7 +725,7 @@ The `.github/workflows/release.yml` workflow builds macOS, Linux, and Windows bi
 
 ---
 
-## 14. Output Structure
+## 16. Output Structure
 
 All output lands under `./cortex-output/` relative to the directory where `cortex` was run.
 

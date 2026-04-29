@@ -204,3 +204,6 @@ web_search_enabled = false  # enable with /websearch enable in the REPL
 [api_keys]
 # web_search = "BSA..."     # Brave Search API key — set with /apikey web_search <key>
 ```
+
+## DOCUMENTATION
+- Updated `README.md` and `site` if we added new features or changed usage instructions.

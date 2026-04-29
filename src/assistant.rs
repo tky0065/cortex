@@ -63,6 +63,10 @@ Use this for current news, recent versions, pricing, security advisories, or oth
 ## RULES\n\
 - For casual chat or general non-current knowledge, answer directly without tools.\n\
 - For current news or time-sensitive facts, use web_search first.\n\
+- If web_search fails or returns an error (e.g. disabled or no API key configured):\n\
+  1. Clearly tell the user you cannot access live/current information right now.\n\
+  2. Briefly explain how to enable it: /websearch enable and /apikey web_search <key>.\n\
+  3. Only then share what you know from training data, and explicitly label it as potentially outdated.\n\
 - For repo-specific questions, read the relevant files first.\n\
 - For file edits or commands, use tools to complete the task.\n\
 - After tool calls are executed, provide a concise natural-language answer.\n\
@@ -154,7 +158,7 @@ fn parse_single_call(block: &str) -> Option<ToolCall> {
     }
 }
 
-fn strip_tool_calls(text: &str) -> String {
+pub(crate) fn strip_tool_calls_for_display(text: &str) -> String {
     let mut output = String::new();
     let mut remaining = text;
 
@@ -176,6 +180,10 @@ fn strip_tool_calls(text: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn strip_tool_calls(text: &str) -> String {
+    strip_tool_calls_for_display(text)
 }
 
 fn escape_tool_result(text: &str) -> String {
@@ -378,11 +386,13 @@ pub async fn run(
             },
         );
 
-        let reply = crate::providers::complete_chat(
+        let reply = crate::providers::complete_chat_stream(
             model,
-            PREAMBLE,
+            &assistant_preamble(&config, &current_message).await,
             conv_history.clone(),
             &current_message,
+            tx,
+            "assistant",
         )
         .await?;
 
@@ -390,30 +400,13 @@ pub async fn run(
         let calls = parse_tool_calls(&reply);
         if calls.is_empty() {
             let visible = strip_tool_calls(&reply);
-            if !visible.is_empty() {
-                send(
-                    tx,
-                    TuiEvent::TokenChunk {
-                        agent: "assistant".to_string(),
-                        chunk: visible.clone(),
-                    },
-                );
-            }
             final_reply = visible;
             // No tool calls → task is done
             break;
         }
 
         let visible = strip_tool_calls(&reply);
-        if !visible.is_empty() {
-            send(
-                tx,
-                TuiEvent::TokenChunk {
-                    agent: "assistant".to_string(),
-                    chunk: visible,
-                },
-            );
-        }
+        final_reply = visible;
 
         // ── Execute tools ─────────────────────────────────────────────────────
         let mut results_block = String::new();
@@ -460,6 +453,28 @@ pub async fn run(
 
 fn send(tx: &TuiSender, event: TuiEvent) {
     let _ = tx.send(event);
+}
+
+async fn assistant_preamble(config: &Arc<RwLock<Config>>, prompt: &str) -> String {
+    let cfg = config.read().await;
+    let mut preamble = PREAMBLE.to_string();
+    if cfg.tools.skills_enabled {
+        let skill_context = crate::skills::context_for_prompt(
+            "assistant",
+            prompt,
+            cfg.tools.max_skill_context_chars,
+        )
+        .unwrap_or_default();
+        if !skill_context.is_empty() {
+            preamble.push_str(&skill_context);
+        }
+    }
+    let project_context = crate::project_context::load_agents_context(16_000);
+    if project_context.is_empty() {
+        preamble
+    } else {
+        format!("{preamble}{project_context}")
+    }
 }
 
 // ---------------------------------------------------------------------------

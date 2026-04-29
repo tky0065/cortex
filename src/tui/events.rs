@@ -60,6 +60,8 @@ pub enum TuiEvent {
     OpenModelPicker,
     /// Open the interactive resume picker popup.
     OpenResumePicker,
+    /// Open the interactive skill browser/manager popup.
+    OpenSkillPicker,
     /// Emitted when a session is selected from the resume picker.
     ResumeSelected {
         session_id: String,
@@ -68,6 +70,19 @@ pub enum TuiEvent {
     ModelsLoaded {
         provider: String,
         models: Vec<String>,
+    },
+    /// Fired when the skills.sh leaderboard has been fetched.
+    SkillsCatalogLoaded {
+        skills: Vec<crate::skills::RemoteSkill>,
+    },
+    /// Fired when a skills.sh search result has been fetched.
+    SkillSearchLoaded {
+        query: String,
+        skills: Vec<crate::skills::RemoteSkill>,
+    },
+    /// Fired when the skill picker needs to show a non-fatal loading/apply error.
+    SkillPickerError {
+        message: String,
     },
     ClearLogs,
     SetLogFilter {

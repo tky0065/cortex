@@ -32,7 +32,7 @@ impl<'a> StatusBarWidget<'a> {
 
         let mut spans = vec![
             Span::styled(
-                " CORTEX v0.1.0 ",
+                format!(" CORTEX v{} ", env!("CARGO_PKG_VERSION")),
                 Style::default()
                     .fg(THEME.secondary)
                     .add_modifier(Modifier::BOLD),

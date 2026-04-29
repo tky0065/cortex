@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Gauge, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +94,7 @@ impl ActiveAgent {
 pub struct AgentPanelWidget<'a> {
     pub agents: &'a [ActiveAgent],
     pub focused_agent: Option<&'a str>,
+    pub tick_count: u64,
 }
 
 impl<'a> AgentPanelWidget<'a> {
@@ -122,7 +123,7 @@ impl<'a> AgentPanelWidget<'a> {
                 .iter()
                 .find(|a| a.name == target || a.name.starts_with(&format!("{}:", target)))
             {
-                render_agent_block(frame, agent, inner);
+                render_agent_block(frame, agent, inner, self.tick_count);
                 return;
             }
         }
@@ -159,14 +160,14 @@ impl<'a> AgentPanelWidget<'a> {
             for c in 0..cols {
                 let index = r * cols + c;
                 if index < count {
-                    render_agent_block(frame, &self.agents[index], col_rects[c]);
+                    render_agent_block(frame, &self.agents[index], col_rects[c], self.tick_count);
                 }
             }
         }
     }
 }
 
-fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
+fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_count: u64) {
     if area.height < 2 {
         return;
     }
@@ -190,22 +191,42 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
         return;
     }
 
-    // Split: status line (1) | stream content (fill) | gauge (1)
+    // Split: status line (1) | stream content (fill)
     let split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(inner);
 
     // ── Status line ──────────────────────────────────────────────────────────
+    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let (status_label, status_color) = match agent.status {
-        AgentRunStatus::Running => ("⚡ RUN", THEME.primary),
-        AgentRunStatus::Done => ("✓ DONE", THEME.success),
-        AgentRunStatus::Error => ("✗ ERR", THEME.error),
+        AgentRunStatus::Running => {
+            let frame = spinner_frames[(tick_count % spinner_frames.len() as u64) as usize];
+            (format!("{} RUN", frame), THEME.primary)
+        }
+        AgentRunStatus::Done => ("✓ DONE".to_string(), THEME.success),
+        AgentRunStatus::Error => ("✗ ERR".to_string(), THEME.error),
     };
+
+    // Build mini progress bar: [███░░] 60%
+    let progress_bar = if agent.progress > 0 && agent.progress < 100 {
+        let width = 10;
+        let filled = (agent.progress as usize * width) / 100;
+        let mut bar = String::from("[");
+        for i in 0..width {
+            if i < filled {
+                bar.push('█');
+            } else {
+                bar.push('░');
+            }
+        }
+        bar.push_str("] ");
+        bar.push_str(&format!("{:>2}% ", agent.progress));
+        bar
+    } else {
+        "".to_string()
+    };
+
     let status_line = Line::from(vec![
         Span::styled(
             format!(" {} ", status_label),
@@ -213,6 +234,7 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(progress_bar, Style::default().fg(Color::Indexed(8))),
         Span::styled(
             agent.current_action.clone(),
             Style::default().fg(THEME.text),
@@ -225,69 +247,176 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
     let available_lines = content_area.height as usize;
     let panel_width = content_area.width as usize;
 
-    if agent.status == AgentRunStatus::Done && !agent.summary.is_empty() {
-        // After completion: show the summary
-        let lines: Vec<Line> = agent
-            .summary
-            .lines()
-            .map(|l| {
-                Line::from(Span::styled(
-                    l.to_string(),
-                    Style::default().fg(THEME.muted),
-                ))
-            })
-            .collect();
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            content_area,
-        );
-    } else if !agent.stream_buffer.is_empty() {
-        // While streaming or done without summary: show the live token stream.
-        // Word-wrap and take only the last `available_lines` visual rows.
-        let text = &agent.stream_buffer;
-        let wrapped = word_wrap(text, panel_width.max(1));
-
-        // Take last available_lines rows so newest text stays at the bottom
-        let start = wrapped.len().saturating_sub(available_lines);
-        let visible_lines: Vec<Line> = wrapped[start..]
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                // Fade older lines slightly
-                let is_last = i + start + 1 == wrapped.len();
-                let color = if is_last {
-                    THEME.text
-                } else {
-                    Color::Rgb(160, 160, 160)
-                };
-                Line::from(Span::styled(line.clone(), Style::default().fg(color)))
-            })
-            .collect();
-        frame.render_widget(Paragraph::new(visible_lines), content_area);
+    if !agent.stream_buffer.is_empty() {
+        if agent.status == AgentRunStatus::Done {
+            // Done: render full content as formatted markdown, shown from top.
+            let md_lines = render_markdown_lines(&agent.stream_buffer);
+            frame.render_widget(
+                Paragraph::new(md_lines).wrap(Wrap { trim: false }),
+                content_area,
+            );
+        } else {
+            // Streaming: word-wrap and show only the last `available_lines` rows
+            // so the newest text stays visible at the bottom.
+            let wrapped = word_wrap(&agent.stream_buffer, panel_width.max(1));
+            let start = wrapped.len().saturating_sub(available_lines);
+            let visible_lines: Vec<Line> = wrapped[start..]
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let is_last = i + start + 1 == wrapped.len();
+                    let color = if is_last {
+                        THEME.text
+                    } else {
+                        Color::Rgb(160, 160, 160)
+                    };
+                    Line::from(Span::styled(line.clone(), Style::default().fg(color)))
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(visible_lines), content_area);
+        }
     } else {
         // Waiting for first token — show nothing (status line has the heartbeat message)
         frame.render_widget(Paragraph::new(vec![Line::from("")]), content_area);
     }
+}
 
-    // ── Progress gauge ───────────────────────────────────────────────────────
-    let label = if agent.progress >= 100 {
-        "COMPLETE".to_string()
-    } else {
-        format!("{}%", agent.progress)
-    };
-    let gauge_color = match agent.status {
-        AgentRunStatus::Running => THEME.primary,
-        AgentRunStatus::Done => THEME.success,
-        AgentRunStatus::Error => THEME.error,
-    };
-    let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(gauge_color).bg(Color::Rgb(30, 41, 59)))
-        .percent(agent.progress as u16)
-        .label(Span::styled(
-            label,
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-    frame.render_widget(gauge, split[2]);
+/// Convert a markdown string into styled ratatui `Line`s.
+///
+/// Supported syntax:
+/// - `# Heading` / `## Heading`  → bold (+ primary colour)
+/// - `- item`                     → `• item` bullet
+/// - `**bold**`                   → BOLD modifier
+/// - `*italic*`                   → ITALIC modifier
+/// - `【…】`                       → citation markers dimmed
+/// - plain text                   → default colour
+fn render_markdown_lines(text: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    for raw in text.split('\n') {
+        let line = raw.trim_end();
+
+        if line.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+
+        // H2 heading
+        if let Some(rest) = line.strip_prefix("## ") {
+            let spans = parse_inline_spans(
+                rest,
+                Style::default()
+                    .fg(THEME.primary)
+                    .add_modifier(Modifier::BOLD),
+            );
+            lines.push(Line::from(spans));
+            continue;
+        }
+        // H1 heading
+        if let Some(rest) = line.strip_prefix("# ") {
+            let spans = parse_inline_spans(
+                rest,
+                Style::default()
+                    .fg(THEME.primary)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            );
+            lines.push(Line::from(spans));
+            continue;
+        }
+        // Bullet point (`- ` but not `**`)
+        if let Some(rest) = line.strip_prefix("- ") {
+            let mut spans = vec![Span::styled("• ", Style::default().fg(THEME.primary))];
+            spans.extend(parse_inline_spans(rest, Style::default().fg(THEME.text)));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        // Normal line — parse inline markers
+        let spans = parse_inline_spans(line, Style::default().fg(THEME.text));
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+/// Parse inline markdown markers (`**bold**`, `*italic*`, `【citation】`) within a
+/// single line of text, returning styled `Span`s.
+fn parse_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    let mut buf = String::new();
+
+    macro_rules! flush {
+        () => {
+            if !buf.is_empty() {
+                spans.push(Span::styled(buf.clone(), base_style));
+                buf.clear();
+            }
+        };
+    }
+
+    while i < n {
+        // Bold: **...**
+        if i + 1 < n && chars[i] == '*' && chars[i + 1] == '*' {
+            let inner_start = i + 2;
+            let mut j = inner_start;
+            while j + 1 < n && !(chars[j] == '*' && chars[j + 1] == '*') {
+                j += 1;
+            }
+            if j + 1 < n {
+                flush!();
+                let bold: String = chars[inner_start..j].iter().collect();
+                spans.push(Span::styled(bold, base_style.add_modifier(Modifier::BOLD)));
+                i = j + 2;
+            } else {
+                buf.push(chars[i]);
+                i += 1;
+            }
+        }
+        // Italic: *...* (only when not followed by another *)
+        else if chars[i] == '*' && (i + 1 >= n || chars[i + 1] != '*') {
+            let inner_start = i + 1;
+            let mut j = inner_start;
+            while j < n && chars[j] != '*' {
+                j += 1;
+            }
+            if j < n {
+                flush!();
+                let italic: String = chars[inner_start..j].iter().collect();
+                spans.push(Span::styled(
+                    italic,
+                    base_style.add_modifier(Modifier::ITALIC),
+                ));
+                i = j + 1;
+            } else {
+                buf.push(chars[i]);
+                i += 1;
+            }
+        }
+        // Citation markers 【…】 — render dimmed
+        else if chars[i] == '【' {
+            flush!();
+            let mut j = i + 1;
+            while j < n && chars[j] != '】' {
+                j += 1;
+            }
+            let end = j.min(n - 1);
+            let citation: String = chars[i..=end].iter().collect();
+            spans.push(Span::styled(
+                citation,
+                Style::default().fg(Color::Rgb(80, 80, 80)),
+            ));
+            i = if j < n { j + 1 } else { n };
+        } else {
+            buf.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    flush!();
+    spans
 }
 
 /// Simple word-wrapping: splits `text` into lines of at most `width` chars,
@@ -339,6 +468,7 @@ mod tests {
                 AgentPanelWidget {
                     agents: &[],
                     focused_agent: None,
+                    tick_count: 0,
                 }
                 .render(f, area);
             })
@@ -368,6 +498,7 @@ mod tests {
                 AgentPanelWidget {
                     agents: &agents,
                     focused_agent: None,
+                    tick_count: 0,
                 }
                 .render(f, area);
             })
@@ -417,9 +548,58 @@ mod tests {
                 AgentPanelWidget {
                     agents: &agents,
                     focused_agent: None,
+                    tick_count: 0,
                 }
                 .render(f, area);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn renders_done_agent_with_markdown() {
+        let mut terminal = make_terminal();
+        let mut agent = ActiveAgent::new("assistant");
+        agent.push_chunk(
+            "## Summary\n\n**Key findings:**\n- Item one\n- Item two\n\n*Note:* plain text.",
+        );
+        agent.finish();
+        let agents = vec![agent];
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                AgentPanelWidget {
+                    agents: &agents,
+                    focused_agent: None,
+                    tick_count: 0,
+                }
+                .render(f, area);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn parse_inline_bold_and_italic() {
+        let spans = parse_inline_spans("hello **world** and *there*", Style::default());
+        // Should have: "hello ", "world" (bold), " and ", "there" (italic)
+        assert!(spans.len() >= 4);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("hello"));
+        assert!(text.contains("world"));
+        assert!(text.contains("there"));
+    }
+
+    #[test]
+    fn render_markdown_headings_and_bullets() {
+        let lines = render_markdown_lines("# Title\n## Sub\n- item one\n- item two\nPlain.");
+        assert_eq!(lines.len(), 5);
+        // Bullet lines start with the bullet span
+        let bullet_line = &lines[2];
+        assert!(
+            bullet_line
+                .spans
+                .first()
+                .map(|s| s.content.contains('•'))
+                .unwrap_or(false)
+        );
     }
 }

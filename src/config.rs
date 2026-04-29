@@ -33,11 +33,35 @@ pub struct ApiKeysConfig {
 }
 
 /// Optional tools configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsConfig {
     /// Enable web search context injection for all agents. Requires `api_keys.web_search` to be set.
     #[serde(default)]
     pub web_search_enabled: bool,
+    /// Enable active Cortex skills context injection for all agents.
+    #[serde(default = "default_skills_enabled")]
+    pub skills_enabled: bool,
+    /// Maximum number of characters of skill context injected into each model call.
+    #[serde(default = "default_max_skill_context_chars")]
+    pub max_skill_context_chars: usize,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            web_search_enabled: false,
+            skills_enabled: default_skills_enabled(),
+            max_skill_context_chars: default_max_skill_context_chars(),
+        }
+    }
+}
+
+fn default_skills_enabled() -> bool {
+    true
+}
+
+fn default_max_skill_context_chars() -> usize {
+    12_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

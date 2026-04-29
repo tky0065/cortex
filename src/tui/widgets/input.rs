@@ -13,6 +13,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/start", "Launch a workflow"),
     ("/run", "Alias for /start"),
     ("/resume", "Resume an interrupted workflow"),
+    ("/init", "Generate or update AGENTS.md"),
     ("/status", "Show current workflow status"),
     ("/abort", "Cancel the running workflow"),
     ("/continue", "Resume an interactive pause"),
@@ -27,6 +28,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "/websearch",
         "Toggle web search for all agents (enable|disable)",
     ),
+    ("/skill", "Browse and manage skills"),
     ("/update", "Check for or install Cortex updates"),
     ("/focus", "Focus logs by agent"),
     ("/clear", "Clear visible logs"),
@@ -337,6 +339,7 @@ const REQUIRES_ARGS: &[&str] = &[
     "/focus",
     "/apikey",
     "/websearch",
+    "/skill",
     "/update",
     "/model",
     "/provider",
@@ -508,6 +511,14 @@ mod tests {
         let m = bar.palette_matches();
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].0, "/model");
+    }
+
+    #[test]
+    fn palette_includes_init_command() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/ini");
+        let matches = bar.palette_matches();
+        assert_eq!(matches, vec![("/init", "Generate or update AGENTS.md")]);
     }
 
     #[test]

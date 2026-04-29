@@ -91,3 +91,7 @@ max_parallel_workers = 4
 
 ### Output directory
 Workflow output lands in `./cortex-output/<slugified-prompt>/` relative to the working directory where `cortex` was invoked.
+
+
+## DOCUMENTATION
+- Updated `README.md` and `site` if we added new features or changed usage instructions.

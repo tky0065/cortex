@@ -2,8 +2,10 @@ mod assistant;
 mod config;
 mod context;
 mod orchestrator;
+mod project_context;
 mod providers;
 mod repl;
+mod skills;
 mod tools;
 mod tui;
 mod updater;
@@ -65,6 +67,12 @@ enum Commands {
         /// Path to a previously started cortex project directory
         project_dir: std::path::PathBuf,
     },
+    /// Scan the current project and generate or update AGENTS.md
+    Init {
+        /// Regenerate the Cortex-managed AGENTS.md section even when it already exists
+        #[arg(long)]
+        force: bool,
+    },
     /// Check for or install Cortex updates from GitHub Releases
     Update {
         /// Only check whether an update is available
@@ -73,6 +81,73 @@ enum Commands {
         /// Install a specific release tag, e.g. v0.1.3
         #[arg(long)]
         version: Option<String>,
+    },
+    /// Manage Cortex skills
+    #[command(alias = "skills")]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillCommands {
+    /// List installed skills
+    #[command(alias = "ls")]
+    List,
+    /// Show an installed skill
+    Show { name: String },
+    /// Add a skill from skills.sh, GitHub, URL, or a local path
+    #[command(alias = "install")]
+    Add {
+        source: String,
+        #[arg(long)]
+        skill: Option<String>,
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        project: bool,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Enable an installed skill
+    #[command(alias = "activate")]
+    Enable {
+        name: String,
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        project: bool,
+    },
+    /// Disable an installed skill
+    #[command(alias = "deactivate")]
+    Disable {
+        name: String,
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        project: bool,
+    },
+    /// Remove an installed skill
+    #[command(alias = "rm", alias = "delete", alias = "supprimer")]
+    Remove {
+        name: String,
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        project: bool,
+    },
+    /// Create a new local skill
+    Create {
+        name: String,
+        #[arg(short, long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        project: bool,
     },
 }
 
@@ -126,6 +201,33 @@ async fn main() -> Result<()> {
             );
             orch.run_with_opts(prompt, true, verbose, None).await?;
         }
+        Some(Commands::Init { force }) => {
+            let outcome =
+                project_context::init_current_project(Arc::new(config), None, force).await?;
+            println!(
+                "{} AGENTS.md at {}",
+                if outcome.created {
+                    "Created"
+                } else {
+                    "Updated"
+                },
+                outcome.path.display()
+            );
+            println!(
+                "Scanned {} files; detected: {}",
+                outcome.files_scanned,
+                if outcome.detected_stack.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    outcome.detected_stack.join(", ")
+                }
+            );
+            if outcome.used_fallback {
+                println!(
+                    "Warning: LLM generation failed or returned unusable output; wrote deterministic AGENTS.md instead."
+                );
+            }
+        }
         Some(Commands::Update { check, version }) => {
             if check {
                 let status = updater::check_latest().await?;
@@ -160,9 +262,109 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Some(Commands::Skill { command }) => {
+            for line in handle_skill_cli(command).await? {
+                println!("{line}");
+            }
+        }
     }
 
     Ok(())
+}
+
+async fn handle_skill_cli(command: SkillCommands) -> Result<Vec<String>> {
+    use skills::SkillScope;
+
+    let scope = |global: bool, project: bool| -> Option<SkillScope> {
+        if global {
+            Some(SkillScope::Global)
+        } else if project {
+            Some(SkillScope::Project)
+        } else {
+            None
+        }
+    };
+
+    match command {
+        SkillCommands::List => skills::run_command(&["list".to_string()]),
+        SkillCommands::Show { name } => skills::show(&name),
+        SkillCommands::Add {
+            source,
+            skill,
+            global,
+            project,
+            all,
+            disabled,
+        } => {
+            let records = skills::add_from_source(
+                &source,
+                skills::AddOptions {
+                    scope: scope(global, project),
+                    skill,
+                    all,
+                    enabled: !disabled,
+                },
+            )
+            .await?;
+            Ok(records
+                .into_iter()
+                .map(|record| {
+                    format!(
+                        "added {} [{}] enabled={}",
+                        record.name,
+                        match record.scope {
+                            SkillScope::Global => "global",
+                            SkillScope::Project => "project",
+                        },
+                        record.enabled
+                    )
+                })
+                .collect())
+        }
+        SkillCommands::Enable {
+            name,
+            global,
+            project,
+        } => {
+            let record = skills::set_enabled(&name, scope(global, project), true)?;
+            Ok(vec![format!("enabled {}", record.name)])
+        }
+        SkillCommands::Disable {
+            name,
+            global,
+            project,
+        } => {
+            let record = skills::set_enabled(&name, scope(global, project), false)?;
+            Ok(vec![format!("disabled {}", record.name)])
+        }
+        SkillCommands::Remove {
+            name,
+            global,
+            project,
+        } => {
+            let record = skills::remove(&name, scope(global, project))?;
+            Ok(vec![format!("removed {}", record.name)])
+        }
+        SkillCommands::Create {
+            name,
+            description,
+            global,
+            project,
+        } => {
+            let record = skills::create(
+                &name,
+                skills::CreateOptions {
+                    scope: scope(global, project),
+                    description,
+                },
+            )?;
+            Ok(vec![format!(
+                "created {} at {}",
+                record.name,
+                record.path.display()
+            )])
+        }
+    }
 }
 
 /// Apply one-shot `--model` / `--provider` overrides without persisting to disk.

@@ -148,6 +148,7 @@ pub async fn dispatch(
                 "  /start <workflow> \"<idea>\"  — launch a workflow",
                 "  /run   <workflow> \"<prompt>\" — alias for /start",
                 "  /resume <project-dir>         — resume an interrupted workflow",
+                "  /init [--force]               — scan this project and generate/update AGENTS.md",
                 "  /status                       — show current workflow status",
                 "  /abort                        — cancel the running workflow",
                 "  /continue                     — resume an interactive pause",
@@ -156,6 +157,7 @@ pub async fn dispatch(
                 "  /provider [<name>]            — show or change the default provider",
                 "  /apikey <provider> <key>      — set an API key (openrouter/groq/together/web_search)",
                 "  /websearch [enable|disable]   — toggle web search context injection for all agents",
+                "  /skill                        — browse, install, enable, disable, and remove skills",
                 "  /update [check|<version>]      — check for or install Cortex updates",
                 "  /focus <agent>                — show only logs for one agent",
                 "  /clear                        — clear visible logs",
@@ -265,6 +267,23 @@ pub async fn dispatch(
                 tx,
                 TuiEvent::TokenChunk {
                     agent: "config".to_string(),
+                    chunk: format!("  skills_enabled: {}", cfg.tools.skills_enabled),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
+                    chunk: format!(
+                        "  max_skill_context_chars: {}",
+                        cfg.tools.max_skill_context_chars
+                    ),
+                },
+            );
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "config".to_string(),
                     chunk: format!(
                         "  web_search_key: {}",
                         if cfg.api_keys.web_search.is_some() {
@@ -338,6 +357,33 @@ pub async fn dispatch(
 
         "/update" => {
             handle_update_command(rest, tx).await;
+        }
+
+        "/init" => {
+            let force = rest.split_whitespace().any(|arg| arg == "--force");
+            let config_snapshot = Arc::new(config.read().await.clone());
+            let tx_clone = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::project_context::init_current_project(
+                    config_snapshot,
+                    Some(tx_clone.clone()),
+                    force,
+                )
+                .await
+                {
+                    send(
+                        &tx_clone,
+                        TuiEvent::Error {
+                            agent: "init".to_string(),
+                            message: e.to_string(),
+                        },
+                    );
+                }
+            });
+        }
+
+        "/skill" | "/skills" => {
+            handle_skill_command(rest, tx).await;
         }
 
         "/apikey" => {
@@ -909,6 +955,76 @@ async fn handle_update_command(rest: &str, tx: &TuiSender) {
                 tx,
                 TuiEvent::Error {
                     agent: "update".to_string(),
+                    message: e.to_string(),
+                },
+            );
+        }
+    }
+}
+
+async fn handle_skill_command(rest: &str, tx: &TuiSender) {
+    if rest.trim().is_empty() {
+        send(tx, TuiEvent::OpenSkillPicker);
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            match crate::skills::fetch_catalog("all-time", 0, 100).await {
+                Ok(skills) => {
+                    let _ = tx_clone.send(TuiEvent::SkillsCatalogLoaded { skills });
+                }
+                Err(e) => {
+                    let _ = tx_clone.send(TuiEvent::SkillPickerError {
+                        message: e.to_string(),
+                    });
+                }
+            }
+        });
+        return;
+    }
+
+    send(
+        tx,
+        TuiEvent::AgentStarted {
+            agent: "skill".to_string(),
+        },
+    );
+
+    let args = match crate::skills::parse_command_line(rest) {
+        Ok(args) => args,
+        Err(e) => {
+            send(
+                tx,
+                TuiEvent::Error {
+                    agent: "skill".to_string(),
+                    message: e.to_string(),
+                },
+            );
+            return;
+        }
+    };
+
+    match crate::skills::run_command_async(&args).await {
+        Ok(lines) => {
+            for line in lines {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "skill".to_string(),
+                        chunk: format!("  {line}"),
+                    },
+                );
+            }
+            send(
+                tx,
+                TuiEvent::AgentDone {
+                    agent: "skill".to_string(),
+                },
+            );
+        }
+        Err(e) => {
+            send(
+                tx,
+                TuiEvent::Error {
+                    agent: "skill".to_string(),
                     message: e.to_string(),
                 },
             );

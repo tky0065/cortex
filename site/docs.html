@@ -55,6 +55,8 @@ const SECTIONS = [
   { group: "Usage", items: [
     { id: "repl", label: "REPL commands" },
     { id: "cli", label: "One-shot CLI" },
+    { id: "project-context", label: "Project context" },
+    { id: "skills", label: "Skills" },
     { id: "resume", label: "Resuming a run" },
     { id: "web-search", label: "Web search" },
   ]},
@@ -137,7 +139,7 @@ function TOC({ active }) {
 function Content() {
   return (
     <main className="docs-content">
-      <span className="docs-eyebrow">Documentation · v0.1.0</span>
+      <span className="docs-eyebrow">Documentation · v0.1.4</span>
       <h1>Cortex</h1>
       <p style={{ fontSize: 18, color: "var(--fg)" }}>An agentic CLI written in Rust that simulates a full software-development company. Give it a natural-language idea; it orchestrates specialized AI agents to produce a complete, deployable project.</p>
 
@@ -200,6 +202,8 @@ max_parallel_workers = 4
 
 [tools]
 web_search_enabled = false
+skills_enabled = true
+max_skill_context_chars = 12000
 
 [api_keys]
 # openrouter = "sk-or-..."
@@ -251,6 +255,7 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td>/start &lt;workflow&gt; "&lt;idea&gt;"</td><td>Launch a workflow</td></tr>
             <tr><td>/run &lt;workflow&gt; "&lt;prompt&gt;"</td><td>Alias for /start</td></tr>
             <tr><td>/resume &lt;dir&gt;</td><td>Resume an interrupted workflow</td></tr>
+            <tr><td>/init [--force]</td><td>Scan the current project and generate/update AGENTS.md</td></tr>
             <tr><td>/status</td><td>Show whether a workflow is running</td></tr>
             <tr><td>/abort</td><td>Cancel at the next checkpoint</td></tr>
             <tr><td>/continue</td><td>Resume an interactive pause</td></tr>
@@ -259,6 +264,10 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td>/provider [&lt;name&gt;]</td><td>Show or change the default provider</td></tr>
             <tr><td>/apikey &lt;provider&gt; &lt;key&gt;</td><td>Set an API key</td></tr>
             <tr><td>/websearch [enable|disable]</td><td>Toggle web search injection</td></tr>
+            <tr><td>/skill</td><td>Browse and manage reusable Cortex skills</td></tr>
+            <tr><td>/update [check|&lt;version&gt;]</td><td>Check for or install Cortex updates</td></tr>
+            <tr><td>/focus &lt;agent&gt;</td><td>Show logs for one agent</td></tr>
+            <tr><td>/clear</td><td>Clear visible logs</td></tr>
             <tr><td>/logs</td><td>Toggle log panel focus</td></tr>
             <tr><td>/quit</td><td>Exit Cortex</td></tr>
           </tbody>
@@ -282,8 +291,37 @@ cortex start "launch campaign for my SaaS" --auto --workflow marketing
 # Code review
 cortex run --workflow code-review ./my-project
 
+# Initialize project context
+cortex init
+
 # Verbose (writes all agent I/O to cortex.log)
 cortex -v start "build a todo app" --auto`}</code></pre>
+      </section>
+
+      <section id="project-context" className="docs-section">
+        <h2>Project context</h2>
+        <p><code>cortex init</code> scans the current directory and creates or updates <code>AGENTS.md</code> so future agents understand the project before adding or changing code.</p>
+        <pre><code>{`cortex init
+# or in the REPL
+/init`}</code></pre>
+        <p>Cortex preserves manual content and refreshes only the managed section between stable markers:</p>
+        <pre><code>{`<!-- cortex:init:start -->
+...
+<!-- cortex:init:end -->`}</code></pre>
+        <p>The scanner detects manifests, stack, commands, and directory shape while skipping dependency folders, generated artifacts, VCS metadata, agent caches, binary files, and likely secrets. If model generation fails or returns empty output, Cortex writes a deterministic fallback instead of leaving the file blank.</p>
+        <p>When <code>AGENTS.md</code> exists in the current working directory, Cortex injects it into workflow agents and assistant prompts as durable project context.</p>
+      </section>
+
+      <section id="skills" className="docs-section">
+        <h2>Skills</h2>
+        <p>Skills are reusable local instructions that can be installed globally or per project and injected when relevant to an agent prompt.</p>
+        <pre><code>{`cortex skill list
+cortex skill add <owner/repo|path|url> --project
+cortex skill enable <name> --project
+cortex skill disable <name> --project
+cortex skill remove <name> --project
+cortex skill create <name> --description "When to use this skill" --project`}</code></pre>
+        <p>Inside the TUI, <code>/skill</code> opens the skill browser/manager. <code>/skill &lt;subcommand&gt;</code> runs the same commands from the REPL. Project-scoped skills override global skills with the same name.</p>
       </section>
 
       <section id="resume" className="docs-section">
@@ -423,6 +461,7 @@ rate       = "€600/day"`}</code></pre>
         <p><strong>Orchestrator</strong> — holds the <code>CancellationToken</code> (for <code>/abort</code>) and the resume <code>mpsc</code> channel (for <code>/continue</code>).</p>
         <p><strong>RunOptions</strong> — threaded through every workflow and agent: <code>config</code>, <code>tx</code>, <code>project_dir</code>, <code>cancel</code>, <code>resume_tx</code>, <code>auto</code>, <code>verbose</code>.</p>
         <p><strong>TUI event bus</strong> — all agent output flows through <code>TuiEvent</code> over <code>mpsc::UnboundedSender</code>: <code>WorkflowStarted</code>, <code>AgentStarted</code>, <code>TokenChunk</code>, <code>AgentDone</code>, <code>PhaseComplete</code>, <code>InteractivePause</code>, <code>Resume</code>, <code>Error</code>.</p>
+        <p><strong>Assistant streaming</strong> — free-form REPL messages stream visible assistant text while private tool-call XML stays hidden from the user. Project <code>AGENTS.md</code> and relevant skills are added to prompts before provider calls.</p>
         <p><strong>Parallel workers</strong> — the developer phase uses <code>tokio::spawn</code> + <code>Arc&lt;Semaphore&gt;</code> to run up to <code>max_parallel_workers</code> concurrently. Each worker writes its output file immediately.</p>
       </section>
 
@@ -478,7 +517,7 @@ cd cortex
 cargo build --release
 ./target/release/cortex --version`}</code></pre>
         <h3>Tests</h3>
-        <pre><code>{`cargo test                    # all 64 tests
+        <pre><code>{`cargo test                    # all 100 tests
 cargo clippy -- -D warnings   # lint
 cargo fmt                     # format
 cargo check                   # fast type/borrow check`}</code></pre>
