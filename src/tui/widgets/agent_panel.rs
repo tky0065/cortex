@@ -1,11 +1,11 @@
+use crate::tui::theme::THEME;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect, Margin},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, BorderType, Gauge, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Gauge, Paragraph, Wrap},
 };
-use crate::tui::theme::THEME;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRunStatus {
@@ -63,7 +63,10 @@ impl ActiveAgent {
 
     pub fn push_chunk(&mut self, chunk: &str) {
         // Clear the heartbeat "Waiting for model response..." status on first token
-        if self.current_action.starts_with("Waiting for model response") {
+        if self
+            .current_action
+            .starts_with("Waiting for model response")
+        {
             self.current_action = "Generating...".to_string();
         }
         self.stream_buffer.push_str(chunk);
@@ -114,7 +117,11 @@ impl<'a> AgentPanelWidget<'a> {
         // ── Focused Mode ─────────────────────────────────────────────────────
         if let Some(target) = self.focused_agent {
             // Match if agent name equals target OR starts with target (e.g. "developer" matches "developer:src/main.rs")
-            if let Some(agent) = self.agents.iter().find(|a| a.name == target || a.name.starts_with(&format!("{}:", target))) {
+            if let Some(agent) = self
+                .agents
+                .iter()
+                .find(|a| a.name == target || a.name.starts_with(&format!("{}:", target)))
+            {
                 render_agent_block(frame, agent, inner);
                 return;
             }
@@ -202,9 +209,14 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
     let status_line = Line::from(vec![
         Span::styled(
             format!(" {} ", status_label),
-            Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(agent.current_action.clone(), Style::default().fg(THEME.text)),
+        Span::styled(
+            agent.current_action.clone(),
+            Style::default().fg(THEME.text),
+        ),
     ]);
     frame.render_widget(Paragraph::new(vec![status_line]), split[0]);
 
@@ -218,7 +230,12 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
         let lines: Vec<Line> = agent
             .summary
             .lines()
-            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(THEME.muted))))
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(THEME.muted),
+                ))
+            })
             .collect();
         frame.render_widget(
             Paragraph::new(lines).wrap(Wrap { trim: false }),
@@ -238,7 +255,11 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
             .map(|(i, line)| {
                 // Fade older lines slightly
                 let is_last = i + start + 1 == wrapped.len();
-                let color = if is_last { THEME.text } else { Color::Rgb(160, 160, 160) };
+                let color = if is_last {
+                    THEME.text
+                } else {
+                    Color::Rgb(160, 160, 160)
+                };
                 Line::from(Span::styled(line.clone(), Style::default().fg(color)))
             })
             .collect();
@@ -262,7 +283,10 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect) {
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(gauge_color).bg(Color::Rgb(30, 41, 59)))
         .percent(agent.progress as u16)
-        .label(Span::styled(label, Style::default().add_modifier(Modifier::BOLD)));
+        .label(Span::styled(
+            label,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
     frame.render_widget(gauge, split[2]);
 }
 
@@ -312,7 +336,11 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                AgentPanelWidget { agents: &[], focused_agent: None }.render(f, area);
+                AgentPanelWidget {
+                    agents: &[],
+                    focused_agent: None,
+                }
+                .render(f, area);
             })
             .unwrap();
     }
@@ -337,7 +365,11 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                AgentPanelWidget { agents: &agents, focused_agent: None }.render(f, area);
+                AgentPanelWidget {
+                    agents: &agents,
+                    focused_agent: None,
+                }
+                .render(f, area);
             })
             .unwrap();
     }
@@ -382,7 +414,11 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                AgentPanelWidget { agents: &agents, focused_agent: None }.render(f, area);
+                AgentPanelWidget {
+                    agents: &agents,
+                    focused_agent: None,
+                }
+                .render(f, area);
             })
             .unwrap();
     }

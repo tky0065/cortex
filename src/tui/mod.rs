@@ -1,7 +1,7 @@
 pub mod events;
 pub mod layout;
-pub mod widgets;
 pub mod theme;
+pub mod widgets;
 
 use std::collections::HashMap;
 use std::io::{self, Stdout};
@@ -143,7 +143,7 @@ impl App {
         // Command palette floats above the input bar (drawn after so it's on top)
         self.input_bar
             .render_palette(frame, frame.area(), layout.input);
-        
+
         let elapsed = self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         StatusBarWidget {
             state: &StatusBarState {
@@ -199,7 +199,11 @@ impl App {
             PopupState::ResumePicker(state) => {
                 PickerWidget { state }.render(frame);
             }
-            PopupState::QuestionInput { agent, question, input } => {
+            PopupState::QuestionInput {
+                agent,
+                question,
+                input,
+            } => {
                 draw_question_overlay(frame, agent, question, input);
             }
         }
@@ -417,7 +421,10 @@ impl App {
                 .as_deref()
                 .map(|a| format!("[{}] ", a))
                 .unwrap_or_default();
-            out.push_str(&format!("{} {}{}\n", entry.timestamp, agent_tag, entry.message));
+            out.push_str(&format!(
+                "{} {}{}\n",
+                entry.timestamp, agent_tag, entry.message
+            ));
         }
 
         // Active agents section
@@ -532,7 +539,9 @@ impl Tui {
             let text = app.collect_all_text();
             match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
                 Ok(()) => app.logs.push(LogEntry::system("✓ copied to clipboard")),
-                Err(e) => app.logs.push(LogEntry::system(format!("clipboard error: {}", e))),
+                Err(e) => app
+                    .logs
+                    .push(LogEntry::system(format!("clipboard error: {}", e))),
             }
             return false;
         }
@@ -705,7 +714,7 @@ impl Tui {
     }
 
     fn is_quit_command(cmd: &str) -> bool {
-        matches!(cmd.trim().split_whitespace().next(), Some("/quit" | "/exit"))
+        matches!(cmd.split_whitespace().next(), Some("/quit" | "/exit"))
     }
 
     // -------------------------------------------------------------------------
@@ -1118,7 +1127,8 @@ impl Tui {
                 let answer = input.value().to_string();
                 // Close the popup before sending to avoid any borrow issues
                 app.popup = PopupState::None;
-                app.logs.push(LogEntry::system(format!("answer: {}", answer)));
+                app.logs
+                    .push(LogEntry::system(format!("answer: {}", answer)));
                 // Deliver the answer to the waiting agent
                 let answer_guard = app.repl_state.answer_tx.lock().await;
                 if let Some(ref atx) = *answer_guard {
@@ -1144,10 +1154,7 @@ impl Tui {
 impl Drop for Tui {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen
-        );
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();
     }
 }
@@ -1218,7 +1225,10 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(format!(" 🔑  API Key — {provider} "), THEME.title_style()))
+        .title(Span::styled(
+            format!(" 🔑  API Key — {provider} "),
+            THEME.title_style(),
+        ))
         .borders(Borders::ALL)
         .border_style(THEME.border_style())
         .style(Style::default().bg(THEME.bg));
@@ -1269,8 +1279,7 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
 
     // Footer
     frame.render_widget(
-        Paragraph::new(" Enter to save  •  Esc to cancel")
-            .style(Style::default().fg(THEME.muted)),
+        Paragraph::new(" Enter to save  •  Esc to cancel").style(Style::default().fg(THEME.muted)),
         chunks[5],
     );
 }
@@ -1301,12 +1310,7 @@ fn draw_loading_overlay(frame: &mut Frame) {
 // Question input overlay
 // ---------------------------------------------------------------------------
 
-fn draw_question_overlay(
-    frame: &mut Frame,
-    agent: &str,
-    question: &str,
-    input: &tui_input::Input,
-) {
+fn draw_question_overlay(frame: &mut Frame, agent: &str, question: &str, input: &tui_input::Input) {
     use ratatui::layout::{Constraint, Direction, Layout};
     use ratatui::text::Line;
 
@@ -1373,8 +1377,7 @@ fn draw_question_overlay(
 
     // Footer
     frame.render_widget(
-        Paragraph::new(" Enter to confirm  •  Esc to skip")
-            .style(Style::default().fg(THEME.muted)),
+        Paragraph::new(" Enter to confirm  •  Esc to skip").style(Style::default().fg(THEME.muted)),
         chunks[4],
     );
 }

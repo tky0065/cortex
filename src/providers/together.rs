@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rig::providers::together as rig_together;
 
 pub fn client() -> Result<rig_together::Client> {

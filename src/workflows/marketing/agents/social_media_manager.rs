@@ -22,9 +22,10 @@ pub async fn run(strategy: &str, copy: &str, options: &RunOptions) -> Result<Str
         "Create a 30-day content calendar.\n\nStrategy:\n{}\n\nCopy:\n{}",
         strategy, copy
     );
-    let calendar = crate::providers::complete(model, PREAMBLE, &prompt, options, "social_media_manager")
-        .await
-        .map_err(|e| anyhow::anyhow!("Social Media Manager agent error: {e}"))?;
+    let calendar =
+        crate::providers::complete(model, PREAMBLE, &prompt, options, "social_media_manager")
+            .await
+            .map_err(|e| anyhow::anyhow!("Social Media Manager agent error: {e}"))?;
 
     send_agent_summary(options, "social_media_manager", &calendar);
     let _ = options.tx.send(TuiEvent::TokenChunk {

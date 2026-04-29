@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rig::providers::openrouter as rig_openrouter;
 
 pub fn client() -> Result<rig_openrouter::Client> {

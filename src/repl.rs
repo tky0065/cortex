@@ -266,7 +266,11 @@ pub async fn dispatch(
                     agent: "config".to_string(),
                     chunk: format!(
                         "  web_search_key: {}",
-                        if cfg.api_keys.web_search.is_some() { "set" } else { "not set" }
+                        if cfg.api_keys.web_search.is_some() {
+                            "set"
+                        } else {
+                            "not set"
+                        }
                     ),
                 },
             );
@@ -288,13 +292,16 @@ pub async fn dispatch(
                 );
             } else {
                 let enable = match arg {
-                    "enable"  => Some(true),
+                    "enable" => Some(true),
                     "disable" => Some(false),
                     _ => {
-                        send(tx, TuiEvent::Error {
-                            agent: "websearch".to_string(),
-                            message: "usage: /websearch [enable|disable]".to_string(),
-                        });
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "websearch".to_string(),
+                                message: "usage: /websearch [enable|disable]".to_string(),
+                            },
+                        );
                         None
                     }
                 };
@@ -302,15 +309,21 @@ pub async fn dispatch(
                     let mut cfg = config.write().await;
                     cfg.set_web_search_enabled(enabled);
                     if let Err(e) = cfg.save() {
-                        send(tx, TuiEvent::Error {
-                            agent: "websearch".to_string(),
-                            message: format!("saved in memory but failed to persist: {e}"),
-                        });
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "websearch".to_string(),
+                                message: format!("saved in memory but failed to persist: {e}"),
+                            },
+                        );
                     } else {
-                        send(tx, TuiEvent::TokenChunk {
-                            agent: "websearch".to_string(),
-                            chunk: format!("  ✓ web_search_enabled → {} (saved)", enabled),
-                        });
+                        send(
+                            tx,
+                            TuiEvent::TokenChunk {
+                                agent: "websearch".to_string(),
+                                chunk: format!("  ✓ web_search_enabled → {} (saved)", enabled),
+                            },
+                        );
                         if enabled && config.read().await.api_keys.web_search.is_none() {
                             send(tx, TuiEvent::TokenChunk {
                                 agent: "websearch".to_string(),
@@ -341,22 +354,31 @@ pub async fn dispatch(
                 Ok(()) => {
                     cfg.apply_api_keys_to_env();
                     if let Err(e) = cfg.save() {
-                        send(tx, TuiEvent::Error {
-                            agent: "apikey".to_string(),
-                            message: format!("saved in memory but failed to persist: {e}"),
-                        });
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "apikey".to_string(),
+                                message: format!("saved in memory but failed to persist: {e}"),
+                            },
+                        );
                     } else {
-                        send(tx, TuiEvent::TokenChunk {
-                            agent: "apikey".to_string(),
-                            chunk: format!("  ✓ {} API key saved", provider),
-                        });
+                        send(
+                            tx,
+                            TuiEvent::TokenChunk {
+                                agent: "apikey".to_string(),
+                                chunk: format!("  ✓ {} API key saved", provider),
+                            },
+                        );
                     }
                 }
                 Err(e) => {
-                    send(tx, TuiEvent::Error {
-                        agent: "apikey".to_string(),
-                        message: e.to_string(),
-                    });
+                    send(
+                        tx,
+                        TuiEvent::Error {
+                            agent: "apikey".to_string(),
+                            message: e.to_string(),
+                        },
+                    );
                 }
             }
         }

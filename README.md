@@ -26,32 +26,56 @@ Cortex is an agentic CLI written in Rust that simulates a full software developm
 9. [Security & Sandboxing](#9-security--sandboxing)
 10. [Verbose Logging](#10-verbose-logging)
 11. [Running Tests](#11-running-tests)
-12. [Output Structure](#12-output-structure)
+12. [Release Process](#12-release-process)
+13. [Output Structure](#13-output-structure)
 
 ---
 
 ## 1. Installation
 
-### Prerequisites
+### macOS and Linux
 
-| Requirement | Version |
-|-------------|---------|
-| Rust toolchain | 1.80+ (edition 2021) |
-| Ollama | any recent release (for local models) |
-| cargo | comes with Rust |
+Install the latest published Cortex release:
 
 ```bash
-# Clone the repository
-git clone <repo-url> && cd cortex
+curl -fsSL https://raw.githubusercontent.com/tky0065/cortex/main/install.sh | sh
+```
 
-# Build (release)
+The installer downloads the right binary from GitHub Releases, verifies its SHA-256 checksum, and installs it to `~/.local/bin/cortex`.
+
+If `~/.local/bin` is not on your `PATH`, add it:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Windows
+
+Install the latest Windows release from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tky0065/cortex/main/install.ps1 | iex"
+```
+
+The installer downloads `cortex.exe`, verifies its SHA-256 checksum, installs it to `%USERPROFILE%\.cortex\bin`, and adds that directory to your user `PATH` if needed.
+
+### Runtime prerequisites
+
+| Requirement | When needed |
+|-------------|-------------|
+| Ollama | Default local provider |
+| OpenRouter, Groq, or Together API key | Remote model providers |
+| Brave Search API key | Optional web search context |
+
+### Build from source
+
+Developers can build Cortex directly from the repository:
+
+```bash
+git clone https://github.com/tky0065/cortex.git
+cd cortex
 cargo build --release
-
-# The binary lands at:
-./target/release/cortex
-
-# Or run directly in development:
-cargo run
+./target/release/cortex --version
 ```
 
 ---
@@ -60,13 +84,13 @@ cargo run
 
 ```bash
 # Launch the interactive REPL
-cargo run
+cortex
 
 # Inside the REPL, start a software project:
 /start dev "build a REST API for a todo-list app in Rust"
 
 # One-shot from the terminal:
-cargo run -- start "build a CLI password manager in Go" --auto --workflow dev
+cortex start "build a CLI password manager in Go" --auto --workflow dev
 ```
 
 The generated project appears under `./cortex-output/<slugified-idea>/`.
@@ -155,7 +179,7 @@ export WEB_SEARCH_API_KEY="BSA..."
 ### 4.1 REPL (interactive)
 
 ```bash
-cargo run          # or: ./cortex
+cortex
 ```
 
 A full-screen TUI opens. Type slash commands in the input bar at the bottom.
@@ -526,7 +550,7 @@ cargo  go  npm  pip  git  docker
 LLM output is treated as untrusted input. Any command not on this list is rejected.
 
 ### Provider API keys
-API keys are read from environment variables only — never stored in config files or source code.
+API keys can be read from environment variables or stored locally in `~/.cortex/config.toml` via `/apikey`. Never commit keys to source control.
 
 ---
 
@@ -535,8 +559,8 @@ API keys are read from environment variables only — never stored in config fil
 Add `-v` to any command to write full agent I/O to `cortex.log` in the working directory:
 
 ```bash
-cargo run -- -v start "build a CLI tool" --auto
-cargo run -- -v resume ./cortex-output/my-project
+cortex -v start "build a CLI tool" --auto
+cortex -v resume ./cortex-output/my-project
 ```
 
 The log file is appended (not overwritten) and each session is marked with a Unix timestamp header.
@@ -566,7 +590,33 @@ Test coverage areas:
 
 ---
 
-## 12. Output Structure
+## 12. Release Process
+
+Cortex releases are published through GitHub Releases.
+
+1. Update `Cargo.toml` to the release version.
+2. Run the local checks:
+
+```bash
+cargo check
+cargo test
+cargo clippy -- -D warnings
+cargo fmt
+```
+
+3. Commit the release changes.
+4. Create and push a version tag:
+
+```bash
+git tag v0.1.0
+git push origin main --tags
+```
+
+The `.github/workflows/release.yml` workflow builds macOS, Linux, and Windows binaries, publishes archives to the GitHub release, and uploads `SHA256SUMS`. The install scripts always download from the latest GitHub release unless `CORTEX_VERSION` is set.
+
+---
+
+## 13. Output Structure
 
 All output lands under `./cortex-output/` relative to the directory where `cortex` was run.
 

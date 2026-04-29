@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 const ALLOWED_COMMANDS: &[&str] = &["cargo", "go", "npm", "pip", "git", "docker"];
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -12,15 +12,15 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 #[derive(Debug)]
 pub struct CommandOutput {
     pub exit_code: i32,
-    pub stdout:    String,
-    pub stderr:    String,
-    pub success:   bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
 }
 
 pub async fn run(
-    command:      &str,
-    args:         &[&str],
-    cwd:          Option<&Path>,
+    command: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
     timeout_secs: Option<u64>,
 ) -> Result<CommandOutput> {
     if !ALLOWED_COMMANDS.contains(&command) {
@@ -35,17 +35,15 @@ pub async fn run(
 
     let task = async {
         let mut cmd = Command::new(command);
-        cmd.args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
         let output = cmd.output().await?;
         let exit_code = output.status.code().unwrap_or(-1);
         Ok::<CommandOutput, anyhow::Error>(CommandOutput {
-            stdout:  String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr:  String::from_utf8_lossy(&output.stderr).into_owned(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             success: output.status.success(),
             exit_code,
         })

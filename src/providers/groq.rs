@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rig::providers::groq as rig_groq;
 
 pub fn client() -> Result<rig_groq::Client> {
@@ -8,6 +8,5 @@ pub fn client() -> Result<rig_groq::Client> {
     if api_key.is_empty() {
         bail!("GROQ_API_KEY env var is not set");
     }
-    rig_groq::Client::new(&api_key)
-        .map_err(|e| anyhow::anyhow!("Groq client init failed: {e}"))
+    rig_groq::Client::new(&api_key).map_err(|e| anyhow::anyhow!("Groq client init failed: {e}"))
 }

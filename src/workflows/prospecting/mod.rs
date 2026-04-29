@@ -54,11 +54,15 @@ impl Workflow for ProspectingWorkflow {
         };
         let prospects_raw = agents::researcher::run(&enriched_prompt, &opts).await?;
         fs.write("prospects.md", &prospects_raw)?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "prospects-identified".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "prospects-identified".into(),
+        });
 
         // ── Phase 2: Profiler ‖ Copywriter workers (parallel) ────────────
         let prospect_entries = parse_prospects(&prospects_raw);
-        let sem = Arc::new(Semaphore::new(opts.config.limits.max_parallel_workers as usize));
+        let sem = Arc::new(Semaphore::new(
+            opts.config.limits.max_parallel_workers as usize,
+        ));
         let mut handles = Vec::new();
 
         for entry in prospect_entries {
@@ -98,12 +102,16 @@ impl Workflow for ProspectingWorkflow {
             ));
         }
 
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "profiles-emails-ready".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "profiles-emails-ready".into(),
+        });
 
         // ── Phase 3: Outreach Manager → outreach_report.md ───────────────
         let report = agents::outreach_manager::run(&all_profiles_emails, &opts).await?;
         fs.write("outreach_report.md", &report)?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "done".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "done".into(),
+        });
 
         let _ = opts.tx.send(TuiEvent::TokenChunk {
             agent: "orchestrator".into(),
@@ -140,7 +148,13 @@ fn slugify_prospect(entry: &str) -> String {
         .trim_start_matches('#')
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|p| !p.is_empty())

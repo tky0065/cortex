@@ -10,10 +10,10 @@ use serde::Deserialize;
 pub async fn fetch_models(provider: &str) -> Result<Vec<String>> {
     match provider {
         "openrouter" => fetch_openrouter().await,
-        "ollama"     => fetch_ollama().await,
-        "groq"       => fetch_groq().await,
-        "together"   => fetch_together().await,
-        other        => Ok(static_fallback(other)),
+        "ollama" => fetch_ollama().await,
+        "groq" => fetch_groq().await,
+        "together" => fetch_together().await,
+        other => Ok(static_fallback(other)),
     }
 }
 
@@ -181,7 +181,10 @@ mod tests {
     fn static_fallbacks_are_non_empty() {
         for provider in &["groq", "together", "ollama", "openrouter"] {
             let list = static_fallback(provider);
-            assert!(!list.is_empty(), "fallback for {provider} should not be empty");
+            assert!(
+                !list.is_empty(),
+                "fallback for {provider} should not be empty"
+            );
         }
     }
 

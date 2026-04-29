@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
+pub mod groq;
 pub mod models;
 pub mod ollama;
 pub mod openrouter;
-pub mod groq;
 pub mod together;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use futures_util::StreamExt;
 use rig::agent::{MultiTurnStreamItem, StreamingResult};
 use rig::client::CompletionClient;
@@ -20,16 +20,18 @@ use crate::tui::events::TuiEvent;
 /// Returns the full model string (e.g. `"ollama/qwen2.5-coder:32b"`) for a role.
 pub fn model_for_role<'a>(role: &str, config: &'a Config) -> Result<&'a str> {
     match role {
-        "ceo"         => Ok(&config.models.ceo),
-        "pm"          => Ok(&config.models.pm),
-        "tech_lead"   => Ok(&config.models.tech_lead),
-        "developer"   => Ok(&config.models.developer),
-        "qa"          => Ok(&config.models.qa),
-        "devops"      => Ok(&config.models.devops),
+        "ceo" => Ok(&config.models.ceo),
+        "pm" => Ok(&config.models.pm),
+        "tech_lead" => Ok(&config.models.tech_lead),
+        "developer" => Ok(&config.models.developer),
+        "qa" => Ok(&config.models.qa),
+        "devops" => Ok(&config.models.devops),
         // code-review workflow roles — fall back to qa model
-        "reviewer"    | "security" | "performance" | "reporter" => Ok(&config.models.qa),
+        "reviewer" | "security" | "performance" | "reporter" => Ok(&config.models.qa),
         // marketing workflow roles — fall back to developer model
-        "strategist" | "copywriter" | "analyst" | "social_media_manager" => Ok(&config.models.developer),
+        "strategist" | "copywriter" | "analyst" | "social_media_manager" => {
+            Ok(&config.models.developer)
+        }
         // prospecting workflow roles — fall back to developer model
         "researcher" | "profiler" | "outreach_manager" => Ok(&config.models.developer),
         // conversational assistant
@@ -84,9 +86,9 @@ async fn consume_stream<R: Clone + Send + 'static>(
     let mut full_response = String::new();
     while let Some(chunk) = stream.next().await {
         let raw_choice = chunk.map_err(|e| anyhow::anyhow!("Stream chunk error: {e}"))?;
-        if let MultiTurnStreamItem::StreamAssistantItem(
-            StreamedAssistantContent::Text(text)
-        ) = raw_choice {
+        if let MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(text)) =
+            raw_choice
+        {
             cancel.cancel(); // stop heartbeat on first text token
             full_response.push_str(&text.text);
             let _ = options.tx.send(TuiEvent::TokenChunk {
@@ -142,7 +144,7 @@ pub async fn complete(
             let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
-        "ollama" | _ => {
+        _ => {
             let client = ollama::client()?;
             let agent = client.agent(model).preamble(preamble).build();
             let stream = agent.stream_prompt(&enriched_prompt).await;
@@ -160,27 +162,39 @@ pub async fn complete_chat(
 ) -> Result<String> {
     let (provider, model) = parse_model(model_str);
     let user_msg = Message::user(prompt);
-    
+
     match provider {
         "openrouter" => {
             let client = openrouter::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("OpenRouter chat error: {e}"))
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("OpenRouter chat error: {e}"))
         }
         "groq" => {
             let client = groq::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("Groq chat error: {e}"))
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Groq chat error: {e}"))
         }
         "together" => {
             let client = together::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("Together chat error: {e}"))
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Together chat error: {e}"))
         }
-        "ollama" | _ => {
+        _ => {
             let client = ollama::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            agent.chat(user_msg, history).await.map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
         }
     }
 }

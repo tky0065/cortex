@@ -1,11 +1,11 @@
+use crate::tui::theme::THEME;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
-use crate::tui::theme::THEME;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentStatus {
@@ -23,7 +23,10 @@ pub struct AgentState {
 
 impl AgentState {
     pub fn idle(name: &str) -> Self {
-        Self { name: name.to_string(), status: AgentStatus::Idle }
+        Self {
+            name: name.to_string(),
+            status: AgentStatus::Idle,
+        }
     }
 }
 
@@ -43,24 +46,27 @@ impl<'a> PipelineWidget<'a> {
                 spans.push(Span::styled("  →  ", Style::default().fg(THEME.muted)));
             }
             let (symbol, style) = match agent.status {
-                AgentStatus::Idle => (
-                    "◇",
-                    Style::default().fg(THEME.muted),
-                ),
+                AgentStatus::Idle => ("◇", Style::default().fg(THEME.muted)),
                 AgentStatus::Running => (
                     "◈",
-                    Style::default().fg(THEME.warning).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(THEME.warning)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 AgentStatus::Done => (
                     "◆",
-                    Style::default().fg(THEME.success).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(THEME.success)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 AgentStatus::Error => (
                     "✗",
-                    Style::default().fg(THEME.error).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(THEME.error)
+                        .add_modifier(Modifier::BOLD),
                 ),
             };
-            
+
             let color = match agent.status {
                 AgentStatus::Idle => THEME.muted,
                 AgentStatus::Running => THEME.primary,
@@ -79,18 +85,15 @@ impl<'a> PipelineWidget<'a> {
             .title(Span::styled(" Pipeline ", THEME.title_style()))
             .borders(Borders::ALL)
             .border_style(THEME.border_style());
-            
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)).block(block),
-            area,
-        );
+
+        frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn make_terminal() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
@@ -111,10 +114,22 @@ mod tests {
     fn renders_mixed_statuses() {
         let mut terminal = make_terminal();
         let agents = vec![
-            AgentState { name: "CEO".to_string(), status: AgentStatus::Done },
-            AgentState { name: "PM".to_string(), status: AgentStatus::Running },
-            AgentState { name: "TechLead".to_string(), status: AgentStatus::Idle },
-            AgentState { name: "Developer".to_string(), status: AgentStatus::Error },
+            AgentState {
+                name: "CEO".to_string(),
+                status: AgentStatus::Done,
+            },
+            AgentState {
+                name: "PM".to_string(),
+                status: AgentStatus::Running,
+            },
+            AgentState {
+                name: "TechLead".to_string(),
+                status: AgentStatus::Idle,
+            },
+            AgentState {
+                name: "Developer".to_string(),
+                status: AgentStatus::Error,
+            },
         ];
         terminal
             .draw(|f| {

@@ -22,10 +22,15 @@ impl Workflow for MarketingWorkflow {
     async fn run(&self, prompt: String, options: RunOptions) -> Result<()> {
         let _ = options.tx.send(TuiEvent::WorkflowStarted {
             workflow: "marketing".into(),
-            agents: vec!["strategist", "copywriter", "analyst", "social_media_manager"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            agents: vec![
+                "strategist",
+                "copywriter",
+                "analyst",
+                "social_media_manager",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
         });
 
         // Create output directory
@@ -42,7 +47,9 @@ impl Workflow for MarketingWorkflow {
         // ── Phase 1: Strategist → strategy.md ────────────────────────────
         let strategy = agents::strategist::run(&prompt, &opts).await?;
         fs.write("strategy.md", &strategy)?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "strategy-ready".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "strategy-ready".into(),
+        });
 
         // ── Phase 2: Copywriter ‖ Analyst (parallel) ─────────────────────
         let strategy_clone = strategy.clone();
@@ -59,19 +66,20 @@ impl Workflow for MarketingWorkflow {
 
         fs.write("posts.md", &copy)?;
         fs.write("metrics.md", &metrics)?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "copy-and-metrics-ready".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "copy-and-metrics-ready".into(),
+        });
 
         // ── Phase 3: Social Media Manager → calendar.md ──────────────────
         let calendar = agents::social_media_manager::run(&strategy, &copy, &opts).await?;
         fs.write("calendar.md", &calendar)?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "done".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "done".into(),
+        });
 
         let _ = opts.tx.send(TuiEvent::TokenChunk {
             agent: "orchestrator".into(),
-            chunk: format!(
-                "Marketing campaign ready at: {}",
-                output_dir.display()
-            ),
+            chunk: format!("Marketing campaign ready at: {}", output_dir.display()),
         });
 
         Ok(())

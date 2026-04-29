@@ -54,11 +54,7 @@ impl Workflow for DevWorkflow {
                 if answer.trim().is_empty() {
                     first
                 } else {
-                    let enriched = format!(
-                        "{}\n\nAdditional context: {}",
-                        prompt,
-                        answer.trim()
-                    );
+                    let enriched = format!("{}\n\nAdditional context: {}", prompt, answer.trim());
                     agents::ceo::run(&enriched, &opts).await?
                 }
             } else {
@@ -74,7 +70,9 @@ impl Workflow for DevWorkflow {
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
         let specs = agents::pm::run(&brief, &opts).await?;
         fs.write("specs.md", &specs)?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "specs-ready".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "specs-ready".into(),
+        });
 
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -83,7 +81,9 @@ impl Workflow for DevWorkflow {
         // ── Phase 3: Tech Lead → architecture.md ─────────────────────────
         let arch = agents::tech_lead::run(&specs, &opts).await?;
         fs.write("architecture.md", &arch)?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "architecture-ready".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "architecture-ready".into(),
+        });
 
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -91,7 +91,9 @@ impl Workflow for DevWorkflow {
 
         // ── Phase 4: Developer workers (parallel, semaphore-bounded) ──────
         let files = parse_files_to_create(&arch);
-        let sem = Arc::new(Semaphore::new(opts.config.limits.max_parallel_workers as usize));
+        let sem = Arc::new(Semaphore::new(
+            opts.config.limits.max_parallel_workers as usize,
+        ));
         let mut dev_handles = Vec::new();
 
         for file_path in files {
@@ -124,7 +126,9 @@ impl Workflow for DevWorkflow {
                 .await
                 .map_err(|e| anyhow::anyhow!("Developer worker panicked: {e}"))??;
         }
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "development-done".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "development-done".into(),
+        });
 
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -140,14 +144,19 @@ impl Workflow for DevWorkflow {
             let report = agents::qa::run(&arch, &opts, &fs).await?;
 
             if report.contains("RECOMMENDATION: APPROVE") {
-                let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "qa-approved".into() });
+                let _ = opts.tx.send(TuiEvent::PhaseComplete {
+                    phase: "qa-approved".into(),
+                });
                 break;
             }
 
             if iteration + 1 >= max_iterations {
                 let _ = opts.tx.send(TuiEvent::TokenChunk {
                     agent: "orchestrator".into(),
-                    chunk: format!("QA max iterations ({}) reached — proceeding", max_iterations),
+                    chunk: format!(
+                        "QA max iterations ({}) reached — proceeding",
+                        max_iterations
+                    ),
                 });
                 break;
             }
@@ -169,11 +178,17 @@ impl Workflow for DevWorkflow {
 
         // ── Phase 6: DevOps ───────────────────────────────────────────────
         agents::devops::run(&arch, &opts, &fs).await?;
-        let _ = opts.tx.send(TuiEvent::PhaseComplete { phase: "done".into() });
+        let _ = opts.tx.send(TuiEvent::PhaseComplete {
+            phase: "done".into(),
+        });
 
         let _ = opts.tx.send(TuiEvent::TokenChunk {
             agent: "orchestrator".into(),
-            chunk: format!("Project '{}' created at: {}", project_name, project_dir.display()),
+            chunk: format!(
+                "Project '{}' created at: {}",
+                project_name,
+                project_dir.display()
+            ),
         });
 
         Ok(())
@@ -208,7 +223,13 @@ pub async fn ask_user(agent: &str, question: &str, opts: &RunOptions) -> Result<
 fn slugify(s: &str) -> String {
     let slug = s
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     slug.split('-')
         .filter(|p| !p.is_empty())
@@ -250,9 +271,9 @@ fn parse_files_to_create(arch: &str) -> Vec<String> {
             }
 
             // Strip leading list markers: `1.`, `-`, `*`, digits, spaces
-            let stripped = line
-                .trim()
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ' || c == '-' || c == '*');
+            let stripped = line.trim().trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == ' ' || c == '-' || c == '*'
+            });
 
             if stripped.is_empty() {
                 continue;
@@ -268,7 +289,7 @@ fn parse_files_to_create(arch: &str) -> Vec<String> {
             // Take only the file path — stop at first space, ` –`, ` -`, ` #`, or `:`
             // (handles "main.go – entry point", "main.go: does X", "main.go # comment")
             let path_candidate = no_md
-                .split(|c: char| c == ' ' || c == '\t' || c == '#' || c == ':')
+                .split([' ', '\t', '#', ':'])
                 .next()
                 .unwrap_or("")
                 .trim_matches(|c: char| c == '`' || c == '*' || c == '_' || c == '.');
@@ -301,7 +322,10 @@ fn extract_files_from_report(report: &str) -> Vec<String> {
         if line.trim_start().starts_with('-') {
             // Lines like: "- src/main.rs:42 HIGH ..." or "- `src/main.rs`:42 HIGH ..."
             if let Some(file_part) = line.split_whitespace().nth(1) {
-                let file = file_part.split(':').next().unwrap_or("")
+                let file = file_part
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
                     .trim_matches('`')
                     .to_string();
                 if file.contains('.') && !file.is_empty() && !files.contains(&file) {
@@ -352,7 +376,8 @@ mod tests {
     #[test]
     fn parses_bold_with_description() {
         // Format LLMs often produce: `**main.go** – entry point`
-        let arch = "## FILES_TO_CREATE\n1. **go.mod** – module file\n2. **main.go** – entry point\n";
+        let arch =
+            "## FILES_TO_CREATE\n1. **go.mod** – module file\n2. **main.go** – entry point\n";
         let files = parse_files_to_create(arch);
         assert_eq!(files, vec!["go.mod", "main.go"]);
     }

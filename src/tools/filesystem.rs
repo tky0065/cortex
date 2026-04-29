@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -15,8 +15,7 @@ impl FileSystem {
 
     pub fn read(&self, rel: impl AsRef<Path>) -> Result<String> {
         let path = self.resolve(rel)?;
-        fs::read_to_string(&path)
-            .with_context(|| format!("read failed: {}", path.display()))
+        fs::read_to_string(&path).with_context(|| format!("read failed: {}", path.display()))
     }
 
     pub fn write(&self, rel: impl AsRef<Path>, content: &str) -> Result<()> {
@@ -24,8 +23,7 @@ impl FileSystem {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&path, content)
-            .with_context(|| format!("write failed: {}", path.display()))
+        fs::write(&path, content).with_context(|| format!("write failed: {}", path.display()))
     }
 
     pub fn list(&self, rel: impl AsRef<Path>) -> Result<Vec<PathBuf>> {

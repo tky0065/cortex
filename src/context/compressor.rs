@@ -27,7 +27,7 @@ pub fn compress(text: &str, max_chars: usize) -> String {
 /// Returns `&text[start..end]` snapped to valid UTF-8 char boundaries.
 fn safe_slice(text: &str, start: usize, end: usize) -> &str {
     let start = snap_to_char_boundary(text, start);
-    let end   = snap_to_char_boundary(text, end.min(text.len()));
+    let end = snap_to_char_boundary(text, end.min(text.len()));
     &text[start..end]
 }
 

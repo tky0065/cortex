@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 /// Files each agent role is allowed to read as input context.
 pub fn files_for_agent(role: &str, project_root: &Path) -> Vec<PathBuf> {
     match role {
-        "pm"        => vec![project_root.join("specs.md")],
+        "pm" => vec![project_root.join("specs.md")],
         "tech_lead" => vec![project_root.join("specs.md")],
         "developer" => vec![
             project_root.join("specs.md"),
             project_root.join("architecture.md"),
         ],
-        "qa"        => vec![project_root.join("architecture.md")],
-        "devops"    => vec![project_root.join("architecture.md")],
-        _           => vec![],
+        "qa" => vec![project_root.join("architecture.md")],
+        "devops" => vec![project_root.join("architecture.md")],
+        _ => vec![],
     }
 }
 
@@ -71,8 +71,8 @@ mod tests {
 
     #[test]
     fn nonexistent_files_skipped() {
-        let ctx = load_context("developer", Path::new("/nonexistent_cortex_dir_xyz"), 8192)
-            .unwrap();
+        let ctx =
+            load_context("developer", Path::new("/nonexistent_cortex_dir_xyz"), 8192).unwrap();
         assert!(ctx.is_empty());
     }
 

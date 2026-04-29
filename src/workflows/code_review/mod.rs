@@ -59,7 +59,9 @@ impl Workflow for CodeReviewWorkflow {
         // ── Phase 1: Reviewer → review_notes.md ──────────────────────────
         let review_notes = agents::reviewer::run(&source_content, &options).await?;
         fs.write("review_notes.md", &review_notes)?;
-        let _ = options.tx.send(TuiEvent::PhaseComplete { phase: "review-done".into() });
+        let _ = options.tx.send(TuiEvent::PhaseComplete {
+            phase: "review-done".into(),
+        });
 
         if options.cancel.is_cancelled() {
             return Ok(());
@@ -75,7 +77,9 @@ impl Workflow for CodeReviewWorkflow {
         let security_report = security_result?;
         let performance_report = performance_result?;
 
-        let _ = options.tx.send(TuiEvent::PhaseComplete { phase: "audit-done".into() });
+        let _ = options.tx.send(TuiEvent::PhaseComplete {
+            phase: "audit-done".into(),
+        });
 
         if options.cancel.is_cancelled() {
             return Ok(());
@@ -88,7 +92,9 @@ impl Workflow for CodeReviewWorkflow {
         );
         let report = agents::reporter::run(&combined, &options).await?;
         fs.write("code_review_report.md", &report)?;
-        let _ = options.tx.send(TuiEvent::PhaseComplete { phase: "done".into() });
+        let _ = options.tx.send(TuiEvent::PhaseComplete {
+            phase: "done".into(),
+        });
 
         let _ = options.tx.send(TuiEvent::TokenChunk {
             agent: "orchestrator".into(),
@@ -102,7 +108,9 @@ impl Workflow for CodeReviewWorkflow {
 /// Recursively collect source file contents, skipping build artifacts.
 fn collect_source_files(dir: &std::path::Path) -> String {
     let mut content = String::new();
-    let extensions = ["rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "kt", "swift", "c", "cpp", "h"];
+    let extensions = [
+        "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "kt", "swift", "c", "cpp", "h",
+    ];
     let skip_dirs = ["target", "node_modules", ".git", "dist", "build", ".next"];
 
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -128,7 +136,9 @@ fn collect_source_files(dir: &std::path::Path) -> String {
                     };
                     content.push_str(&format!(
                         "\n\n## File: {}\n\n```{}\n{}\n```",
-                        path.display(), ext, truncated
+                        path.display(),
+                        ext,
+                        truncated
                     ));
                 }
             }

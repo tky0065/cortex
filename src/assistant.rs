@@ -5,8 +5,8 @@
 /// the iteration cap is reached.
 use anyhow::Result;
 use std::path::PathBuf;
-use tokio::sync::RwLock;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::config::Config;
 use crate::tools::filesystem::FileSystem;
@@ -198,7 +198,11 @@ async fn execute_tool(call: &ToolCall, sandbox: &FileSystem) -> ToolResult {
                         .join("\n");
                     ToolResult {
                         call: display,
-                        output: if listing.is_empty() { "(empty)".to_string() } else { listing },
+                        output: if listing.is_empty() {
+                            "(empty)".to_string()
+                        } else {
+                            listing
+                        },
                         success: true,
                     }
                 }
@@ -227,7 +231,11 @@ async fn execute_tool(call: &ToolCall, sandbox: &FileSystem) -> ToolResult {
                     };
                     ToolResult {
                         call: display,
-                        output: if combined.is_empty() { "(no output)".to_string() } else { combined },
+                        output: if combined.is_empty() {
+                            "(no output)".to_string()
+                        } else {
+                            combined
+                        },
                         success: out.success,
                     }
                 }
@@ -270,14 +278,17 @@ pub async fn run(
 
     for iteration in 0..MAX_ITERATIONS {
         // ── LLM call ──────────────────────────────────────────────────────────
-        send(tx, TuiEvent::AgentProgress {
-            agent: "assistant".to_string(),
-            message: if iteration == 0 {
-                "Thinking…".to_string()
-            } else {
-                format!("Iteration {}…", iteration + 1)
+        send(
+            tx,
+            TuiEvent::AgentProgress {
+                agent: "assistant".to_string(),
+                message: if iteration == 0 {
+                    "Thinking…".to_string()
+                } else {
+                    format!("Iteration {}…", iteration + 1)
+                },
             },
-        });
+        );
 
         let reply = crate::providers::complete_chat(
             model,
@@ -289,10 +300,13 @@ pub async fn run(
 
         // Stream the LLM reply to the TUI
         for line in reply.lines() {
-            send(tx, TuiEvent::TokenChunk {
-                agent: "assistant".to_string(),
-                chunk: line.to_string(),
-            });
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "assistant".to_string(),
+                    chunk: line.to_string(),
+                },
+            );
         }
 
         final_reply = reply.clone();
@@ -310,10 +324,13 @@ pub async fn run(
             let result = execute_tool(call, &sandbox).await;
 
             let status_icon = if result.success { "✓" } else { "✗" };
-            send(tx, TuiEvent::TokenChunk {
-                agent: "assistant".to_string(),
-                chunk: format!("  {} [{}]", status_icon, result.call),
-            });
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "assistant".to_string(),
+                    chunk: format!("  {} [{}]", status_icon, result.call),
+                },
+            );
 
             // Append to results block for next LLM turn
             results_block.push_str(&format!(
@@ -322,12 +339,20 @@ pub async fn run(
             ));
 
             // Show first 3 lines of output as a log hint
-            let preview: String = result.output.lines().take(3).collect::<Vec<_>>().join(" | ");
+            let preview: String = result
+                .output
+                .lines()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" | ");
             if !preview.is_empty() {
-                send(tx, TuiEvent::TokenChunk {
-                    agent: "assistant".to_string(),
-                    chunk: format!("    → {}", preview),
-                });
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "assistant".to_string(),
+                        chunk: format!("    → {}", preview),
+                    },
+                );
             }
         }
 

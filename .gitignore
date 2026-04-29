@@ -1,2 +1,4 @@
 /target
 .claude/worktrees/
+cortex-output/
+cortex.log

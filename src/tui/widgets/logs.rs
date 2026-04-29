@@ -1,11 +1,11 @@
+use crate::tui::theme::THEME;
 use ratatui::{
-    style::{Style, Modifier},
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    layout::Rect,
-    Frame,
 };
-use crate::tui::theme::THEME;
 
 /// A single log entry with an optional agent tag.
 #[derive(Debug, Clone)]
@@ -67,7 +67,9 @@ impl<'a> LogsWidget<'a> {
             .iter()
             .filter(|e| {
                 self.filter.is_none_or(|f| {
-                    e.agent.as_deref().is_some_and(|a| a == f || a.starts_with(&format!("{}:", f)))
+                    e.agent
+                        .as_deref()
+                        .is_some_and(|a| a == f || a.starts_with(&format!("{}:", f)))
                 })
             })
             .collect();
@@ -118,17 +120,11 @@ fn visual_rows(entry: &LogEntry, panel_width: usize) -> usize {
 }
 
 fn format_entry(entry: &LogEntry) -> Line<'static> {
-    let ts = Span::styled(
-        format!("{} ", entry.timestamp),
-        THEME.log_timestamp(),
-    );
+    let ts = Span::styled(format!("{} ", entry.timestamp), THEME.log_timestamp());
 
     match &entry.agent {
         None => {
-            let msg = Span::styled(
-                entry.message.clone(),
-                Style::default().fg(THEME.text),
-            );
+            let msg = Span::styled(entry.message.clone(), Style::default().fg(THEME.text));
             Line::from(vec![ts, Span::styled("◈ ", THEME.secondary), msg])
         }
         Some(agent) => {
@@ -137,26 +133,25 @@ fn format_entry(entry: &LogEntry) -> Line<'static> {
             } else {
                 (THEME.primary, THEME.text)
             };
-            
-            let tag = Span::styled(
-                format!("{}", agent),
-                THEME.agent_tag(tag_color),
-            );
-            
+
+            let tag = Span::styled(agent.to_string(), THEME.agent_tag(tag_color));
+
             let separator = Span::styled(" ┃ ", Style::default().fg(THEME.muted));
-            
+
             // Error marker
             let prefix = if entry.is_error {
-                Span::styled("✗ ", Style::default().fg(THEME.error).add_modifier(Modifier::BOLD))
+                Span::styled(
+                    "✗ ",
+                    Style::default()
+                        .fg(THEME.error)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 Span::raw("")
             };
-            
-            let msg = Span::styled(
-                entry.message.clone(),
-                Style::default().fg(msg_color),
-            );
-            
+
+            let msg = Span::styled(entry.message.clone(), Style::default().fg(msg_color));
+
             Line::from(vec![ts, tag, separator, prefix, msg])
         }
     }
@@ -177,7 +172,7 @@ fn current_time() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn make_terminal() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
@@ -189,7 +184,11 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                LogsWidget { entries: &[], filter: None }.render(f, area);
+                LogsWidget {
+                    entries: &[],
+                    filter: None,
+                }
+                .render(f, area);
             })
             .unwrap();
     }
@@ -220,7 +219,11 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                LogsWidget { entries: &entries, filter: None }.render(f, area);
+                LogsWidget {
+                    entries: &entries,
+                    filter: None,
+                }
+                .render(f, area);
             })
             .unwrap();
     }

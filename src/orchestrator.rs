@@ -39,7 +39,7 @@ impl Orchestrator {
             repl_state: None,
         }
     }
-    
+
     /// Set the REPL state reference for session tracking.
     pub fn with_repl_state(mut self, repl_state: Arc<crate::repl::ReplState>) -> Self {
         self.repl_state = Some(repl_state);
@@ -110,7 +110,11 @@ impl Orchestrator {
                             .unwrap_or(0);
                         let _ = writeln!(f, "=== cortex session (unix={}) ===", ts);
                         while let Some(ev) = log_rx.recv().await {
-                            if let TuiEvent::TokenChunk { ref agent, ref chunk } = ev {
+                            if let TuiEvent::TokenChunk {
+                                ref agent,
+                                ref chunk,
+                            } = ev
+                            {
                                 let _ = writeln!(f, "[{}] {}", agent, chunk);
                             }
                         }
@@ -208,7 +212,10 @@ mod tests {
 
         let phases = ["init", "plan", "build", "test", "deploy"];
         for phase in &phases {
-            tx.send(TuiEvent::PhaseComplete { phase: phase.to_string() }).unwrap();
+            tx.send(TuiEvent::PhaseComplete {
+                phase: phase.to_string(),
+            })
+            .unwrap();
         }
 
         for expected in &phases {
@@ -267,7 +274,10 @@ mod tests {
 
         let event = rx.recv().await.unwrap();
         match event {
-            TuiEvent::WorkflowStarted { workflow, agents: got } => {
+            TuiEvent::WorkflowStarted {
+                workflow,
+                agents: got,
+            } => {
                 assert_eq!(workflow, "dev");
                 assert_eq!(got, agents);
             }
@@ -280,8 +290,14 @@ mod tests {
     async fn test_agent_lifecycle_ordering() {
         let (tx, mut rx) = channel();
 
-        tx.send(TuiEvent::AgentStarted { agent: "ceo".into() }).unwrap();
-        tx.send(TuiEvent::AgentDone   { agent: "ceo".into() }).unwrap();
+        tx.send(TuiEvent::AgentStarted {
+            agent: "ceo".into(),
+        })
+        .unwrap();
+        tx.send(TuiEvent::AgentDone {
+            agent: "ceo".into(),
+        })
+        .unwrap();
 
         let e1 = rx.recv().await.unwrap();
         let e2 = rx.recv().await.unwrap();

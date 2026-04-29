@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
-use anyhow::{bail, Result};
 use crate::config::Config;
+use anyhow::{Result, bail};
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub title: String,
-    pub url:   String,
+    pub url: String,
     pub snippet: String,
 }
 
@@ -22,8 +22,8 @@ pub async fn search(query: &str, max_results: usize) -> Result<Vec<SearchResult>
     if api_key.is_empty() {
         // Offline stub — real provider wired when WEB_SEARCH_API_KEY is set.
         return Ok(vec![SearchResult {
-            title:   format!("Search results for: {}", query),
-            url:     "https://example.com".into(),
+            title: format!("Search results for: {}", query),
+            url: "https://example.com".into(),
             snippet: format!(
                 "[offline mode] No WEB_SEARCH_API_KEY set. Query was: {}",
                 query
@@ -52,8 +52,8 @@ pub async fn search(query: &str, max_results: usize) -> Result<Vec<SearchResult>
         .unwrap_or_default()
         .into_iter()
         .map(|r| SearchResult {
-            title:   r["title"].as_str().unwrap_or("").to_string(),
-            url:     r["url"].as_str().unwrap_or("").to_string(),
+            title: r["title"].as_str().unwrap_or("").to_string(),
+            url: r["url"].as_str().unwrap_or("").to_string(),
             snippet: r["description"].as_str().unwrap_or("").to_string(),
         })
         .collect();
@@ -86,7 +86,10 @@ pub async fn fetch_context(query: &str, config: &Config) -> String {
             for (i, r) in results.iter().enumerate() {
                 block.push_str(&format!(
                     "{}. **{}** ({})\n   {}\n",
-                    i + 1, r.title, r.url, r.snippet
+                    i + 1,
+                    r.title,
+                    r.url,
+                    r.snippet
                 ));
             }
             block
@@ -117,7 +120,10 @@ mod tests {
     async fn fetch_context_disabled_returns_empty() {
         let config = Config::default();
         let ctx = fetch_context("Rust async traits", &config).await;
-        assert!(ctx.is_empty(), "should be empty when web_search_enabled is false");
+        assert!(
+            ctx.is_empty(),
+            "should be empty when web_search_enabled is false"
+        );
     }
 
     #[tokio::test]

@@ -78,13 +78,24 @@ async fn main() -> Result<()> {
             let (tx, rx) = tui::events::channel();
             tui::Tui::new()?.run(rx, tx, Arc::clone(&shared)).await?;
         }
-        Some(Commands::Start { idea, auto, workflow, model, provider }) => {
+        Some(Commands::Start {
+            idea,
+            auto,
+            workflow,
+            model,
+            provider,
+        }) => {
             let config = apply_overrides(config, model, provider);
             let wf = workflows::get_workflow(&workflow)?;
             let orch = Orchestrator::new(wf, Arc::new(config));
             orch.run_with_opts(idea, auto, verbose, None).await?;
         }
-        Some(Commands::Run { workflow, prompt, model, provider }) => {
+        Some(Commands::Run {
+            workflow,
+            prompt,
+            model,
+            provider,
+        }) => {
             let config = apply_overrides(config, model, provider);
             let wf = workflows::get_workflow(&workflow)?;
             let orch = Orchestrator::new(wf, Arc::new(config));
@@ -98,10 +109,7 @@ async fn main() -> Result<()> {
                 );
                 std::process::exit(1);
             }
-            let orch = Orchestrator::new(
-                workflows::get_workflow("dev")?,
-                Arc::new(config),
-            );
+            let orch = Orchestrator::new(workflows::get_workflow("dev")?, Arc::new(config));
             let prompt = format!(
                 "Resume and complete the project in: {}",
                 project_dir.display()

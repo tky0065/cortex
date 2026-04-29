@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
+use crate::tui::theme::THEME;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
-use crate::tui::theme::THEME;
 
 /// Data stored in App once `WorkflowComplete` is received.
 #[derive(Debug, Clone)]
@@ -72,9 +72,7 @@ impl<'a> SummaryWidget<'a> {
             Span::styled("  🚀 Launch: ", Style::default().fg(THEME.primary)),
             Span::styled(
                 "docker-compose up",
-                Style::default()
-                    .fg(THEME.text)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(THEME.text).add_modifier(Modifier::BOLD),
             ),
         ]));
 

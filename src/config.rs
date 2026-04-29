@@ -33,17 +33,11 @@ pub struct ApiKeysConfig {
 }
 
 /// Optional tools configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolsConfig {
     /// Enable web search context injection for all agents. Requires `api_keys.web_search` to be set.
     #[serde(default)]
     pub web_search_enabled: bool,
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self { web_search_enabled: false }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,19 +70,21 @@ pub struct LimitsConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            provider: ProviderConfig { default: "ollama".to_string() },
+            provider: ProviderConfig {
+                default: "ollama".to_string(),
+            },
             models: ModelConfig {
-                ceo:       "qwen2.5-coder:32b".to_string(),
-                pm:        "qwen2.5-coder:32b".to_string(),
+                ceo: "qwen2.5-coder:32b".to_string(),
+                pm: "qwen2.5-coder:32b".to_string(),
                 tech_lead: "qwen2.5-coder:32b".to_string(),
                 developer: "qwen2.5-coder:32b".to_string(),
-                qa:        "qwen2.5-coder:14b".to_string(),
-                devops:    "qwen2.5-coder:14b".to_string(),
+                qa: "qwen2.5-coder:14b".to_string(),
+                devops: "qwen2.5-coder:14b".to_string(),
                 assistant: "qwen2.5-coder:32b".to_string(),
             },
             limits: LimitsConfig {
-                max_qa_iterations:    5,
-                max_tokens_per_call:  8192,
+                max_qa_iterations: 5,
+                max_tokens_per_call: 8192,
                 max_parallel_workers: 4,
             },
             api_keys: ApiKeysConfig::default(),
@@ -103,14 +99,15 @@ impl Config {
         let config_path = config_dir.join("config.toml");
 
         if !config_dir.exists() {
-            fs::create_dir_all(&config_dir)
-                .with_context(|| format!("Failed to create config dir: {}", config_dir.display()))?;
+            fs::create_dir_all(&config_dir).with_context(|| {
+                format!("Failed to create config dir: {}", config_dir.display())
+            })?;
         }
 
         if !config_path.exists() {
             let defaults = Config::default();
-            let toml_str = toml::to_string_pretty(&defaults)
-                .context("Failed to serialize default config")?;
+            let toml_str =
+                toml::to_string_pretty(&defaults).context("Failed to serialize default config")?;
             fs::write(&config_path, &toml_str)
                 .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
             return Ok(defaults);
@@ -128,8 +125,9 @@ impl Config {
     pub fn save(&self) -> Result<()> {
         let config_dir = Self::config_dir()?;
         if !config_dir.exists() {
-            fs::create_dir_all(&config_dir)
-                .with_context(|| format!("Failed to create config dir: {}", config_dir.display()))?;
+            fs::create_dir_all(&config_dir).with_context(|| {
+                format!("Failed to create config dir: {}", config_dir.display())
+            })?;
         }
         let config_path = config_dir.join("config.toml");
         let toml_str = toml::to_string_pretty(self).context("Failed to serialize config")?;
@@ -141,23 +139,26 @@ impl Config {
     /// Update the model for a named role. Returns an error if the role is unknown.
     pub fn set_model(&mut self, role: &str, model: String) -> Result<()> {
         match role {
-            "ceo"       => self.models.ceo = model,
-            "pm"        => self.models.pm = model,
+            "ceo" => self.models.ceo = model,
+            "pm" => self.models.pm = model,
             "tech_lead" => self.models.tech_lead = model,
             "developer" => self.models.developer = model,
-            "qa"        => self.models.qa = model,
-            "devops"    => self.models.devops = model,
+            "qa" => self.models.qa = model,
+            "devops" => self.models.devops = model,
             "assistant" => self.models.assistant = model,
             "all" => {
-                self.models.ceo       = model.clone();
-                self.models.pm        = model.clone();
+                self.models.ceo = model.clone();
+                self.models.pm = model.clone();
                 self.models.tech_lead = model.clone();
                 self.models.developer = model.clone();
-                self.models.qa        = model.clone();
-                self.models.devops    = model.clone();
+                self.models.qa = model.clone();
+                self.models.devops = model.clone();
                 self.models.assistant = model;
             }
-            other => anyhow::bail!("Unknown role '{}'. Valid roles: ceo, pm, tech_lead, developer, qa, devops, assistant, all", other),
+            other => anyhow::bail!(
+                "Unknown role '{}'. Valid roles: ceo, pm, tech_lead, developer, qa, devops, assistant, all",
+                other
+            ),
         }
         Ok(())
     }
@@ -171,10 +172,13 @@ impl Config {
     pub fn set_api_key(&mut self, provider: &str, key: String) -> Result<()> {
         match provider {
             "openrouter" => self.api_keys.openrouter = Some(key),
-            "groq"       => self.api_keys.groq = Some(key),
-            "together"   => self.api_keys.together = Some(key),
+            "groq" => self.api_keys.groq = Some(key),
+            "together" => self.api_keys.together = Some(key),
             "web_search" => self.api_keys.web_search = Some(key),
-            other => anyhow::bail!("Unknown provider '{}'. Valid providers: openrouter, groq, together, web_search", other),
+            other => anyhow::bail!(
+                "Unknown provider '{}'. Valid providers: openrouter, groq, together, web_search",
+                other
+            ),
         }
         Ok(())
     }
@@ -184,10 +188,10 @@ impl Config {
     pub fn get_api_key(&self, provider: &str) -> Option<&str> {
         match provider {
             "openrouter" => self.api_keys.openrouter.as_deref(),
-            "groq"       => self.api_keys.groq.as_deref(),
-            "together"   => self.api_keys.together.as_deref(),
+            "groq" => self.api_keys.groq.as_deref(),
+            "together" => self.api_keys.together.as_deref(),
             "web_search" => self.api_keys.web_search.as_deref(),
-            _            => None,
+            _ => None,
         }
     }
 

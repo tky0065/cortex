@@ -1,3 +1,4 @@
+use crate::tui::theme::THEME;
 /// Generic searchable picker popup widget.
 ///
 /// Renders a centered popup with:
@@ -9,13 +10,12 @@
 ///
 /// Caller maintains `PickerState` and drives it with `PickerState::handle_*` helpers.
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
-use crate::tui::theme::THEME;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -67,16 +67,18 @@ impl PickerState {
             .iter()
             .flat_map(|g| {
                 let q = q.clone();
-                g.items.iter().filter(move |item| {
-                    q.is_empty()
-                        || item.label.to_lowercase().contains(&q)
-                        || item
-                            .description
-                            .as_deref()
-                            .map(|d| d.to_lowercase().contains(&q))
-                            .unwrap_or(false)
-                })
-                .map(move |item| (g.title.as_str(), item))
+                g.items
+                    .iter()
+                    .filter(move |item| {
+                        q.is_empty()
+                            || item.label.to_lowercase().contains(&q)
+                            || item
+                                .description
+                                .as_deref()
+                                .map(|d| d.to_lowercase().contains(&q))
+                                .unwrap_or(false)
+                    })
+                    .map(move |item| (g.title.as_str(), item))
             })
             .collect()
     }
@@ -147,14 +149,13 @@ impl<'a> PickerWidget<'a> {
 
         // Title row
         let title_line = Line::from(vec![
-            Span::styled(
-                format!(" {} ", self.state.title),
-                THEME.title_style(),
-            ),
+            Span::styled(format!(" {} ", self.state.title), THEME.title_style()),
             Span::raw("  "),
             Span::styled(
                 "esc to close",
-                Style::default().fg(THEME.muted).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(THEME.muted)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]);
         frame.render_widget(Paragraph::new(title_line), chunks[0]);
@@ -210,12 +211,12 @@ impl<'a> PickerWidget<'a> {
                 )
             };
 
-            let mut spans = vec![check, Span::styled(format!(" {} ", item.label), label_style)];
+            let mut spans = vec![
+                check,
+                Span::styled(format!(" {} ", item.label), label_style),
+            ];
             if let Some(desc) = &item.description {
-                spans.push(Span::styled(
-                    format!("  {}", desc),
-                    desc_style,
-                ));
+                spans.push(Span::styled(format!("  {}", desc), desc_style));
             }
             rows.push(ListItem::new(Line::from(spans)).style(Style::default().bg(row_bg)));
         }
@@ -226,8 +227,7 @@ impl<'a> PickerWidget<'a> {
         let row_idx = cursor_to_row_idx(&filtered, self.state.cursor);
         list_state.select(Some(row_idx));
 
-        let list = List::new(rows)
-            .style(Style::default().bg(THEME.bg));
+        let list = List::new(rows).style(Style::default().bg(THEME.bg));
 
         frame.render_stateful_widget(list, chunks[4], &mut list_state);
     }
@@ -329,12 +329,10 @@ pub fn model_picker(current_models: &[(&str, &str)]) -> PickerState {
             checked: false,
         })
         .collect();
-    let groups = vec![
-        PickerGroup {
-            title: "Roles — select to edit".to_string(),
-            items,
-        },
-    ];
+    let groups = vec![PickerGroup {
+        title: "Roles — select to edit".to_string(),
+        items,
+    }];
     PickerState::new("Set model per role", groups)
 }
 
