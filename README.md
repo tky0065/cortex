@@ -6,11 +6,11 @@ Cortex is an agentic CLI written in Rust that simulates a full software developm
 
 ## What's new in 0.1.4
 
-- `cortex init` / `/init` scans the current project and maintains `AGENTS.md` as durable agent context.
-- Project `AGENTS.md` is injected into workflow agents and assistant prompts before planning or editing.
-- Cortex skills can be managed from the CLI or TUI and injected into relevant prompts.
-- Assistant responses stream in the TUI while private tool-call XML stays hidden.
-- The TUI command palette, skill picker, status widgets, and agent panels have been expanded.
+- **Professional Progress Indicators**: Replaced the bulky green gauge with a discrete inline progress bar (`[███░░] 60%`) and an animated spinner for active agents.
+- **Scrollable Agent Panels**: View long reports directly in the TUI using **Alt + Up/Down** or **PageUp/Down**.
+- **`cortex init` / `/init`**: Scans the current project and maintains `AGENTS.md` as durable agent context.
+- **Project Context Injection**: `AGENTS.md` is automatically injected into workflow agents and assistant prompts.
+- **Expanded TUI**: Improved command palette, skill picker, and status widgets.
 
 ---
 
@@ -246,6 +246,17 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/clear` | Clear visible logs |
 | `/logs` | Toggle log panel focus |
 | `/quit` or `/exit` | Exit Cortex |
+
+**Keyboard Shortcuts**
+
+| Shortcut | Action |
+|----------|-------------|
+| **Alt + ↑ / ↓** | Scroll active agent content (5 lines) |
+| **PageUp / PageDown** | Fast scroll active agent content (15 lines) |
+| **↑ / ↓** | Cycle through command history |
+| **Tab** | Trigger command palette or autocomplete |
+| **Ctrl + C** | Abort current action or exit |
+| **Ctrl + Y** | Copy all visible logs and agent output to clipboard |
 
 **Examples:**
 

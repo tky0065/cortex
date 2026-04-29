@@ -27,6 +27,8 @@ pub struct ActiveAgent {
     pub status: AgentRunStatus,
     /// Progress 0–100 (advanced by token chunks)
     pub progress: u8,
+    /// Vertical scroll offset for the content area
+    pub scroll_offset: usize,
 }
 
 impl ActiveAgent {
@@ -38,6 +40,7 @@ impl ActiveAgent {
             stream_buffer: String::new(),
             status: AgentRunStatus::Running,
             progress: 0,
+            scroll_offset: 0,
         }
     }
 
@@ -52,6 +55,7 @@ impl ActiveAgent {
         self.summary.clear();
         self.stream_buffer.clear();
         self.progress = 0;
+        self.scroll_offset = 0;
     }
 
     pub fn set_summary(&mut self, summary: &str) {
@@ -249,18 +253,23 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
 
     if !agent.stream_buffer.is_empty() {
         if agent.status == AgentRunStatus::Done {
-            // Done: render full content as formatted markdown, shown from top.
+            // Done: render full content as formatted markdown, shown from top + scroll offset.
             let md_lines = render_markdown_lines(&agent.stream_buffer);
             frame.render_widget(
-                Paragraph::new(md_lines).wrap(Wrap { trim: false }),
+                Paragraph::new(md_lines)
+                    .wrap(Wrap { trim: false })
+                    .scroll((agent.scroll_offset as u16, 0)),
                 content_area,
             );
         } else {
-            // Streaming: word-wrap and show only the last `available_lines` rows
-            // so the newest text stays visible at the bottom.
+            // Streaming: word-wrap and show the last `available_lines` rows (auto-scroll to bottom),
+            // but allow manual scroll-up by subtracting `scroll_offset`.
             let wrapped = word_wrap(&agent.stream_buffer, panel_width.max(1));
-            let start = wrapped.len().saturating_sub(available_lines);
-            let visible_lines: Vec<Line> = wrapped[start..]
+            let base_start = wrapped.len().saturating_sub(available_lines);
+            let start = base_start.saturating_sub(agent.scroll_offset);
+            let end = (start + available_lines).min(wrapped.len());
+
+            let visible_lines: Vec<Line> = wrapped[start..end]
                 .iter()
                 .enumerate()
                 .map(|(i, line)| {

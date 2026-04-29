@@ -141,7 +141,7 @@ function Content() {
     <main className="docs-content">
       <span className="docs-eyebrow">Documentation · v0.1.4</span>
       <h1>Cortex</h1>
-      <p style={{ fontSize: 18, color: "var(--fg)" }}>An agentic CLI written in Rust that simulates a full software-development company. Give it a natural-language idea; it orchestrates specialized AI agents to produce a complete, deployable project.</p>
+      <p style={{ fontSize: 18, color: "var(--fg)" }}>An agentic CLI in Rust. Generate projects, review code, manage reusable skills, and view long reports with professional progress indicators and scrollable agent panels.</p>
 
       <section id="introduction" className="docs-section">
         <h2>Introduction</h2>
@@ -274,6 +274,19 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
         </table>
         <p>The workflow name can be omitted (defaults to <code>dev</code>):</p>
         <CopyLine cmd='/start "build a chat app"' />
+
+        <h3>Keyboard Shortcuts</h3>
+        <table>
+          <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Alt + ↑ / ↓</strong></td><td>Scroll active agent content (5 lines)</td></tr>
+            <tr><td><strong>PageUp / PageDown</strong></td><td>Fast scroll active agent content (15 lines)</td></tr>
+            <tr><td><strong>↑ / ↓</strong></td><td>Cycle through command history</td></tr>
+            <tr><td><strong>Tab</strong></td><td>Trigger command palette or autocomplete</td></tr>
+            <tr><td><strong>Ctrl + C</strong></td><td>Abort current action or exit</td></tr>
+            <tr><td><strong>Ctrl + Y</strong></td><td>Copy all visible output to clipboard</td></tr>
+          </tbody>
+        </table>
       </section>
 
       <section id="cli" className="docs-section">
