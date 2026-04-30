@@ -21,7 +21,11 @@ use config::Config;
 use orchestrator::Orchestrator;
 
 #[derive(Parser)]
-#[command(name = "cortex", version, about = "Your entire team, in one command.")]
+#[command(
+    name = "cortex",
+    version,
+    about = "Beta agentic CLI: your entire team, in one command."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

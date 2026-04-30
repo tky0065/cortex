@@ -2,10 +2,13 @@
 
 > **Your entire team, in one command.**
 
-Cortex is an agentic CLI written in Rust that simulates a full software development company. You give it a natural-language idea; it orchestrates specialized AI agents to produce a complete, deployable project.
+Cortex is a beta agentic CLI written in Rust that simulates a full software development company. You give it a natural-language idea; it orchestrates specialized AI agents to produce a complete, deployable project.
 
-## What's new in 0.1.4
+**Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
+## What's new in 0.1.4 beta
+
+- **Beta Release Track**: Cortex 0.1.4 marks the project as beta across the CLI metadata, README, and website.
 - **Professional Progress Indicators**: Replaced the bulky green gauge with a discrete inline progress bar (`[███░░] 60%`) and an animated spinner for active agents.
 - **Scrollable Agent Panels**: View long reports directly in the TUI using **Alt + Up/Down** or **PageUp/Down**.
 - **`cortex init` / `/init`**: Scans the current project and maintains `AGENTS.md` as durable agent context.
@@ -47,7 +50,7 @@ Cortex is an agentic CLI written in Rust that simulates a full software developm
 
 ### macOS and Linux
 
-Install the latest published Cortex release:
+Install the latest published Cortex beta release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tky0065/cortex/main/install.sh | sh
@@ -63,7 +66,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ### Windows
 
-Install the latest Windows release from PowerShell:
+Install the latest Windows beta release from PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tky0065/cortex/main/install.ps1 | iex"
@@ -713,7 +716,7 @@ Test coverage areas:
 
 ## 15. Release Process
 
-Cortex releases are published through GitHub Releases.
+Cortex beta releases are published through GitHub Releases.
 
 1. Update `Cargo.toml` to the release version.
 2. Run the local checks:

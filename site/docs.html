@@ -139,12 +139,13 @@ function TOC({ active }) {
 function Content() {
   return (
     <main className="docs-content">
-      <span className="docs-eyebrow">Documentation · v0.1.4</span>
+      <span className="docs-eyebrow">Documentation · v0.1.4 beta</span>
       <h1>Cortex</h1>
-      <p style={{ fontSize: 18, color: "var(--fg)" }}>Orchestrate specialized AI agents to build and ship your projects from your terminal.</p>
+      <p style={{ fontSize: 18, color: "var(--fg)" }}>Orchestrate specialized AI agents to build and ship your projects from your terminal. Cortex is currently in beta.</p>
 
       <section id="introduction" className="docs-section">
         <h2>Introduction</h2>
+        <p><strong>Status:</strong> Cortex is in beta. It is ready for early adopters, while workflows, providers, and generated project structure may still evolve before a stable 1.0 release.</p>
         <p>Cortex runs like a REPL by default — type <code>cortex</code> to launch the TUI. Inside, you give it an idea via a slash command and watch six specialized agents take it from brief to deployable repo: <strong>CEO → PM → Tech Lead → Developer ×N → QA → DevOps</strong>.</p>
         <p>Each agent reads only the files it needs from disk — never the full transcript. This <em>file-as-memory</em> pattern keeps context windows bounded even on multi-hour runs.</p>
       </section>
@@ -153,12 +154,12 @@ function Content() {
         <h2>Installation</h2>
         <h3>macOS &amp; Linux</h3>
         <CopyLine cmd="curl -fsSL https://raw.githubusercontent.com/tky0065/cortex/main/install.sh | sh" />
-        <p>Downloads the right binary from GitHub Releases, verifies its SHA-256 checksum, and installs to <code>~/.local/bin/cortex</code>. If that directory isn't on your <code>PATH</code>:</p>
+        <p>Downloads the right beta binary from GitHub Releases, verifies its SHA-256 checksum, and installs to <code>~/.local/bin/cortex</code>. If that directory isn't on your <code>PATH</code>:</p>
         <CopyLine cmd='export PATH="$HOME/.local/bin:$PATH"' />
 
         <h3>Windows</h3>
         <CopyLine cmd='powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tky0065/cortex/main/install.ps1 | iex"' />
-        <p>Installs <code>cortex.exe</code> to <code>%USERPROFILE%\.cortex\bin</code> and adds that directory to your user <code>PATH</code> if needed.</p>
+        <p>Installs the beta <code>cortex.exe</code> to <code>%USERPROFILE%\.cortex\bin</code> and adds that directory to your user <code>PATH</code> if needed.</p>
 
         <h3>Runtime prerequisites</h3>
         <table>
