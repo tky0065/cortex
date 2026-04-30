@@ -15,7 +15,8 @@ use crate::auth::{AuthMethod, AuthRecord, AuthStore};
 
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_ISSUER: &str = "https://auth.openai.com";
-const OPENAI_CODEX_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+// Public Responses API endpoint — works with ChatGPT OAuth access tokens
+const OPENAI_CODEX_ENDPOINT: &str = "https://api.openai.com/v1/responses";
 const OPENAI_OAUTH_PORT: u16 = 1455;
 const OPENAI_OAUTH_CALLBACK_PATH: &str = "/auth/callback";
 
@@ -121,15 +122,20 @@ pub async fn chatgpt_codex_complete(
     );
     headers.insert(USER_AGENT, HeaderValue::from_static("cortex"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert("originator", HeaderValue::from_static("openai-codex-cli"));
     if let Some(account_id) = record.account_id.as_deref() {
         headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
     }
 
-    // The Codex endpoint accepts the standard OpenAI chat completions format
-    // (messages with system/user roles), not the Responses API format.
+    // Responses API format: instructions (system prompt) + input (turns)
+    let input: Vec<_> = turns
+        .iter()
+        .map(|turn| json!({"role": turn.role, "content": turn.content}))
+        .collect();
     let body = json!({
         "model": model,
-        "messages": openai_messages(preamble, turns),
+        "instructions": preamble,
+        "input": input,
         "stream": false
     });
     post_json_for_text(OPENAI_CODEX_ENDPOINT, headers, body).await
