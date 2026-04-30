@@ -11,7 +11,14 @@ pub async fn fetch_models(provider: &str) -> Result<Vec<String>> {
     let provider = super::registry::normalize_provider(provider);
     match provider {
         "openai" => fetch_openai().await,
-        "openai_chatgpt" => Ok(static_fallback("openai_chatgpt")),
+        "openai_chatgpt" => {
+            fetch_openai_compatible(
+                "openai_chatgpt",
+                "OPENAI_API_KEY",
+                "https://api.openai.com/v1/models",
+            )
+            .await
+        }
         "anthropic" => fetch_anthropic().await,
         "gemini" => fetch_gemini().await,
         "mistral" => fetch_mistral().await,
@@ -24,8 +31,22 @@ pub async fn fetch_models(provider: &str) -> Result<Vec<String>> {
             )
             .await
         }
-        "deepseek" => Ok(static_fallback("deepseek")),
-        "perplexity" => Ok(static_fallback("perplexity")),
+        "deepseek" => {
+            fetch_openai_compatible(
+                "deepseek",
+                "DEEPSEEK_API_KEY",
+                "https://api.deepseek.com/models",
+            )
+            .await
+        }
+        "perplexity" => {
+            fetch_openai_compatible(
+                "perplexity",
+                "PERPLEXITY_API_KEY",
+                "https://api.perplexity.ai/models",
+            )
+            .await
+        }
         "huggingface" => Ok(static_fallback("huggingface")),
         "azure_openai" => Ok(static_fallback("azure_openai")),
         "github_copilot" => {
@@ -72,8 +93,47 @@ pub async fn fetch_models(provider: &str) -> Result<Vec<String>> {
             fetch_openai_compatible("zai", "ZAI_API_KEY", "https://api.z.ai/api/paas/v4/models")
                 .await
         }
-        "302ai" | "alibaba" | "cloudflare" | "minimax" | "nebius" | "scaleway"
-        | "vercel_ai_gateway" | "gitlab_duo" | "google_vertex" | "amazon_bedrock" => {
+        "alibaba" => {
+            fetch_openai_compatible(
+                "alibaba",
+                "ALIBABA_API_KEY",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+            )
+            .await
+        }
+        "minimax" => {
+            fetch_openai_compatible(
+                "minimax",
+                "MINIMAX_API_KEY",
+                "https://api.minimax.io/v1/models",
+            )
+            .await
+        }
+        "nebius" => {
+            fetch_openai_compatible(
+                "nebius",
+                "NEBIUS_API_KEY",
+                "https://api.studio.nebius.com/v1/models",
+            )
+            .await
+        }
+        "scaleway" => {
+            fetch_openai_compatible(
+                "scaleway",
+                "SCALEWAY_API_KEY",
+                "https://api.scaleway.ai/v1/models",
+            )
+            .await
+        }
+        "vercel_ai_gateway" => {
+            fetch_openai_compatible(
+                "vercel_ai_gateway",
+                "VERCEL_AI_GATEWAY_API_KEY",
+                "https://ai-gateway.vercel.sh/v1/models",
+            )
+            .await
+        }
+        "302ai" | "cloudflare" | "gitlab_duo" | "google_vertex" | "amazon_bedrock" => {
             Ok(static_fallback(provider))
         }
         "lmstudio" => fetch_lmstudio().await,
