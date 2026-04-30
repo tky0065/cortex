@@ -125,9 +125,9 @@ pub async fn chatgpt_codex_complete(
         USER_AGENT,
         HeaderValue::from_str(&format!(
             "opencode/0.1.0 ({} {}; {})",
-            std::env::consts::OS,
+            node_platform(),
             sysinfo_release(),
-            std::env::consts::ARCH
+            node_arch(),
         ))?,
     );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -136,6 +136,25 @@ pub async fn chatgpt_codex_complete(
     headers.insert(
         "session_id",
         HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())?,
+    );
+    // Stainless SDK headers that the OpenAI Node SDK adds (the Codex endpoint expects them)
+    headers.insert("x-stainless-lang", HeaderValue::from_static("js"));
+    headers.insert(
+        "x-stainless-package-version",
+        HeaderValue::from_static("4.98.0"),
+    );
+    headers.insert("x-stainless-runtime", HeaderValue::from_static("node"));
+    headers.insert(
+        "x-stainless-runtime-version",
+        HeaderValue::from_static("v22.0.0"),
+    );
+    headers.insert(
+        "x-stainless-os",
+        HeaderValue::from_static(stainless_os()),
+    );
+    headers.insert(
+        "x-stainless-arch",
+        HeaderValue::from_str(node_arch())?,
     );
     if let Some(account_id) = record.account_id.as_deref() {
         headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
@@ -628,6 +647,33 @@ fn sysinfo_release() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "0.0.0".to_string())
+}
+
+/// Maps Rust OS names to Node.js os.platform() values (what opencode sends).
+fn node_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    }
+}
+
+/// Maps Rust arch names to Node.js os.arch() values.
+fn node_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    }
+}
+
+/// Maps Rust OS names to Stainless SDK os header values.
+fn stainless_os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "MacOS",
+        "linux" => "Linux",
+        "windows" => "Windows",
+        _ => "Unknown",
+    }
 }
 
 #[cfg(test)]
