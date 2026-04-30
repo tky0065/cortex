@@ -11,14 +11,7 @@ pub async fn fetch_models(provider: &str) -> Result<Vec<String>> {
     let provider = super::registry::normalize_provider(provider);
     match provider {
         "openai" => fetch_openai().await,
-        "openai_chatgpt" => {
-            fetch_openai_compatible(
-                "openai_chatgpt",
-                "OPENAI_API_KEY",
-                "https://api.openai.com/v1/models",
-            )
-            .await
-        }
+        "openai_chatgpt" => fetch_openai_chatgpt().await,
         "anthropic" => fetch_anthropic().await,
         "gemini" => fetch_gemini().await,
         "mistral" => fetch_mistral().await,
@@ -348,6 +341,87 @@ async fn fetch_openai_compatible(provider: &str, env_var: &str, url: &str) -> Re
     Ok(ids)
 }
 
+/// Fetch ChatGPT-subscription-compatible models.
+/// The OAuth token is stored under "openai" in AuthStore (not "openai_chatgpt"),
+/// so we check both keys before falling back to the env var / static list.
+async fn fetch_openai_chatgpt() -> Result<Vec<String>> {
+    let store = crate::auth::AuthStore::load().ok();
+    let key = store
+        .as_ref()
+        .and_then(|s| s.bearer_token("openai_chatgpt").map(ToOwned::to_owned))
+        .or_else(|| {
+            store
+                .as_ref()
+                .and_then(|s| s.bearer_token("openai").map(ToOwned::to_owned))
+        })
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .unwrap_or_default();
+
+    if key.is_empty() {
+        return Ok(static_fallback("openai_chatgpt"));
+    }
+
+    let resp = reqwest::Client::new()
+        .get("https://api.openai.com/v1/models")
+        .bearer_auth(&key)
+        .send()
+        .await;
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(_) => return Ok(static_fallback("openai_chatgpt")),
+    };
+
+    let resp = match resp.error_for_status() {
+        Ok(r) => r,
+        Err(_) => return Ok(static_fallback("openai_chatgpt")),
+    };
+
+    let models: OpenAiModelsResponse = match resp.json().await {
+        Ok(m) => m,
+        Err(_) => return Ok(static_fallback("openai_chatgpt")),
+    };
+
+    // Filter to ChatGPT-subscription-compatible models (mirrors opencode's codex plugin).
+    let allowed: std::collections::HashSet<&str> = [
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "gpt-5.2",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+    ]
+    .into();
+
+    let mut ids: Vec<String> = models
+        .data
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| {
+            if allowed.contains(id.as_str()) {
+                return true;
+            }
+            // Include any future gpt-5.x where x > 5.4
+            if let Some(cap) = id.strip_prefix("gpt-") {
+                let version = cap.split('-').next().unwrap_or("");
+                if let Ok(v) = version.parse::<f32>() {
+                    return v > 5.4;
+                }
+            }
+            false
+        })
+        .collect();
+
+    if ids.is_empty() {
+        return Ok(static_fallback("openai_chatgpt"));
+    }
+
+    ids.sort();
+    Ok(ids)
+}
+
 async fn fetch_lmstudio() -> Result<Vec<String>> {
     let base_url = std::env::var("LMSTUDIO_BASE_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:1234/v1".to_string());
@@ -409,9 +483,17 @@ fn static_fallback(provider: &str) -> Vec<String> {
             "gpt-5-mini".to_string(),
         ],
         "openai_chatgpt" => vec![
+            "gpt-5.1-codex".to_string(),
+            "gpt-5.1-codex-max".to_string(),
+            "gpt-5.1-codex-mini".to_string(),
+            "gpt-5.2".to_string(),
+            "gpt-5.2-codex".to_string(),
+            "gpt-5.3-codex".to_string(),
             "gpt-5.4".to_string(),
             "gpt-5.4-mini".to_string(),
-            "gpt-5.3-codex".to_string(),
+            "gpt-5.5".to_string(),
+            "gpt-5.5-fast".to_string(),
+            "gpt-5.5-pro".to_string(),
         ],
         "anthropic" => vec![
             "claude-sonnet-4-6".to_string(),
