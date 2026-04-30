@@ -35,7 +35,10 @@ use crate::tui::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
         input::InputBar,
         logs::{LogEntry, LogsWidget},
-        picker::{PickerState, PickerWidget, model_picker, provider_picker, resume_picker},
+        picker::{
+            PickerState, PickerWidget, auth_method_picker, model_picker, provider_picker,
+            resume_picker,
+        },
         pipeline::{AgentState, AgentStatus, PipelineWidget},
         status_bar::{StatusBarState, StatusBarWidget},
     },
@@ -48,6 +51,11 @@ use crate::tui::{
 enum PopupState {
     None,
     ProviderPicker(PickerState),
+    ConnectProviderPicker(PickerState),
+    AuthMethodPicker {
+        provider: String,
+        picker: PickerState,
+    },
     /// First phase: pick a role. Second phase: pick a model from the provider's model list.
     ModelPicker {
         picker: PickerState,
@@ -62,6 +70,17 @@ enum PopupState {
     ApiKeyInput {
         provider: String,
         input: tui_input::Input,
+    },
+    AuthSecretInput {
+        provider: String,
+        method_id: String,
+        input: tui_input::Input,
+    },
+    AuthUrl {
+        provider: String,
+        url: String,
+        message: String,
+        copied: bool,
     },
     /// Resume picker: shows session history for resuming workflows.
     ResumePicker(PickerState),
@@ -193,6 +212,12 @@ impl App {
             PopupState::ProviderPicker(state) => {
                 PickerWidget { state }.render(frame);
             }
+            PopupState::ConnectProviderPicker(state) => {
+                PickerWidget { state }.render(frame);
+            }
+            PopupState::AuthMethodPicker { picker, .. } => {
+                PickerWidget { state: picker }.render(frame);
+            }
             PopupState::ModelPicker {
                 picker,
                 editing_role,
@@ -210,6 +235,21 @@ impl App {
             }
             PopupState::ApiKeyInput { provider, input } => {
                 draw_api_key_overlay(frame, provider, input);
+            }
+            PopupState::AuthSecretInput {
+                provider,
+                method_id,
+                input,
+            } => {
+                draw_api_key_overlay(frame, &format!("{provider} {method_id}"), input);
+            }
+            PopupState::AuthUrl {
+                provider,
+                url,
+                message,
+                copied,
+            } => {
+                draw_auth_url_overlay(frame, provider, url, message, *copied);
             }
             PopupState::ResumePicker(state) => {
                 PickerWidget { state }.render(frame);
@@ -251,6 +291,11 @@ impl App {
                 )));
             }
             TuiEvent::AgentStarted { agent } => {
+                if is_control_agent(agent) {
+                    self.logs
+                        .push(LogEntry::system(format!("{agent}: started")));
+                    return;
+                }
                 self.set_pipeline_status(agent, AgentStatus::Running);
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
@@ -259,6 +304,11 @@ impl App {
                 self.logs.push(LogEntry::agent(agent, "started"));
             }
             TuiEvent::AgentProgress { agent, message } => {
+                if is_control_agent(agent) {
+                    self.logs
+                        .push(LogEntry::system(format!("{agent}: {message}")));
+                    return;
+                }
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
                     a.set_progress(message);
@@ -267,6 +317,11 @@ impl App {
                 // do NOT spam the logs panel with every 5s tick.
             }
             TuiEvent::AgentSummary { agent, summary } => {
+                if is_control_agent(agent) {
+                    self.logs
+                        .push(LogEntry::system(format!("{agent}: {summary}")));
+                    return;
+                }
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
                     a.set_summary(summary);
@@ -274,6 +329,11 @@ impl App {
                 self.logs.push(LogEntry::agent(agent, summary.clone()));
             }
             TuiEvent::TokenChunk { agent, chunk } => {
+                if is_control_agent(agent) {
+                    self.logs
+                        .push(LogEntry::system(format!("{agent}: {}", chunk.trim())));
+                    return;
+                }
                 // Auto-create an agent block for workers that send chunks
                 // without a prior AgentStarted event (e.g. developer:src/main.rs).
                 self.ensure_agent(agent);
@@ -283,6 +343,10 @@ impl App {
                 // Tokens flow into the agent panel stream buffer — do NOT log each chunk.
             }
             TuiEvent::AgentDone { agent } => {
+                if is_control_agent(agent) {
+                    self.logs.push(LogEntry::system(format!("{agent}: done")));
+                    return;
+                }
                 self.set_pipeline_status(agent, AgentStatus::Done);
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
@@ -295,6 +359,10 @@ impl App {
                     .push(LogEntry::system(format!("[phase:{}] complete", phase)));
             }
             TuiEvent::Error { agent, message } => {
+                if is_control_agent(agent) {
+                    self.logs.push(LogEntry::error(agent, message.clone()));
+                    return;
+                }
                 self.set_pipeline_status(agent, AgentStatus::Error);
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
@@ -350,12 +418,22 @@ impl App {
                 )));
             }
             TuiEvent::OpenProviderPicker => {
-                let current = self
+                let (current, custom_providers) = self
                     .config
                     .try_read()
-                    .map(|c| c.provider.default.clone())
+                    .map(|c| (c.provider.default.clone(), c.custom_providers.clone()))
                     .unwrap_or_default();
-                self.popup = PopupState::ProviderPicker(provider_picker(&current));
+                self.popup =
+                    PopupState::ProviderPicker(provider_picker(&current, &custom_providers));
+            }
+            TuiEvent::OpenConnectProviderPicker => {
+                let (current, custom_providers) = self
+                    .config
+                    .try_read()
+                    .map(|c| (c.provider.default.clone(), c.custom_providers.clone()))
+                    .unwrap_or_default();
+                self.popup =
+                    PopupState::ConnectProviderPicker(provider_picker(&current, &custom_providers));
             }
             TuiEvent::OpenModelPicker => {
                 let (ceo, pm, tl, dev, qa, devops, assistant) = self
@@ -391,7 +469,16 @@ impl App {
                 };
             }
             TuiEvent::ModelsLoaded { provider, models } => {
+                let provider = crate::providers::registry::normalize_provider(provider).to_string();
                 self.model_cache.insert(provider.clone(), models.clone());
+                let current_provider = self
+                    .config
+                    .try_read()
+                    .map(|cfg| {
+                        crate::providers::registry::normalize_provider(&cfg.provider.default)
+                            .to_string()
+                    })
+                    .unwrap_or_else(|_| "ollama".to_string());
                 // If model picker is open in phase 2, populate its model list now.
                 if let PopupState::ModelPicker {
                     editing_role,
@@ -400,10 +487,46 @@ impl App {
                     ..
                 } = &mut self.popup
                     && editing_role.is_some()
+                    && provider == current_provider
                 {
                     *is_loading = false;
-                    *model_list = Some(build_model_list_picker(provider, models));
+                    *model_list = Some(build_model_list_picker(&provider, models));
                 }
+            }
+            TuiEvent::AuthUrl {
+                provider,
+                url,
+                message,
+            } => {
+                let copied = arboard::Clipboard::new()
+                    .and_then(|mut cb| cb.set_text(url.clone()))
+                    .is_ok();
+                self.popup = PopupState::AuthUrl {
+                    provider: provider.clone(),
+                    url: url.clone(),
+                    message: message.clone(),
+                    copied,
+                };
+                if copied {
+                    self.logs
+                        .push(LogEntry::system(format!("{provider} auth URL copied")));
+                } else {
+                    self.logs.push(LogEntry::system(format!(
+                        "{provider} auth URL ready; press c to copy"
+                    )));
+                }
+            }
+            TuiEvent::AuthComplete { provider, message } => {
+                if let PopupState::AuthUrl {
+                    provider: popup_provider,
+                    ..
+                } = &self.popup
+                    && popup_provider == provider
+                {
+                    self.popup = PopupState::None;
+                }
+                self.logs
+                    .push(LogEntry::system(format!("{provider}: {message}")));
             }
             TuiEvent::OpenResumePicker => {
                 let sessions = self.repl_state.session_history.lock().unwrap().clone();
@@ -552,7 +675,11 @@ impl Tui {
             let provider = config.read().await.provider.default.clone();
             let tx2 = tx.clone();
             tokio::spawn(async move {
-                if let Ok(models) = crate::providers::models::fetch_models(&provider).await {
+                let config_snapshot = config.read().await.clone();
+                if let Ok(models) =
+                    crate::providers::models::fetch_models_for_config(&provider, &config_snapshot)
+                        .await
+                {
                     let _ = tx2.send(TuiEvent::ModelsLoaded { provider, models });
                 }
             });
@@ -628,11 +755,23 @@ impl Tui {
             PopupState::ProviderPicker(_) => {
                 return Self::handle_provider_picker(app, key, tx).await;
             }
+            PopupState::ConnectProviderPicker(_) => {
+                return Self::handle_connect_provider_picker(app, key, tx).await;
+            }
+            PopupState::AuthMethodPicker { .. } => {
+                return Self::handle_auth_method_picker(app, key, tx).await;
+            }
             PopupState::ModelPicker { .. } => {
                 return Self::handle_model_picker(app, key, tx).await;
             }
             PopupState::ApiKeyInput { .. } => {
                 return Self::handle_api_key_input(app, key, tx).await;
+            }
+            PopupState::AuthSecretInput { .. } => {
+                return Self::handle_auth_secret_input(app, key, tx).await;
+            }
+            PopupState::AuthUrl { .. } => {
+                return Self::handle_auth_url_popup(app, key).await;
             }
             PopupState::ResumePicker(_) => {
                 return Self::handle_resume_picker(app, key, tx).await;
@@ -738,7 +877,9 @@ impl Tui {
                                     crate::tui::widgets::agent_panel::AgentRunStatus::Running => {
                                         agent.scroll_offset = agent.scroll_offset.saturating_add(5)
                                     }
-                                    _ => agent.scroll_offset = agent.scroll_offset.saturating_sub(5),
+                                    _ => {
+                                        agent.scroll_offset = agent.scroll_offset.saturating_sub(5)
+                                    }
                                 }
                             }
                         }
@@ -761,7 +902,9 @@ impl Tui {
                                     crate::tui::widgets::agent_panel::AgentRunStatus::Running => {
                                         agent.scroll_offset = agent.scroll_offset.saturating_sub(5)
                                     }
-                                    _ => agent.scroll_offset = agent.scroll_offset.saturating_add(5),
+                                    _ => {
+                                        agent.scroll_offset = agent.scroll_offset.saturating_add(5)
+                                    }
                                 }
                             }
                         }
@@ -895,13 +1038,16 @@ impl Tui {
             KeyCode::Backspace => state.pop_search(),
             KeyCode::Enter => {
                 if let Some(id) = state.selected_id() {
-                    let id_clone = id.clone();
-                    // Providers that require an API key — always prompt so user can update it
-                    const NEEDS_KEY: &[&str] = &["openrouter", "groq", "together"];
-                    let needs_key = NEEDS_KEY.contains(&id_clone.as_str());
+                    let id_clone = crate::providers::registry::normalize_provider(&id).to_string();
+                    let info = crate::providers::registry::builtin(&id_clone);
+                    let is_custom = app
+                        .config
+                        .try_read()
+                        .map(|cfg| cfg.custom_providers.contains_key(&id_clone))
+                        .unwrap_or(false);
+                    let needs_key = info.is_some_and(|info| info.needs_key) || is_custom;
 
-                    if needs_key {
-                        // Always show the key input popup (allows re-entering a wrong key)
+                    if needs_key && !Self::provider_has_credential(&app.config, &id_clone).await {
                         app.popup = PopupState::ApiKeyInput {
                             provider: id_clone,
                             input: tui_input::Input::default(),
@@ -910,45 +1056,286 @@ impl Tui {
                     }
 
                     app.popup = PopupState::None;
-                    // Apply & persist
-                    let mut cfg = app.config.write().await;
-                    cfg.set_provider(id_clone.clone());
-                    match cfg.save() {
-                        Ok(()) => {
-                            let _ = tx.send(TuiEvent::TokenChunk {
-                                agent: "provider".to_string(),
-                                chunk: format!("  ✓ provider → {} (saved)", id_clone),
-                            });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(TuiEvent::Error {
-                                agent: "provider".to_string(),
-                                message: format!("failed to save config: {e}"),
-                            });
-                        }
-                    }
-                    // Kick off background model fetch for the new provider
-                    let tx2 = tx.clone();
-                    let provider_for_fetch = id_clone.clone();
-                    tokio::spawn(async move {
-                        match crate::providers::models::fetch_models(&provider_for_fetch).await {
-                            Ok(models) => {
-                                let _ = tx2.send(TuiEvent::ModelsLoaded {
-                                    provider: provider_for_fetch,
-                                    models,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx2.send(TuiEvent::Error {
-                                    agent: "models".to_string(),
-                                    message: format!("model fetch failed: {e}"),
-                                });
-                            }
-                        }
-                    });
+                    Self::save_provider_choice(app, tx, id_clone.clone()).await;
+                    Self::fetch_models_for_provider(app, tx, id_clone).await;
                 }
             }
             KeyCode::Char(c) => state.push_search(c),
+            _ => {}
+        }
+        false
+    }
+
+    async fn handle_connect_provider_picker(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        _tx: &TuiSender,
+    ) -> bool {
+        let PopupState::ConnectProviderPicker(ref mut state) = app.popup else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Up => state.move_up(),
+            KeyCode::Down => state.move_down(),
+            KeyCode::Backspace => state.pop_search(),
+            KeyCode::Enter => {
+                if let Some(provider) = state.selected_id() {
+                    app.popup = PopupState::AuthMethodPicker {
+                        provider: provider.clone(),
+                        picker: auth_method_picker(&provider),
+                    };
+                }
+            }
+            KeyCode::Char(c) => state.push_search(c),
+            _ => {}
+        }
+        false
+    }
+
+    async fn handle_auth_method_picker(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        tx: &TuiSender,
+    ) -> bool {
+        let PopupState::AuthMethodPicker {
+            ref provider,
+            ref mut picker,
+        } = app.popup
+        else {
+            return false;
+        };
+        let provider = provider.clone();
+
+        match key.code {
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Up => picker.move_up(),
+            KeyCode::Down => picker.move_down(),
+            KeyCode::Backspace => picker.pop_search(),
+            KeyCode::Enter => {
+                if let Some(method_id) = picker.selected_id() {
+                    if let Some(method) = crate::auth::method_by_id(&provider, &method_id) {
+                        if let Some(message) = crate::auth::connect_blocker(&provider, &method_id) {
+                            app.popup = PopupState::None;
+                            let _ = tx.send(TuiEvent::Error {
+                                agent: "connect".to_string(),
+                                message: message.to_string(),
+                            });
+                            return false;
+                        }
+
+                        if method.requires_secret {
+                            app.popup = if method.id == "api_key" {
+                                PopupState::ApiKeyInput {
+                                    provider,
+                                    input: tui_input::Input::default(),
+                                }
+                            } else {
+                                PopupState::AuthSecretInput {
+                                    provider,
+                                    method_id,
+                                    input: tui_input::Input::default(),
+                                }
+                            };
+                            return false;
+                        }
+
+                        app.popup = PopupState::None;
+                        match method.id {
+                            "local" => {
+                                Self::save_provider_choice(app, tx, provider.clone()).await;
+                                Self::fetch_models_for_provider(app, tx, provider.clone()).await;
+                            }
+                            "google_adc" | "aws_profile" | "gitlab_oauth" => {
+                                match crate::auth::record_from_secret(
+                                    &provider,
+                                    method.id,
+                                    String::new(),
+                                ) {
+                                    Ok(record) => {
+                                        let mut store =
+                                            crate::auth::AuthStore::load().unwrap_or_default();
+                                        store.set(record);
+                                        if let Err(e) = store.save() {
+                                            let _ = tx.send(TuiEvent::Error {
+                                                agent: "connect".to_string(),
+                                                message: e.to_string(),
+                                            });
+                                        } else {
+                                            Self::save_provider_choice(app, tx, provider.clone())
+                                                .await;
+                                            Self::fetch_models_for_provider(
+                                                app,
+                                                tx,
+                                                provider.clone(),
+                                            )
+                                            .await;
+                                            let _ = tx.send(TuiEvent::TokenChunk {
+                                                agent: "connect".to_string(),
+                                                chunk: format!(
+                                                    "  ✓ {} auth method saved ({})",
+                                                    provider, method.label
+                                                ),
+                                            });
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(TuiEvent::Error {
+                                            agent: "connect".to_string(),
+                                            message: e.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            "chatgpt_browser" => {
+                                let tx2 = tx.clone();
+                                let config = Arc::clone(&app.config);
+                                tokio::spawn(async move {
+                                    match crate::providers::custom_http::chatgpt_browser_auth_with_url(
+                                        |url| {
+                                            let _ = tx2.send(TuiEvent::AuthUrl {
+                                                provider: "openai_chatgpt".to_string(),
+                                                url: url.to_string(),
+                                                message: "Open this URL in your browser to connect ChatGPT Plus/Pro.".to_string(),
+                                            });
+                                            Ok(())
+                                        },
+                                    )
+                                    .await
+                                    {
+                                        Ok(record) => {
+                                            let mut store =
+                                                crate::auth::AuthStore::load().unwrap_or_default();
+                                            store.set(record);
+                                            match store.save() {
+                                                Ok(()) => {
+                                                    let mut cfg = config.write().await;
+                                                    sync_models_for_provider(
+                                                        &mut cfg,
+                                                        "openai_chatgpt",
+                                                    );
+                                                    cfg.set_provider("openai_chatgpt".to_string());
+                                                    let _ = cfg.save();
+                                                    drop(cfg);
+                                                    Self::spawn_model_fetch(
+                                                        Arc::clone(&config),
+                                                        tx2.clone(),
+                                                        "openai_chatgpt".to_string(),
+                                                    );
+                                                    let _ = tx2.send(TuiEvent::AuthComplete {
+                                                        provider: "openai_chatgpt".to_string(),
+                                                        message: "ChatGPT Plus/Pro connected"
+                                                            .to_string(),
+                                                    });
+                                                    let _ = tx2.send(TuiEvent::TokenChunk {
+                                                        agent: "connect".to_string(),
+                                                        chunk: "  ✓ ChatGPT Plus/Pro connected"
+                                                            .to_string(),
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    let _ = tx2.send(TuiEvent::Error {
+                                                        agent: "connect".to_string(),
+                                                        message: e.to_string(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let _ = tx2.send(TuiEvent::Error {
+                                                agent: "connect".to_string(),
+                                                message: e.to_string(),
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                            "github_device" => {
+                                let tx2 = tx.clone();
+                                let config = Arc::clone(&app.config);
+                                let provider = provider.clone();
+                                tokio::spawn(async move {
+                                    let _ = tx2.send(TuiEvent::TokenChunk {
+                                        agent: "connect".to_string(),
+                                        chunk: "  Open the GitHub device URL printed in the terminal to finish Copilot login.".to_string(),
+                                    });
+                                    match crate::auth::connect_github_copilot_device().await {
+                                        Ok(record) => {
+                                            let mut store =
+                                                crate::auth::AuthStore::load().unwrap_or_default();
+                                            store.set(record);
+                                            match store.save() {
+                                                Ok(()) => {
+                                                    {
+                                                        let mut cfg = config.write().await;
+                                                        sync_models_for_provider(
+                                                            &mut cfg, &provider,
+                                                        );
+                                                        cfg.set_provider(provider.clone());
+                                                        let _ = cfg.save();
+                                                    }
+                                                    Self::spawn_model_fetch(
+                                                        Arc::clone(&config),
+                                                        tx2.clone(),
+                                                        provider.clone(),
+                                                    );
+                                                    let _ = tx2.send(TuiEvent::TokenChunk {
+                                                        agent: "connect".to_string(),
+                                                        chunk: "  ✓ GitHub Copilot connected"
+                                                            .to_string(),
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    let _ = tx2.send(TuiEvent::Error {
+                                                        agent: "connect".to_string(),
+                                                        message: e.to_string(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let _ = tx2.send(TuiEvent::Error {
+                                                agent: "connect".to_string(),
+                                                message: e.to_string(),
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(c) => picker.push_search(c),
+            _ => {}
+        }
+        false
+    }
+
+    async fn handle_auth_url_popup(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                if let PopupState::AuthUrl { url, copied, .. } = &mut app.popup {
+                    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone())) {
+                        Ok(()) => {
+                            *copied = true;
+                            app.logs.push(LogEntry::system("✓ auth URL copied"));
+                        }
+                        Err(e) => app
+                            .logs
+                            .push(LogEntry::system(format!("clipboard error: {e}"))),
+                    }
+                }
+            }
             _ => {}
         }
         false
@@ -983,6 +1370,7 @@ impl Tui {
 
                 if api_key.is_empty() {
                     // Blank = keep existing key, just switch the provider
+                    sync_models_for_provider(&mut cfg, &provider);
                     cfg.set_provider(provider.clone());
                     cfg.apply_api_keys_to_env();
                     let _ = cfg.save();
@@ -996,6 +1384,7 @@ impl Tui {
                     match cfg.set_api_key(&provider, api_key.clone()) {
                         Ok(()) => {
                             cfg.apply_api_keys_to_env();
+                            sync_models_for_provider(&mut cfg, &provider);
                             cfg.set_provider(provider.clone());
                             match cfg.save() {
                                 Ok(()) => {
@@ -1016,19 +1405,54 @@ impl Tui {
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(TuiEvent::Error {
-                                agent: "provider".to_string(),
-                                message: e.to_string(),
-                            });
+                            if crate::providers::registry::builtin(&provider).is_some() {
+                                let mut store = crate::auth::AuthStore::load().unwrap_or_default();
+                                match crate::auth::record_from_secret(
+                                    &provider,
+                                    "api_key",
+                                    api_key.clone(),
+                                )
+                                .and_then(|record| {
+                                    store.set(record);
+                                    store.save()
+                                }) {
+                                    Ok(()) => {
+                                        sync_models_for_provider(&mut cfg, &provider);
+                                        cfg.set_provider(provider.clone());
+                                        let _ = cfg.save();
+                                        let _ = tx.send(TuiEvent::TokenChunk {
+                                            agent: "provider".to_string(),
+                                            chunk: format!(
+                                                "  ✓ provider → {} • API key saved",
+                                                provider
+                                            ),
+                                        });
+                                    }
+                                    Err(auth_err) => {
+                                        let _ = tx.send(TuiEvent::Error {
+                                            agent: "provider".to_string(),
+                                            message: format!("{e}; auth store error: {auth_err}"),
+                                        });
+                                    }
+                                }
+                            } else {
+                                let _ = tx.send(TuiEvent::Error {
+                                    agent: "provider".to_string(),
+                                    message: e.to_string(),
+                                });
+                            }
                         }
                     }
                     drop(cfg);
                 }
                 // Kick off background model fetch for the new provider
                 let tx2 = tx.clone();
-                let prov = provider.clone();
+                let prov = crate::providers::registry::normalize_provider(&provider).to_string();
+                let config_snapshot = app.config.read().await.clone();
                 tokio::spawn(async move {
-                    match crate::providers::models::fetch_models(&prov).await {
+                    match crate::providers::models::fetch_models_for_config(&prov, &config_snapshot)
+                        .await
+                    {
                         Ok(models) => {
                             let _ = tx2.send(TuiEvent::ModelsLoaded {
                                 provider: prov,
@@ -1055,6 +1479,166 @@ impl Tui {
             _ => {}
         }
         false
+    }
+
+    async fn handle_auth_secret_input(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        tx: &TuiSender,
+    ) -> bool {
+        let PopupState::AuthSecretInput {
+            ref provider,
+            ref method_id,
+            ref mut input,
+        } = app.popup
+        else {
+            return false;
+        };
+        let provider = provider.clone();
+        let method_id = method_id.clone();
+
+        match key.code {
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Enter => {
+                let secret = input.value().trim().to_string();
+                app.popup = PopupState::None;
+                let mut store = crate::auth::AuthStore::load().unwrap_or_default();
+                match crate::auth::record_from_secret(&provider, &method_id, secret).and_then(
+                    |record| {
+                        store.set(record);
+                        store.save()
+                    },
+                ) {
+                    Ok(()) => {
+                        if provider == "openai" && method_id.starts_with("chatgpt") {
+                            Self::save_provider_choice(app, tx, "openai_chatgpt".to_string()).await;
+                            Self::fetch_models_for_provider(app, tx, "openai_chatgpt".to_string())
+                                .await;
+                        } else {
+                            Self::save_provider_choice(app, tx, provider.clone()).await;
+                            Self::fetch_models_for_provider(app, tx, provider.clone()).await;
+                        }
+                        let _ = tx.send(TuiEvent::TokenChunk {
+                            agent: "connect".to_string(),
+                            chunk: format!("  ✓ {} connected with {}", provider, method_id),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(TuiEvent::Error {
+                            agent: "connect".to_string(),
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            }
+            KeyCode::Backspace | KeyCode::Char(_) => {
+                use tui_input::backend::crossterm::EventHandler;
+                input.handle_event(&crossterm::event::Event::Key(*key));
+            }
+            _ => {}
+        }
+        false
+    }
+
+    async fn save_provider_choice(app: &mut App, tx: &TuiSender, provider: String) {
+        let provider = crate::providers::registry::normalize_provider(&provider).to_string();
+        let mut cfg = app.config.write().await;
+        sync_models_for_provider(&mut cfg, &provider);
+        cfg.set_provider(provider.clone());
+        match cfg.save() {
+            Ok(()) => {
+                let _ = tx.send(TuiEvent::TokenChunk {
+                    agent: "provider".to_string(),
+                    chunk: format!("  ✓ provider → {} (saved)", provider),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(TuiEvent::Error {
+                    agent: "provider".to_string(),
+                    message: format!("failed to save config: {e}"),
+                });
+            }
+        }
+    }
+
+    async fn provider_has_credential(config: &Arc<RwLock<Config>>, provider: &str) -> bool {
+        let provider = crate::providers::registry::normalize_provider(provider);
+        if matches!(provider, "ollama" | "lmstudio") {
+            return true;
+        }
+        if let Ok(store) = crate::auth::AuthStore::load() {
+            if provider == "openai_chatgpt"
+                && store.record("openai").is_some_and(|record| {
+                    matches!(record.method, crate::auth::AuthMethod::OAuth)
+                        && (record
+                            .access_token
+                            .as_deref()
+                            .is_some_and(|t| !t.is_empty())
+                            || record
+                                .refresh_token
+                                .as_deref()
+                                .is_some_and(|t| !t.is_empty()))
+                })
+            {
+                return true;
+            }
+            if provider == "openai"
+                && store.record(provider).is_some_and(|record| {
+                    matches!(
+                        record.method,
+                        crate::auth::AuthMethod::ApiKey | crate::auth::AuthMethod::Pat
+                    )
+                })
+            {
+                return true;
+            }
+            if provider != "openai" && store.record(provider).is_some() {
+                return true;
+            }
+        }
+        let cfg = config.read().await;
+        if cfg.custom_providers.contains_key(provider) {
+            return cfg.custom_providers.get(provider).is_some_and(|custom| {
+                custom.api_key.as_deref().is_some_and(|key| !key.is_empty())
+                    || custom
+                        .api_key_env
+                        .as_deref()
+                        .is_some_and(|env| std::env::var(env).is_ok_and(|v| !v.is_empty()))
+            });
+        }
+        if cfg.get_api_key(provider).is_some_and(|key| !key.is_empty()) {
+            return true;
+        }
+        crate::providers::registry::builtin(provider)
+            .and_then(|info| info.env_var)
+            .is_some_and(|env| std::env::var(env).is_ok_and(|value| !value.is_empty()))
+    }
+
+    async fn fetch_models_for_provider(app: &App, tx: &TuiSender, provider: String) {
+        let provider = crate::providers::registry::normalize_provider(&provider).to_string();
+        Self::spawn_model_fetch(Arc::clone(&app.config), tx.clone(), provider);
+    }
+
+    fn spawn_model_fetch(config: Arc<RwLock<Config>>, tx: TuiSender, provider: String) {
+        let provider = crate::providers::registry::normalize_provider(&provider).to_string();
+        tokio::spawn(async move {
+            let config_snapshot = config.read().await.clone();
+            match crate::providers::models::fetch_models_for_config(&provider, &config_snapshot)
+                .await
+            {
+                Ok(models) => {
+                    let _ = tx.send(TuiEvent::ModelsLoaded { provider, models });
+                }
+                Err(e) => {
+                    let _ = tx.send(TuiEvent::Error {
+                        agent: "models".to_string(),
+                        message: format!("model fetch failed: {e}"),
+                    });
+                }
+            }
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -1269,7 +1853,10 @@ impl Tui {
                         let provider = app
                             .config
                             .try_read()
-                            .map(|c| c.provider.default.clone())
+                            .map(|c| {
+                                crate::providers::registry::normalize_provider(&c.provider.default)
+                                    .to_string()
+                            })
                             .unwrap_or_else(|_| "ollama".to_string());
                         let model_str = qualify_model_string(&raw_model, &provider);
                         app.popup = PopupState::None;
@@ -1317,7 +1904,10 @@ impl Tui {
                         let provider = app
                             .config
                             .try_read()
-                            .map(|c| c.provider.default.clone())
+                            .map(|c| {
+                                crate::providers::registry::normalize_provider(&c.provider.default)
+                                    .to_string()
+                            })
                             .unwrap_or_else(|_| "ollama".to_string());
                         if let Some(models) = app.model_cache.get(&provider) {
                             *model_list = Some(build_model_list_picker(&provider, models));
@@ -1327,8 +1917,14 @@ impl Tui {
                             *is_loading = true;
                             let tx2 = tx.clone();
                             let prov = provider.clone();
+                            let config_snapshot = app.config.read().await.clone();
                             tokio::spawn(async move {
-                                match crate::providers::models::fetch_models(&prov).await {
+                                match crate::providers::models::fetch_models_for_config(
+                                    &prov,
+                                    &config_snapshot,
+                                )
+                                .await
+                                {
                                     Ok(models) => {
                                         let _ = tx2.send(TuiEvent::ModelsLoaded {
                                             provider: prov,
@@ -1402,6 +1998,22 @@ impl Drop for Tui {
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();
     }
+}
+
+fn is_control_agent(agent: &str) -> bool {
+    matches!(
+        agent,
+        "apikey"
+            | "auth"
+            | "connect"
+            | "model"
+            | "models"
+            | "provider"
+            | "repl"
+            | "resume"
+            | "skill"
+            | "update"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1672,20 +2284,58 @@ fn skill_scope_label(scope: crate::skills::SkillScope) -> &'static str {
 // Provider-prefix helpers
 // ---------------------------------------------------------------------------
 
-const KNOWN_PROVIDER_PREFIXES: &[&str] = &["ollama", "openrouter", "groq", "together"];
+fn sync_models_for_provider(config: &mut Config, provider: &str) {
+    let provider = crate::providers::registry::normalize_provider(provider);
+    let Some(default_model) = crate::providers::models::default_model_for_config(provider, config)
+    else {
+        return;
+    };
+    let qualified = qualify_model_string(&default_model, provider);
+    let prefixes = current_model_prefixes(config);
+    let uniform = prefixes.len() <= 1;
+
+    if uniform {
+        let _ = config.set_model("all", qualified);
+    } else if model_prefix(&config.models.assistant).is_none_or(|prefix| prefix != provider) {
+        config.models.assistant = qualified;
+    }
+}
+
+fn current_model_prefixes(config: &Config) -> std::collections::BTreeSet<String> {
+    [
+        &config.models.ceo,
+        &config.models.pm,
+        &config.models.tech_lead,
+        &config.models.developer,
+        &config.models.qa,
+        &config.models.devops,
+        &config.models.assistant,
+    ]
+    .into_iter()
+    .filter_map(|model| model_prefix(model).map(ToOwned::to_owned))
+    .collect()
+}
+
+fn model_prefix(model: &str) -> Option<&str> {
+    let (prefix, _) = model.split_once('/')?;
+    Some(crate::providers::registry::normalize_provider(prefix))
+}
 
 /// Ensures a raw model ID (e.g. `"qwen/qwen3-coder:free"`) is stored with a
-/// provider prefix (e.g. `"openrouter/qwen/qwen3-coder:free"`).  If the model
-/// string already begins with a known prefix it is returned as-is.
+/// provider prefix (e.g. `"openrouter/qwen/qwen3-coder:free"`). Model IDs
+/// from aggregators often contain provider-like prefixes, so only the current
+/// provider's own prefix is treated as already qualified.
 fn qualify_model_string(model: &str, provider: &str) -> String {
-    let already_prefixed = KNOWN_PROVIDER_PREFIXES
-        .iter()
-        .any(|p| model.starts_with(&format!("{p}/")));
-    if already_prefixed {
-        model.to_string()
-    } else {
-        format!("{provider}/{model}")
+    let provider = crate::providers::registry::normalize_provider(provider);
+    if let Some((prefix, rest)) = model.split_once('/') {
+        let normalized_prefix = crate::providers::registry::normalize_provider(prefix);
+        if crate::providers::registry::is_known_provider_prefix(prefix)
+            && normalized_prefix == provider
+        {
+            return format!("{provider}/{rest}");
+        }
     }
+    format!("{provider}/{model}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1697,7 +2347,7 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
 
     // Build a fixed-height (11 rows), 50%-wide rect centered on screen.
     let screen = frame.area();
-    const POPUP_H: u16 = 11;
+    const POPUP_H: u16 = 12;
     const POPUP_W_PCT: u16 = 50;
     let popup_w = screen.width * POPUP_W_PCT / 100;
     let popup_x = screen.x + (screen.width.saturating_sub(popup_w)) / 2;
@@ -1723,6 +2373,7 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
         .constraints([
             Constraint::Length(1), // top padding
             Constraint::Length(1), // hint
+            Constraint::Length(1), // provider-specific note
             Constraint::Length(1), // spacing
             Constraint::Length(3), // input box (border + 1 line of text + border)
             Constraint::Length(1), // spacing
@@ -1736,6 +2387,15 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
         Paragraph::new(" Paste your API key (blank = keep existing).")
             .style(Style::default().fg(THEME.muted)),
         chunks[1],
+    );
+    let note = if provider == "openai" {
+        " ChatGPT Plus/Pro is not an API key; use an OpenAI Platform key."
+    } else {
+        ""
+    };
+    frame.render_widget(
+        Paragraph::new(note).style(Style::default().fg(THEME.warning)),
+        chunks[2],
     );
 
     // Masked input field — show dots for typed chars, placeholder when empty
@@ -1756,13 +2416,13 @@ fn draw_api_key_overlay(frame: &mut Frame, provider: &str, input: &tui_input::In
                 .borders(Borders::ALL)
                 .border_style(THEME.active_border_style()),
         ),
-        chunks[3],
+        chunks[4],
     );
 
     // Footer
     frame.render_widget(
         Paragraph::new(" Enter to save  •  Esc to cancel").style(Style::default().fg(THEME.muted)),
-        chunks[5],
+        chunks[6],
     );
 }
 
@@ -1792,6 +2452,85 @@ fn draw_loading_overlay_with(frame: &mut Frame, title: &str, body: &str) {
     frame.render_widget(
         Paragraph::new(body.to_string()).style(Style::default().fg(THEME.muted)),
         inner,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Authorization URL overlay
+// ---------------------------------------------------------------------------
+
+fn draw_auth_url_overlay(
+    frame: &mut Frame,
+    provider: &str,
+    url: &str,
+    message: &str,
+    copied: bool,
+) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::widgets::Wrap;
+
+    let screen = frame.area();
+    let popup_w = screen.width.saturating_mul(68) / 100;
+    let popup_h = 16.min(screen.height);
+    let popup_x = screen.x + (screen.width.saturating_sub(popup_w)) / 2;
+    let popup_y = screen.y + screen.height.saturating_sub(popup_h) / 2;
+    let area = Rect::new(popup_x, popup_y, popup_w.max(40), popup_h);
+
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Connect {provider} ");
+    let block = Block::default()
+        .title(Span::styled(title, THEME.title_style()))
+        .borders(Borders::ALL)
+        .border_style(THEME.active_border_style())
+        .style(Style::default().bg(THEME.bg));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(format!(" {message}"))
+            .style(Style::default().fg(THEME.text))
+            .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+
+    let copy_status = if copied {
+        " URL copied to clipboard"
+    } else {
+        " Press c to copy the URL"
+    };
+    frame.render_widget(
+        Paragraph::new(copy_status).style(Style::default().fg(THEME.success)),
+        chunks[2],
+    );
+
+    frame.render_widget(
+        Paragraph::new(format!(" {url}"))
+            .style(Style::default().fg(THEME.accent))
+            .wrap(Wrap { trim: false }),
+        chunks[3],
+    );
+
+    frame.render_widget(
+        Paragraph::new(" Waiting for browser authorization...")
+            .style(Style::default().fg(THEME.muted)),
+        chunks[4],
+    );
+    frame.render_widget(
+        Paragraph::new(" c copy  •  enter/esc close").style(Style::default().fg(THEME.muted)),
+        chunks[5],
     );
 }
 
@@ -1869,4 +2608,72 @@ fn draw_question_overlay(frame: &mut Frame, agent: &str, question: &str, input: 
         Paragraph::new(" Enter to confirm  •  Esc to skip").style(Style::default().fg(THEME.muted)),
         chunks[4],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{qualify_model_string, sync_models_for_provider};
+    use crate::config::Config;
+
+    #[test]
+    fn qualify_model_string_preserves_current_provider_prefix() {
+        assert_eq!(
+            qualify_model_string("chatgpt/gpt-5.3-codex", "openai_chatgpt"),
+            "openai_chatgpt/gpt-5.3-codex"
+        );
+    }
+
+    #[test]
+    fn qualify_model_string_prefixes_aggregator_model_ids() {
+        assert_eq!(
+            qualify_model_string("google/gemini-2.5-pro", "openrouter"),
+            "openrouter/google/gemini-2.5-pro"
+        );
+        assert_eq!(
+            qualify_model_string("openai/gpt-4.1", "vercel_ai_gateway"),
+            "vercel_ai_gateway/openai/gpt-4.1"
+        );
+    }
+
+    #[test]
+    fn qualify_model_string_prefixes_slashy_native_model_ids() {
+        assert_eq!(
+            qualify_model_string(
+                "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
+                "fireworks"
+            ),
+            "fireworks/accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"
+        );
+    }
+
+    #[test]
+    fn sync_models_for_provider_rewrites_uniform_models() {
+        let mut config = Config::default();
+        config.models.assistant = "lmstudio/qwen2.5-coder:32b".to_string();
+        config.models.ceo = "lmstudio/qwen2.5-coder:32b".to_string();
+        config.models.pm = "lmstudio/qwen2.5-coder:32b".to_string();
+        config.models.tech_lead = "lmstudio/qwen2.5-coder:32b".to_string();
+        config.models.developer = "lmstudio/qwen2.5-coder:32b".to_string();
+        config.models.qa = "lmstudio/qwen2.5-coder:32b".to_string();
+        config.models.devops = "lmstudio/qwen2.5-coder:32b".to_string();
+
+        sync_models_for_provider(&mut config, "openai_chatgpt");
+
+        assert!(config.models.assistant.starts_with("openai_chatgpt/"));
+        assert!(config.models.developer.starts_with("openai_chatgpt/"));
+    }
+
+    #[test]
+    fn sync_models_for_provider_preserves_mixed_roles_except_assistant() {
+        let mut config = Config::default();
+        config.models.ceo = "openrouter/openai/gpt-4.1".to_string();
+        config.models.developer = "github_copilot/gpt-4.1".to_string();
+        config.models.assistant = "lmstudio/qwen2.5-coder:32b".to_string();
+
+        sync_models_for_provider(&mut config, "openai_chatgpt");
+
+        assert_eq!(config.models.ceo, "openrouter/openai/gpt-4.1");
+        assert_eq!(config.models.developer, "github_copilot/gpt-4.1");
+        assert!(config.models.assistant.starts_with("openai_chatgpt/"));
+    }
 }
