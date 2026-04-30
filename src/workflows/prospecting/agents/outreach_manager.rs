@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/outreach_manager.md");
 
@@ -16,6 +16,7 @@ pub async fn run(profiles_and_emails: &str, options: &RunOptions) -> Result<Stri
         "outreach_manager",
         "Organisation de la campagne outreach",
     );
+    bus_agent_started(options, "outreach_manager").await;
 
     let model = crate::providers::model_for_role("outreach_manager", &options.config)?;
     let prompt = format!(
@@ -27,6 +28,7 @@ pub async fn run(profiles_and_emails: &str, options: &RunOptions) -> Result<Stri
         .map_err(|e| anyhow::anyhow!("Outreach Manager agent error: {e}"))?;
 
     send_agent_summary(options, "outreach_manager", &report);
+    bus_agent_done(options, "outreach_manager", &report).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "outreach_manager".into(),
         chunk: format!("outreach_report.md generated ({} chars)", report.len()),

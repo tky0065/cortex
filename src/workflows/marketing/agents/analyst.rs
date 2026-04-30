@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/analyst.md");
 
@@ -12,6 +12,7 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         agent: "analyst".into(),
     });
     send_agent_progress(options, "analyst", "Definition des KPIs et tests");
+    bus_agent_started(options, "analyst").await;
 
     let model = crate::providers::model_for_role("analyst", &options.config)?;
     let prompt = format!(
@@ -23,6 +24,7 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Analyst agent error: {e}"))?;
 
     send_agent_summary(options, "analyst", &metrics);
+    bus_agent_done(options, "analyst", &metrics).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "analyst".into(),
         chunk: format!("metrics.md generated ({} chars)", metrics.len()),

@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/ceo.md");
 
@@ -12,6 +12,7 @@ pub async fn run(idea: &str, options: &RunOptions) -> Result<String> {
         agent: "ceo".into(),
     });
     send_agent_progress(options, "ceo", "Analyse du besoin et cadrage MVP");
+    bus_agent_started(options, "ceo").await;
 
     let model = crate::providers::model_for_role("ceo", &options.config)?;
     let response = crate::providers::complete(model, PREAMBLE, idea, options, "ceo")
@@ -19,6 +20,7 @@ pub async fn run(idea: &str, options: &RunOptions) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("CEO agent error: {e}"))?;
 
     send_agent_summary(options, "ceo", &response);
+    bus_agent_done(options, "ceo", &response).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "ceo".into(),
         chunk: format!("brief generated ({} chars)", response.len()),

@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/strategist.md");
 
@@ -16,6 +16,7 @@ pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
         "strategist",
         "Construction de la strategie marketing",
     );
+    bus_agent_started(options, "strategist").await;
 
     let model = crate::providers::model_for_role("strategist", &options.config)?;
     let prompt = format!("Create a complete marketing strategy for:\n\n{}", brief);
@@ -24,6 +25,7 @@ pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Strategist agent error: {e}"))?;
 
     send_agent_summary(options, "strategist", &strategy);
+    bus_agent_done(options, "strategist", &strategy).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "strategist".into(),
         chunk: format!("strategy.md generated ({} chars)", strategy.len()),

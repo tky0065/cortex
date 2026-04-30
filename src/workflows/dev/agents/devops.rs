@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::tools::filesystem::FileSystem;
 use crate::tools::terminal;
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/devops.md");
 
@@ -15,6 +15,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         agent: "devops".into(),
     });
     send_agent_progress(options, "devops", "Preparation des fichiers de deploiement");
+    bus_agent_started(options, "devops").await;
 
     let model = crate::providers::model_for_role("devops", &options.config)?;
     let prompt = format!(
@@ -28,6 +29,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
     send_agent_progress(options, "devops", "Ecriture des fichiers de deploiement");
     parse_and_write_files(&output, fs)?;
     send_agent_summary(options, "devops", &output);
+    bus_agent_done(options, "devops", &output).await;
 
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "devops".into(),

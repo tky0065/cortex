@@ -7,6 +7,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::agent_bus::{AgentBus, AgentDirective};
 use crate::config::Config;
 use crate::orchestrator::Orchestrator;
 use crate::tui::events::{TuiEvent, TuiSender};
@@ -64,6 +65,8 @@ pub struct ReplState {
     pub session_history: Arc<StdMutex<Vec<SessionInfo>>>,
     /// Directory where session history is stored.
     pub history_dir: PathBuf,
+    /// The active AgentBus for the currently running workflow (set by the Orchestrator).
+    pub agent_bus: Arc<RwLock<Option<Arc<AgentBus>>>>,
 }
 
 impl ReplState {
@@ -152,6 +155,8 @@ pub async fn dispatch(
                 "  /status                       — show current workflow status",
                 "  /abort                        — cancel the running workflow",
                 "  /continue                     — resume an interactive pause",
+                "  /agents                       — show status of all agents in the current workflow",
+                "  /agent <name> \"<directive>\"  — inject a directive to a specific agent",
                 "  /config                       — print active configuration",
                 "  /model [<role> <model>]       — show or change a role's model",
                 "  /provider [<name>]            — show or change the default provider",
@@ -645,6 +650,112 @@ pub async fn dispatch(
             );
         }
 
+        "/agents" => {
+            let bus_guard = state.agent_bus.read().await;
+            if let Some(bus) = bus_guard.as_ref() {
+                let all = bus.get_all_statuses().await;
+                if all.is_empty() {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "agents".to_string(),
+                            chunk: "  No agent activity recorded yet.".to_string(),
+                        },
+                    );
+                } else {
+                    for (name, record) in &all {
+                        let output_hint = match &record.output {
+                            Some(o) => format!(" ({} chars output)", o.len()),
+                            None => String::new(),
+                        };
+                        send(
+                            tx,
+                            TuiEvent::TokenChunk {
+                                agent: "agents".to_string(),
+                                chunk: format!("  {:12} [{}]{}", name, record.status, output_hint),
+                            },
+                        );
+                    }
+                }
+            } else {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "agents".to_string(),
+                        chunk: "  No workflow is currently running.".to_string(),
+                    },
+                );
+            }
+        }
+
+        "/agent" => {
+            // Syntax: /agent <name> "<directive>"  OR  /agent <name> <directive>
+            if rest.is_empty() {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "agent".to_string(),
+                        chunk: "  Usage: /agent <name> \"<directive>\"".to_string(),
+                    },
+                );
+            } else {
+                let (agent_name, instruction) = rest
+                    .splitn(2, char::is_whitespace)
+                    .collect::<Vec<_>>()
+                    .as_slice()
+                    .try_into()
+                    .map(|[a, b]: &[&str; 2]| {
+                        let inst = b.trim().trim_matches('"');
+                        (a.to_string(), inst.to_string())
+                    })
+                    .unwrap_or_else(|_| (rest.to_string(), String::new()));
+
+                if instruction.is_empty() {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "agent".to_string(),
+                            chunk: "  Usage: /agent <name> \"<directive>\"".to_string(),
+                        },
+                    );
+                } else {
+                    let bus_guard = state.agent_bus.read().await;
+                    if let Some(bus) = bus_guard.as_ref() {
+                        match bus.send_directive(AgentDirective {
+                            target_agent: agent_name.clone(),
+                            instruction: instruction.clone(),
+                        }) {
+                            Ok(()) => send(
+                                tx,
+                                TuiEvent::TokenChunk {
+                                    agent: "agent".to_string(),
+                                    chunk: format!(
+                                        "  Directive sent to '{}': {}",
+                                        agent_name, instruction
+                                    ),
+                                },
+                            ),
+                            Err(e) => send(
+                                tx,
+                                TuiEvent::TokenChunk {
+                                    agent: "agent".to_string(),
+                                    chunk: format!("  Failed to send directive: {e}"),
+                                },
+                            ),
+                        }
+                    } else {
+                        send(
+                            tx,
+                            TuiEvent::TokenChunk {
+                                agent: "agent".to_string(),
+                                chunk: "  No workflow is currently running.".to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
         "/abort" => {
             let mut cancel_guard = state.cancel.lock().await;
             if let Some(token) = cancel_guard.take() {
@@ -1107,8 +1218,10 @@ async fn chat_message(
         },
     );
 
-    let result =
-        crate::assistant::run(message, history_snapshot, &model, tx, Arc::clone(&config)).await;
+    let result = {
+        let bus = state.agent_bus.read().await.clone();
+        crate::assistant::run(message, history_snapshot, &model, tx, Arc::clone(&config), bus).await
+    };
 
     match result {
         Ok(reply) => {

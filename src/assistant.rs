@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::agent_bus::{AgentBus, AgentDirective, AgentStatus};
 use crate::config::Config;
 use crate::tools::filesystem::FileSystem;
 use crate::tools::terminal;
@@ -61,6 +62,30 @@ Use this for current news, recent versions, pricing, security advisories, or oth
 <query>agentic coding tools news</query>\n\
 </tool_call>\n\
 \n\
+### Query agent status\n\
+Check the status and output of a specific agent (or all agents) in the current workflow.\n\
+<tool_call>\n\
+<name>query_agent_status</name>\n\
+<agent>pm</agent>\n\
+</tool_call>\n\
+Omit <agent> to query all agents at once.\n\
+\n\
+### Delegate a task to an agent\n\
+Run a standalone agent with a custom instruction (does not require a running workflow).\n\
+<tool_call>\n\
+<name>delegate_to_agent</name>\n\
+<agent>ceo</agent>\n\
+<instruction>Write an executive brief for a note-taking app</instruction>\n\
+</tool_call>\n\
+\n\
+### Inject a directive into the running workflow\n\
+Send an instruction to a specific agent that will be picked up at the next phase boundary.\n\
+<tool_call>\n\
+<name>inject_directive</name>\n\
+<agent>developer</agent>\n\
+<instruction>Add unit tests for the authentication module</instruction>\n\
+</tool_call>\n\
+\n\
 ## RULES\n\
 - For casual chat or general non-current knowledge, answer directly without tools.\n\
 - For current news or time-sensitive facts, use web_search first.\n\
@@ -70,6 +95,9 @@ Use this for current news, recent versions, pricing, security advisories, or oth
   3. Only then share what you know from training data, and explicitly label it as potentially outdated.\n\
 - For repo-specific questions, read the relevant files first.\n\
 - For file edits or commands, use tools to complete the task.\n\
+- Use query_agent_status to check what agents have done before delegating new tasks.\n\
+- Use inject_directive when a workflow is running and you want to steer an agent at the next phase.\n\
+- Use delegate_to_agent for on-demand agent tasks outside of a workflow.\n\
 - After tool calls are executed, provide a concise natural-language answer.\n\
 - You can chain multiple tool calls in one response.\n\
 - Paths are relative to the current working directory.\n\
@@ -87,6 +115,12 @@ enum ToolCall {
     ListFiles { path: String },
     RunCommand { command: String, args: String },
     WebSearch { query: String },
+    /// Query the status and output of one or all workflow agents.
+    QueryAgentStatus { agent: Option<String> },
+    /// Run a standalone agent with a custom instruction (outside any workflow).
+    DelegateToAgent { agent: String, instruction: String },
+    /// Inject a directive into the currently-running workflow for an agent to pick up.
+    InjectDirective { agent: String, instruction: String },
 }
 
 #[derive(Debug)]
@@ -155,6 +189,20 @@ fn parse_single_call(block: &str) -> Option<ToolCall> {
             let query = extract_tag(block, "query")?.to_string();
             Some(ToolCall::WebSearch { query })
         }
+        "query_agent_status" => {
+            let agent = extract_tag(block, "agent").map(|s| s.to_string());
+            Some(ToolCall::QueryAgentStatus { agent })
+        }
+        "delegate_to_agent" => {
+            let agent = extract_tag(block, "agent")?.to_string();
+            let instruction = extract_tag(block, "instruction")?.to_string();
+            Some(ToolCall::DelegateToAgent { agent, instruction })
+        }
+        "inject_directive" => {
+            let agent = extract_tag(block, "agent")?.to_string();
+            let instruction = extract_tag(block, "instruction")?.to_string();
+            Some(ToolCall::InjectDirective { agent, instruction })
+        }
         _ => None,
     }
 }
@@ -213,6 +261,8 @@ async fn execute_tool(
     call: &ToolCall,
     sandbox: &FileSystem,
     config: Arc<RwLock<Config>>,
+    agent_bus: Option<Arc<AgentBus>>,
+    tx: &TuiSender,
 ) -> ToolResult {
     match call {
         ToolCall::WriteFile { path, content } => {
@@ -334,6 +384,147 @@ async fn execute_tool(
                 success,
             }
         }
+        ToolCall::QueryAgentStatus { agent } => {
+            let display = match agent {
+                Some(a) => format!("query_agent_status({})", a),
+                None => "query_agent_status(all)".to_string(),
+            };
+            match &agent_bus {
+                None => ToolResult {
+                    call: display,
+                    output: "No workflow is currently running. No agent bus available.".to_string(),
+                    success: false,
+                },
+                Some(bus) => {
+                    let output = match agent {
+                        Some(name) => match bus.get_status(name).await {
+                            None => format!("Agent '{}' has no recorded status yet.", name),
+                            Some(record) => {
+                                let out_part = match &record.output {
+                                    None => String::new(),
+                                    Some(o) => format!("\nOutput preview:\n{}", &o[..o.len().min(500)]),
+                                };
+                                format!("Agent '{}' — status: {}{}", name, record.status, out_part)
+                            }
+                        },
+                        None => {
+                            let all = bus.get_all_statuses().await;
+                            if all.is_empty() {
+                                "No agent activity recorded yet.".to_string()
+                            } else {
+                                all.iter()
+                                    .map(|(name, rec)| {
+                                        let out_hint = rec
+                                            .output
+                                            .as_ref()
+                                            .map(|o| format!(" ({} chars)", o.len()))
+                                            .unwrap_or_default();
+                                        format!("  {:12} [{}]{}", name, rec.status, out_hint)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            }
+                        }
+                    };
+                    ToolResult { call: display, output, success: true }
+                }
+            }
+        }
+        ToolCall::DelegateToAgent { agent, instruction } => {
+            let display = format!("delegate_to_agent({}, ...)", agent);
+            let cfg = config.read().await;
+            let model = match crate::providers::model_for_role(agent, &cfg) {
+                Ok(m) => m.to_string(),
+                Err(e) => {
+                    return ToolResult {
+                        call: display,
+                        output: format!("error: unknown agent '{}': {}", agent, e),
+                        success: false,
+                    };
+                }
+            };
+            // Resolve the agent system prompt (preamble) by role.
+            let preamble = agent_preamble_for_role(agent);
+            drop(cfg);
+
+            // Build minimal RunOptions for a standalone call.
+            let cfg2 = config.read().await;
+            let (resume_tx, resume_rx) = tokio::sync::mpsc::channel::<()>(1);
+            let (answer_tx, answer_rx) = tokio::sync::mpsc::channel::<String>(1);
+            let opts = crate::workflows::RunOptions {
+                auto: true,
+                config: Arc::new(cfg2.clone()),
+                tx: tx.clone(),
+                project_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                resume_tx: Arc::new(resume_tx),
+                resume_rx: Arc::new(tokio::sync::Mutex::new(resume_rx)),
+                answer_tx: Arc::new(answer_tx),
+                answer_rx: Arc::new(tokio::sync::Mutex::new(answer_rx)),
+                verbose: false,
+                agent_bus: agent_bus.clone(),
+            };
+            drop(cfg2);
+
+            match crate::providers::complete(&model, &preamble, instruction, &opts, agent).await {
+                Ok(response) => {
+                    // Register the result in the bus so future queries can see it.
+                    if let Some(ref bus) = agent_bus {
+                        bus.update_agent(agent, AgentStatus::Done, Some(response.clone()))
+                            .await;
+                    }
+                    ToolResult {
+                        call: display,
+                        output: response,
+                        success: true,
+                    }
+                }
+                Err(e) => {
+                    if let Some(ref bus) = agent_bus {
+                        bus.update_agent(
+                            agent,
+                            AgentStatus::Error(e.to_string()),
+                            None,
+                        )
+                        .await;
+                    }
+                    ToolResult {
+                        call: display,
+                        output: format!("error: {e}"),
+                        success: false,
+                    }
+                }
+            }
+        }
+        ToolCall::InjectDirective { agent, instruction } => {
+            let display = format!("inject_directive({}, ...)", agent);
+            match &agent_bus {
+                None => ToolResult {
+                    call: display,
+                    output: "No workflow is currently running — directive cannot be injected."
+                        .to_string(),
+                    success: false,
+                },
+                Some(bus) => match bus.send_directive(AgentDirective {
+                    target_agent: agent.clone(),
+                    instruction: instruction.clone(),
+                }) {
+                    Ok(()) => ToolResult {
+                        call: display,
+                        output: format!(
+                            "Directive queued for '{}'. It will be processed at the next phase boundary.",
+                            agent
+                        ),
+                        success: true,
+                    },
+                    Err(e) => ToolResult {
+                        call: display,
+                        output: format!("error: {e}"),
+                        success: false,
+                    },
+                },
+            }
+        }
     }
 }
 
@@ -345,6 +536,10 @@ fn describe_tool(call: &ToolCall) -> String {
         ToolCall::RunCommand { command, args } if args.is_empty() => format!("running {}", command),
         ToolCall::RunCommand { command, args } => format!("running {} {}", command, args),
         ToolCall::WebSearch { query } => format!("searching web for {}", query),
+        ToolCall::QueryAgentStatus { agent: Some(a) } => format!("querying status of agent '{}'", a),
+        ToolCall::QueryAgentStatus { agent: None } => "querying all agent statuses".to_string(),
+        ToolCall::DelegateToAgent { agent, .. } => format!("delegating task to agent '{}'", agent),
+        ToolCall::InjectDirective { agent, .. } => format!("injecting directive to agent '{}'", agent),
     }
 }
 
@@ -356,6 +551,24 @@ fn empty_final_retry_prompt(original_message: &str, previous_prompt: &str) -> St
          Available context/tool results from the previous turn:\n{}",
         original_message, previous_prompt
     )
+}
+
+/// Return a concise system preamble for a given role when running standalone.
+fn agent_preamble_for_role(role: &str) -> String {
+    // Use the workflow agent's own embedded preamble when possible.
+    // Unknown roles fall back to a generic instruction.
+    match role {
+        "ceo" => include_str!("workflows/dev/prompts/ceo.md").to_string(),
+        "pm" => include_str!("workflows/dev/prompts/pm.md").to_string(),
+        "tech_lead" => include_str!("workflows/dev/prompts/tech_lead.md").to_string(),
+        "developer" => include_str!("workflows/dev/prompts/developer.md").to_string(),
+        "qa" => include_str!("workflows/dev/prompts/qa.md").to_string(),
+        "devops" => include_str!("workflows/dev/prompts/devops.md").to_string(),
+        _ => format!(
+            "You are the '{}' agent. Complete the given task to the best of your ability.",
+            role
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +586,7 @@ pub async fn run(
     model: &str,
     tx: &TuiSender,
     config: Arc<RwLock<Config>>,
+    agent_bus: Option<Arc<AgentBus>>,
 ) -> Result<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let sandbox = FileSystem::new(&cwd);
@@ -450,7 +664,7 @@ pub async fn run(
                 },
             );
 
-            let result = execute_tool(call, &sandbox, Arc::clone(&config)).await;
+            let result = execute_tool(call, &sandbox, Arc::clone(&config), agent_bus.clone(), tx).await;
 
             let status_icon = if result.success { "✓" } else { "✗" };
             send(

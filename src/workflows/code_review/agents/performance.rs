@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/performance.md");
 
@@ -12,6 +12,7 @@ pub async fn run(source_content: &str, options: &RunOptions) -> Result<String> {
         agent: "performance".into(),
     });
     send_agent_progress(options, "performance", "Analyse performance du code");
+    bus_agent_started(options, "performance").await;
 
     let model = crate::providers::model_for_role("performance", &options.config)?;
     let response =
@@ -20,6 +21,7 @@ pub async fn run(source_content: &str, options: &RunOptions) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("Performance agent error: {e}"))?;
 
     send_agent_summary(options, "performance", &response);
+    bus_agent_done(options, "performance", &response).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "performance".into(),
         chunk: format!("performance report generated ({} chars)", response.len()),

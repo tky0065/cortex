@@ -1,3 +1,4 @@
+mod agent_bus;
 mod assistant;
 mod config;
 mod context;

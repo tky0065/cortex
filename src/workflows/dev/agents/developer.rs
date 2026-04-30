@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/developer.md");
 
@@ -19,6 +19,7 @@ pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> R
         agent_name.clone(),
         format!("Implementation de {}", file_path),
     );
+    bus_agent_started(options, &agent_name).await;
 
     let model = crate::providers::model_for_role("developer", &options.config)?;
     let prompt = format!(
@@ -30,6 +31,7 @@ pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> R
         .map_err(|e| anyhow::anyhow!("Developer agent error for '{}': {}", file_path, e))?;
 
     send_agent_summary(options, agent_name.clone(), &code);
+    bus_agent_done(options, &agent_name, &code).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: agent_name.clone(),
         chunk: format!("{} implemented ({} chars)", file_path, code.len()),
@@ -56,6 +58,7 @@ pub async fn fix(
         agent_name.clone(),
         format!("Correction de {}", file_path),
     );
+    bus_agent_started(options, &agent_name).await;
 
     let model = crate::providers::model_for_role("developer", &options.config)?;
     let prompt = format!(
@@ -69,6 +72,7 @@ pub async fn fix(
     fs.write(file_path, &fixed)?;
 
     send_agent_summary(options, agent_name.clone(), &fixed);
+    bus_agent_done(options, &agent_name, &fixed).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: agent_name.clone(),
         chunk: format!("{} fixed ({} chars)", file_path, fixed.len()),

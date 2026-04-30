@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/researcher.md");
 
@@ -12,6 +12,7 @@ pub async fn run(criteria: &str, options: &RunOptions) -> Result<String> {
         agent: "researcher".into(),
     });
     send_agent_progress(options, "researcher", "Recherche des prospects cibles");
+    bus_agent_started(options, "researcher").await;
 
     let model = crate::providers::model_for_role("researcher", &options.config)?;
     let prompt = format!(
@@ -23,6 +24,7 @@ pub async fn run(criteria: &str, options: &RunOptions) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Researcher agent error: {e}"))?;
 
     send_agent_summary(options, "researcher", &prospects);
+    bus_agent_done(options, "researcher", &prospects).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "researcher".into(),
         chunk: format!("prospects.md generated ({} chars)", prospects.len()),

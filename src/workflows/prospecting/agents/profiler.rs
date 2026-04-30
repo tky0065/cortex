@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/profiler.md");
 
@@ -13,6 +13,7 @@ pub async fn run(prospect_entry: &str, options: &RunOptions) -> Result<String> {
         agent: agent_name.clone(),
     });
     send_agent_progress(options, agent_name.clone(), "Analyse du profil prospect");
+    bus_agent_started(options, "profiler").await;
 
     let model = crate::providers::model_for_role("profiler", &options.config)?;
     let prompt = format!("Profile this prospect:\n\n{}", prospect_entry);
@@ -21,6 +22,7 @@ pub async fn run(prospect_entry: &str, options: &RunOptions) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Profiler agent error: {e}"))?;
 
     send_agent_summary(options, agent_name.clone(), &profile);
+    bus_agent_done(options, "profiler", &profile).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: agent_name.clone(),
         chunk: format!("profile generated ({} chars)", profile.len()),

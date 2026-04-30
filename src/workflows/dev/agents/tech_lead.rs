@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/tech_lead.md");
 
@@ -12,6 +12,7 @@ pub async fn run(specs: &str, options: &RunOptions) -> Result<String> {
         agent: "tech_lead".into(),
     });
     send_agent_progress(options, "tech_lead", "Generation de architecture.md");
+    bus_agent_started(options, "tech_lead").await;
 
     let model = crate::providers::model_for_role("tech_lead", &options.config)?;
     let prompt = format!(
@@ -23,6 +24,7 @@ pub async fn run(specs: &str, options: &RunOptions) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Tech Lead agent error: {e}"))?;
 
     send_agent_summary(options, "tech_lead", &arch);
+    bus_agent_done(options, "tech_lead", &arch).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "tech_lead".into(),
         chunk: format!("architecture.md generated ({} chars)", arch.len()),

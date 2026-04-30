@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use super::{RunOptions, Workflow};
+use super::{RunOptions, Workflow, drain_and_log_directives};
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 
@@ -67,6 +67,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
+        drain_and_log_directives(&opts, "before-pm").await;
         let specs = agents::pm::run(&brief, &opts).await?;
         fs.write("specs.md", &specs)?;
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
@@ -78,6 +79,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 3: Tech Lead → architecture.md ─────────────────────────
+        drain_and_log_directives(&opts, "before-tech-lead").await;
         let arch = agents::tech_lead::run(&specs, &opts).await?;
         fs.write("architecture.md", &arch)?;
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
@@ -89,6 +91,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 4: Developer workers (parallel, semaphore-bounded) ──────
+        drain_and_log_directives(&opts, "before-development").await;
         let files = parse_files_to_create(&arch);
         let sem = Arc::new(Semaphore::new(
             opts.config.limits.max_parallel_workers as usize,
@@ -140,6 +143,7 @@ impl Workflow for DevWorkflow {
                 return Ok(());
             }
 
+            drain_and_log_directives(&opts, &format!("qa-iteration-{}", iteration)).await;
             let report = agents::qa::run(&arch, &opts, &fs).await?;
 
             if report.contains("RECOMMENDATION: APPROVE") {
@@ -176,6 +180,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 6: DevOps ───────────────────────────────────────────────
+        drain_and_log_directives(&opts, "before-devops").await;
         agents::devops::run(&arch, &opts, &fs).await?;
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "done".into(),

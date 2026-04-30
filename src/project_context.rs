@@ -403,6 +403,7 @@ async fn generate_agents_md(
         answer_tx: Arc::new(answer_tx),
         answer_rx: Arc::new(tokio::sync::Mutex::new(answer_rx)),
         verbose: false,
+        agent_bus: None,
     };
     crate::providers::complete(&model, GENERATOR_PREAMBLE, &prompt, &options, "init").await
 }

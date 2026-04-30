@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent_bus::AgentBus;
 use crate::config::Config;
 use crate::tui::events::{TuiEvent, TuiSender, channel};
 use crate::workflows::{RunOptions, Workflow};
@@ -109,6 +110,12 @@ impl Orchestrator {
             )
         });
 
+        // Create a fresh AgentBus for this workflow run and share it with the REPL.
+        let agent_bus = AgentBus::new();
+        if let Some(ref repl_state) = self.repl_state {
+            *repl_state.agent_bus.write().await = Some(Arc::clone(&agent_bus));
+        }
+
         // When verbose, tap a clone of the sender into a logging task.
         if verbose {
             let (log_tx, mut log_rx) = channel();
@@ -167,6 +174,7 @@ impl Orchestrator {
                 answer_tx: Arc::clone(&self.answer_tx),
                 answer_rx: Arc::clone(&self.answer_rx),
                 verbose,
+                agent_bus: Some(Arc::clone(&agent_bus)),
             };
 
             return tokio::select! {
@@ -192,6 +200,7 @@ impl Orchestrator {
             answer_tx: Arc::clone(&self.answer_tx),
             answer_rx: Arc::clone(&self.answer_rx),
             verbose,
+            agent_bus: Some(Arc::clone(&agent_bus)),
         };
 
         tokio::select! {

@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent_bus::{AgentBus, AgentStatus};
 use crate::config::Config;
 use crate::tui::events::{TuiEvent, TuiSender};
 
@@ -34,6 +35,8 @@ pub struct RunOptions {
     /// When true, log all agent prompts/responses to `cortex.log`.
     #[allow(dead_code)]
     pub verbose: bool,
+    /// Shared inter-agent communication bus (optional — absent in legacy tests).
+    pub agent_bus: Option<Arc<AgentBus>>,
 }
 
 #[async_trait]
@@ -111,4 +114,54 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
     } else {
         truncated
     }
+}
+
+// ---------------------------------------------------------------------------
+// AgentBus helpers (called from individual agents)
+// ---------------------------------------------------------------------------
+
+/// Report an agent as running to the bus (if one is present in options).
+pub async fn bus_agent_started(options: &RunOptions, name: &str) {
+    if let Some(ref bus) = options.agent_bus {
+        bus.update_agent(name, AgentStatus::Running, None).await;
+    }
+}
+
+/// Report an agent as done (with its output) to the bus.
+pub async fn bus_agent_done(options: &RunOptions, name: &str, output: &str) {
+    if let Some(ref bus) = options.agent_bus {
+        bus.update_agent(name, AgentStatus::Done, Some(output.to_string()))
+            .await;
+    }
+}
+
+/// Report an agent as failed to the bus.
+#[allow(dead_code)]
+pub async fn bus_agent_error(options: &RunOptions, name: &str, error: &str) {
+    if let Some(ref bus) = options.agent_bus {
+        bus.update_agent(name, AgentStatus::Error(error.to_string()), None)
+            .await;
+    }
+}
+
+/// Drain any pending directives from the bus and log them to the TUI.
+/// Returns the drained directives so the caller can act on them.
+pub async fn drain_and_log_directives(
+    options: &RunOptions,
+    phase: &str,
+) -> Vec<crate::agent_bus::AgentDirective> {
+    if let Some(ref bus) = options.agent_bus {
+        let directives = bus.drain_directives().await;
+        for d in &directives {
+            let _ = options.tx.send(TuiEvent::TokenChunk {
+                agent: "orchestrator".into(),
+                chunk: format!(
+                    "[{}] Directive for '{}': {}",
+                    phase, d.target_agent, d.instruction
+                ),
+            });
+        }
+        return directives;
+    }
+    Vec::new()
 }

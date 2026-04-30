@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/social_media_manager.md");
 
@@ -16,6 +16,7 @@ pub async fn run(strategy: &str, copy: &str, options: &RunOptions) -> Result<Str
         "social_media_manager",
         "Planification du calendrier social media",
     );
+    bus_agent_started(options, "social_media_manager").await;
 
     let model = crate::providers::model_for_role("social_media_manager", &options.config)?;
     let prompt = format!(
@@ -28,6 +29,7 @@ pub async fn run(strategy: &str, copy: &str, options: &RunOptions) -> Result<Str
             .map_err(|e| anyhow::anyhow!("Social Media Manager agent error: {e}"))?;
 
     send_agent_summary(options, "social_media_manager", &calendar);
+    bus_agent_done(options, "social_media_manager", &calendar).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "social_media_manager".into(),
         chunk: format!("calendar.md generated ({} chars)", calendar.len()),

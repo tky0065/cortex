@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, send_agent_progress, send_agent_summary};
+use crate::workflows::{RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary};
 
 const PREAMBLE: &str = include_str!("../prompts/qa.md");
 
@@ -14,6 +14,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         .tx
         .send(TuiEvent::AgentStarted { agent: "qa".into() });
     send_agent_progress(options, "qa", "Lecture du code et verification qualite");
+    bus_agent_started(options, "qa").await;
 
     let source_files = collect_source_files(fs);
     let model = crate::providers::model_for_role("qa", &options.config)?;
@@ -28,6 +29,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
 
     let passed = report.contains("RECOMMENDATION: APPROVE");
     send_agent_summary(options, "qa", &report);
+    bus_agent_done(options, "qa", &report).await;
     let _ = options.tx.send(TuiEvent::TokenChunk {
         agent: "qa".into(),
         chunk: if passed {

@@ -66,10 +66,10 @@ impl ActiveAgent {
     }
 
     pub fn push_chunk(&mut self, chunk: &str) {
-        // Clear the heartbeat "Waiting for model response..." status on first token
+        // Clear the heartbeat "Waiting for agent response..." status on first token
         if self
             .current_action
-            .starts_with("Waiting for model response")
+            .starts_with("Waiting for agent response")
         {
             self.current_action = "Generating...".to_string();
         }
@@ -86,7 +86,7 @@ impl ActiveAgent {
         if self.current_action == "Starting..."
             || self
                 .current_action
-                .starts_with("Waiting for model response")
+                .starts_with("Waiting for agent response")
         {
             self.current_action = "Completed".to_string();
         }
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn finish_clears_waiting_heartbeat() {
         let mut agent = ActiveAgent::new("assistant");
-        agent.set_progress("Waiting for model response... (120s)");
+        agent.set_progress("Waiting for agent response... (120s)");
         agent.finish();
 
         assert_eq!(agent.status, AgentRunStatus::Done);
