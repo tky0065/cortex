@@ -160,10 +160,15 @@ pub async fn chatgpt_codex_complete(
         headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
     }
 
-    // Chat completions format — forwarded as-is to the Codex endpoint
+    // chatgpt.com/backend-api/codex/responses uses Responses API format, not chat completions
+    let input: Vec<_> = turns
+        .iter()
+        .map(|t| json!({"role": t.role, "content": t.content}))
+        .collect();
     let body = json!({
         "model": model,
-        "messages": openai_messages(preamble, turns),
+        "instructions": preamble,
+        "input": input,
         "stream": false
     });
     post_json_for_text(OPENAI_CODEX_ENDPOINT, headers, body).await
