@@ -287,12 +287,21 @@ async fn execute_tool(
     match call {
         ToolCall::WriteFile { path, content } => {
             let display = format!("write_file({})", path);
+            let old_content = sandbox.read(path).ok();
             match sandbox.write(path, content) {
-                Ok(()) => ToolResult {
-                    call: display,
-                    output: format!("✓ wrote {} bytes to '{}'", content.len(), path),
-                    success: true,
-                },
+                Ok(()) => {
+                    let _ = tx.send(TuiEvent::FileWritten {
+                        agent: "assistant".to_string(),
+                        path: path.clone(),
+                        old_content,
+                        new_content: content.clone(),
+                    });
+                    ToolResult {
+                        call: display,
+                        output: format!("✓ wrote {} bytes to '{}'", content.len(), path),
+                        success: true,
+                    }
+                }
                 Err(e) => ToolResult {
                     call: display,
                     output: format!("error: {e}"),

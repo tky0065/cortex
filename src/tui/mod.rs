@@ -33,6 +33,7 @@ use crate::tui::{
     theme::THEME,
     widgets::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
+        diff_viewer::{DiffViewerWidget, FileDiff},
         input::{InputBar, PaletteContext, ResumeSuggestion, default_provider_suggestions},
         logs::{LogEntry, LogsWidget},
         picker::{
@@ -91,6 +92,12 @@ enum PopupState {
         agent: String,
         question: String,
         input: tui_input::Input,
+    },
+    /// Shows a diff popup when an agent writes a file.
+    DiffViewer {
+        diffs: Vec<FileDiff>,
+        cursor: usize,
+        scroll_offset: usize,
     },
 }
 
@@ -274,6 +281,21 @@ impl App {
                 input,
             } => {
                 draw_question_overlay(frame, agent, question, input);
+            }
+            PopupState::DiffViewer {
+                diffs,
+                cursor,
+                scroll_offset,
+            } => {
+                if let Some(diff) = diffs.get(*cursor) {
+                    DiffViewerWidget {
+                        diff,
+                        scroll_offset: *scroll_offset,
+                        index: cursor + 1,
+                        total: diffs.len(),
+                    }
+                    .render(frame, frame.area());
+                }
             }
         }
     }
@@ -590,6 +612,34 @@ impl App {
                     None => self.logs.push(LogEntry::system("log focus cleared")),
                 }
             }
+            TuiEvent::FileWritten {
+                agent,
+                path,
+                old_content,
+                new_content,
+            } => {
+                let diff = FileDiff::compute(agent, path, old_content.as_deref(), new_content);
+                self.logs.push(LogEntry::agent(
+                    agent.as_str(),
+                    format!(
+                        "wrote {} (+{} -{} lines)",
+                        path, diff.added_count, diff.removed_count
+                    ),
+                ));
+                match &mut self.popup {
+                    PopupState::DiffViewer { diffs, cursor, .. } => {
+                        diffs.push(diff);
+                        *cursor = diffs.len() - 1;
+                    }
+                    _ => {
+                        self.popup = PopupState::DiffViewer {
+                            diffs: vec![diff],
+                            cursor: 0,
+                            scroll_offset: 0,
+                        };
+                    }
+                }
+            }
         }
     }
 
@@ -901,6 +951,10 @@ impl Tui {
             }
             PopupState::QuestionInput { .. } => {
                 return Self::handle_question_input(app, key, tx).await;
+            }
+            PopupState::DiffViewer { .. } => {
+                Self::handle_diff_viewer(app, key);
+                return false;
             }
             PopupState::None => {}
         }
@@ -2111,6 +2165,74 @@ impl Tui {
             }
         }
         false
+    }
+
+    fn handle_diff_viewer(app: &mut App, key: &crossterm::event::KeyEvent) {
+        let PopupState::DiffViewer {
+            diffs,
+            cursor,
+            scroll_offset,
+        } = &app.popup
+        else {
+            return;
+        };
+        let total = diffs.len();
+        let cur = *cursor;
+        let scroll = *scroll_offset;
+        let max_lines = diffs.get(cur).map(|d| d.lines.len()).unwrap_or(0);
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                app.popup = PopupState::None;
+            }
+            KeyCode::Char('n') => {
+                if cur + 1 < total {
+                    app.popup = PopupState::DiffViewer {
+                        diffs: std::mem::take(match &mut app.popup {
+                            PopupState::DiffViewer { diffs, .. } => diffs,
+                            _ => unreachable!(),
+                        }),
+                        cursor: cur + 1,
+                        scroll_offset: 0,
+                    };
+                } else {
+                    app.popup = PopupState::None;
+                }
+            }
+            KeyCode::Char('p') => {
+                if cur > 0 {
+                    app.popup = PopupState::DiffViewer {
+                        diffs: std::mem::take(match &mut app.popup {
+                            PopupState::DiffViewer { diffs, .. } => diffs,
+                            _ => unreachable!(),
+                        }),
+                        cursor: cur - 1,
+                        scroll_offset: 0,
+                    };
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let PopupState::DiffViewer { scroll_offset, .. } = &mut app.popup {
+                    *scroll_offset = scroll.saturating_add(1).min(max_lines.saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let PopupState::DiffViewer { scroll_offset, .. } = &mut app.popup {
+                    *scroll_offset = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::PageDown => {
+                if let PopupState::DiffViewer { scroll_offset, .. } = &mut app.popup {
+                    *scroll_offset = scroll.saturating_add(20).min(max_lines.saturating_sub(1));
+                }
+            }
+            KeyCode::PageUp => {
+                if let PopupState::DiffViewer { scroll_offset, .. } = &mut app.popup {
+                    *scroll_offset = scroll.saturating_sub(20);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

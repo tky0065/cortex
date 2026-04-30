@@ -505,26 +505,34 @@ pub async fn dispatch(
                 // Open the interactive provider picker popup
                 send(tx, TuiEvent::OpenProviderPicker);
             } else {
-                let name = rest.to_string();
-                let mut cfg = config.write().await;
-                crate::providers::models::apply_provider_defaults(&mut cfg, &name);
-                cfg.set_provider(name.clone());
-                if let Err(e) = cfg.save() {
-                    send(
-                        tx,
-                        TuiEvent::Error {
-                            agent: "provider".to_string(),
-                            message: format!("saved in memory but failed to persist: {e}"),
-                        },
-                    );
-                } else {
-                    send(
-                        tx,
-                        TuiEvent::TokenChunk {
-                            agent: "provider".to_string(),
-                            chunk: format!("  ✓ provider → {} (saved)", name),
-                        },
-                    );
+                match set_provider_and_sync_models(rest, &config, tx).await {
+                    Ok(SetProviderOutcome {
+                        provider, model, ..
+                    }) => {
+                        let model_suffix = model
+                            .as_deref()
+                            .map(|model| format!("; model → {model}"))
+                            .unwrap_or_default();
+                        send(
+                            tx,
+                            TuiEvent::TokenChunk {
+                                agent: "provider".to_string(),
+                                chunk: format!(
+                                    "  ✓ provider → {}{} (saved)",
+                                    provider, model_suffix
+                                ),
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "provider".to_string(),
+                                message: e.to_string(),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -642,8 +650,7 @@ pub async fn dispatch(
                                 });
 
                                 // Update session history
-                                let mut history =
-                                    state_for_spawn.session_history.lock().unwrap();
+                                let mut history = state_for_spawn.session_history.lock().unwrap();
                                 if let Some(session) =
                                     history.iter_mut().find(|s| s.id == session_id)
                                 {
@@ -657,8 +664,7 @@ pub async fn dispatch(
                                     message: e.to_string(),
                                 });
 
-                                let mut history =
-                                    state_for_spawn.session_history.lock().unwrap();
+                                let mut history = state_for_spawn.session_history.lock().unwrap();
                                 if let Some(session) =
                                     history.iter_mut().find(|s| s.id == session_id)
                                 {
@@ -1112,27 +1118,114 @@ async fn handle_connect_command(rest: &str, tx: &TuiSender, config: Arc<RwLock<C
         return;
     }
 
-    let mut cfg = config.write().await;
-    cfg.set_provider(selected_provider.to_string());
-    let saved = cfg.save();
-    drop(cfg);
-
-    match saved {
-        Ok(()) => send(
-            tx,
-            TuiEvent::TokenChunk {
-                agent: "connect".to_string(),
-                chunk: format!("  ✓ {selected_provider} connected with {method_id}"),
-            },
-        ),
+    match set_provider_and_sync_models(selected_provider, &config, tx).await {
+        Ok(SetProviderOutcome {
+            provider, model, ..
+        }) => {
+            let model_suffix = model
+                .as_deref()
+                .map(|model| format!("; model → {model}"))
+                .unwrap_or_default();
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "connect".to_string(),
+                    chunk: format!("  ✓ {provider} connected with {method_id}{model_suffix}"),
+                },
+            )
+        }
         Err(e) => send(
             tx,
             TuiEvent::Error {
                 agent: "connect".to_string(),
-                message: format!("connected but failed to persist config: {e}"),
+                message: format!("connected but failed to persist provider config: {e}"),
             },
         ),
     }
+}
+
+struct SetProviderOutcome {
+    provider: String,
+    model: Option<String>,
+}
+
+async fn set_provider_and_sync_models(
+    provider: &str,
+    config: &Arc<RwLock<Config>>,
+    tx: &TuiSender,
+) -> Result<SetProviderOutcome> {
+    let provider = crate::providers::registry::normalize_provider(provider)
+        .trim()
+        .to_string();
+    if provider.is_empty() {
+        anyhow::bail!("provider cannot be empty");
+    }
+
+    let config_snapshot = config.read().await.clone();
+    let fetched_models = if crate::providers::models::default_model_for_config(
+        &provider,
+        &config_snapshot,
+    )
+    .is_none()
+        || matches!(provider.as_str(), "lmstudio")
+    {
+        crate::providers::models::fetch_models_for_config(&provider, &config_snapshot)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    let selected_model = fetched_models
+        .as_ref()
+        .and_then(|models| models.first())
+        .cloned()
+        .or_else(|| {
+            crate::providers::models::default_model_for_config(&provider, &config_snapshot)
+        });
+
+    let qualified_model = selected_model
+        .as_deref()
+        .map(|model| crate::providers::models::qualify_model_string(model, &provider));
+
+    {
+        let mut cfg = config.write().await;
+        if let Some(model) = &qualified_model {
+            let _ = cfg.set_model("all", model.clone());
+        } else {
+            crate::providers::models::apply_provider_defaults(&mut cfg, &provider);
+        }
+        cfg.set_provider(provider.clone());
+        cfg.save()
+            .map_err(|e| anyhow::anyhow!("saved in memory but failed to persist: {e}"))?;
+    }
+
+    if let Some(models) = fetched_models
+        && !models.is_empty()
+    {
+        send(
+            tx,
+            TuiEvent::ModelsLoaded {
+                provider: provider.clone(),
+                models,
+            },
+        );
+    } else if qualified_model.is_none() {
+        send(
+            tx,
+            TuiEvent::TokenChunk {
+                agent: "provider".to_string(),
+                chunk: format!(
+                    "  ⚠ no models found for {provider}; load a model, then run /model assistant <model>"
+                ),
+            },
+        );
+    }
+
+    Ok(SetProviderOutcome {
+        provider,
+        model: qualified_model,
+    })
 }
 
 async fn handle_update_command(rest: &str, tx: &TuiSender) {

@@ -1,4 +1,5 @@
 pub mod agent_panel;
+pub mod diff_viewer;
 pub mod input;
 pub mod logs;
 pub mod picker;

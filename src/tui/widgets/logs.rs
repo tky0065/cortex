@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
 /// A single log entry with an optional agent tag.
@@ -57,6 +57,7 @@ impl<'a> LogsWidget<'a> {
         let block = Block::default()
             .title(Span::styled(" Logs ", THEME.title_style()))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(THEME.border_style());
 
         let inner_height = area.height.saturating_sub(2) as usize;

@@ -74,6 +74,16 @@ impl ActiveAgent {
             self.current_action = "Generating...".to_string();
         }
         self.stream_buffer.push_str(chunk);
+        // Keep only the last 50 000 chars to prevent unbounded buffer growth.
+        const MAX_BUFFER: usize = 50_000;
+        if self.stream_buffer.len() > MAX_BUFFER {
+            let excess = self.stream_buffer.len() - MAX_BUFFER;
+            let cut = self.stream_buffer[excess..]
+                .find('\n')
+                .map(|i| excess + i + 1)
+                .unwrap_or(excess);
+            self.stream_buffer = self.stream_buffer[cut..].to_string();
+        }
         // Advance progress by a small amount per chunk (cap at 95 — finish() sets 100)
         if self.progress < 95 {
             self.progress = (self.progress + 1).min(95);
@@ -110,6 +120,7 @@ impl<'a> AgentPanelWidget<'a> {
         let outer = Block::default()
             .title(Span::styled(" Agents ", THEME.title_style()))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(THEME.border_style());
 
         if self.agents.is_empty() {
@@ -184,7 +195,7 @@ impl<'a> AgentPanelWidget<'a> {
         };
 
         let cols = desired_cols.min(max_cols);
-        let rows = (count + cols - 1) / cols;
+        let rows = count.div_ceil(cols);
 
         let row_constraints: Vec<Constraint> = (0..rows)
             .map(|_| Constraint::Ratio(1, rows as u32))
@@ -245,14 +256,14 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
         .split(inner);
 
     // ── Status line ──────────────────────────────────────────────────────────
-    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let spinner_frames = ["◐", "◓", "◑", "◒"];
     let (status_label, status_color) = match agent.status {
         AgentRunStatus::Running => {
             let frame = spinner_frames[(tick_count % spinner_frames.len() as u64) as usize];
-            (format!("{} RUN", frame), THEME.primary)
+            (format!("{} running", frame), THEME.primary)
         }
-        AgentRunStatus::Done => ("✓ DONE".to_string(), THEME.success),
-        AgentRunStatus::Error => ("✗ ERR".to_string(), THEME.error),
+        AgentRunStatus::Done => ("● done".to_string(), THEME.success),
+        AgentRunStatus::Error => ("✕ error".to_string(), THEME.error),
     };
 
     // Build mini progress bar: [███░░] 60%
@@ -312,15 +323,19 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
             let start = base_start.saturating_sub(agent.scroll_offset);
             let end = (start + available_lines).min(wrapped.len());
 
+            let total = wrapped.len();
             let visible_lines: Vec<Line> = wrapped[start..end]
                 .iter()
                 .enumerate()
                 .map(|(i, line)| {
-                    let is_last = i + start + 1 == wrapped.len();
-                    let color = if is_last {
+                    let abs = start + i;
+                    // Gradient: older lines slightly dimmer, newest line full brightness
+                    let color = if abs + 1 == total {
                         THEME.text
+                    } else if abs + 4 >= total {
+                        Color::Rgb(210, 215, 220)
                     } else {
-                        Color::Rgb(160, 160, 160)
+                        Color::Rgb(150, 158, 168)
                     };
                     Line::from(Span::styled(line.clone(), Style::default().fg(color)))
                 })

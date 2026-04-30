@@ -29,7 +29,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         .map_err(|e| anyhow::anyhow!("DevOps agent error: {e}"))?;
 
     send_agent_progress(options, "devops", "Ecriture des fichiers de deploiement");
-    parse_and_write_files(&output, fs)?;
+    parse_and_write_files(&output, fs, &options.tx)?;
     send_agent_summary(options, "devops", &output);
     bus_agent_done(options, "devops", &output).await;
 
@@ -46,13 +46,24 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
     Ok(())
 }
 
-fn parse_and_write_files(output: &str, fs: &FileSystem) -> Result<()> {
+fn parse_and_write_files(
+    output: &str,
+    fs: &FileSystem,
+    tx: &crate::tui::events::TuiSender,
+) -> Result<()> {
     let sections: Vec<&str> = output.split("=== FILE:").collect();
     for section in sections.iter().skip(1) {
         if let Some((header, content)) = section.split_once("===") {
             let file_path = header.trim();
             let file_content = content.trim_start_matches('\n');
+            let old_content = fs.read(file_path).ok();
             fs.write(file_path, file_content)?;
+            let _ = tx.send(TuiEvent::FileWritten {
+                agent: "devops".to_string(),
+                path: file_path.to_string(),
+                old_content,
+                new_content: file_content.to_string(),
+            });
         }
     }
     Ok(())

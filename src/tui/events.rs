@@ -97,6 +97,13 @@ pub enum TuiEvent {
     SkillPickerError {
         message: String,
     },
+    /// Emitted after a file is written by an agent; old_content is None for new files.
+    FileWritten {
+        agent: String,
+        path: String,
+        old_content: Option<String>,
+        new_content: String,
+    },
     ClearLogs,
     SetLogFilter {
         agent: Option<String>,

@@ -71,7 +71,14 @@ pub async fn fix(
         .await
         .map_err(|e| anyhow::anyhow!("Developer fix error for '{}': {}", file_path, e))?;
 
+    let old_code = fs.read(file_path).ok();
     fs.write(file_path, &fixed)?;
+    let _ = options.tx.send(TuiEvent::FileWritten {
+        agent: agent_name.clone(),
+        path: file_path.to_string(),
+        old_content: old_code,
+        new_content: fixed.clone(),
+    });
 
     send_agent_summary(options, agent_name.clone(), &fixed);
     bus_agent_done(options, &agent_name, &fixed).await;

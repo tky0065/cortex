@@ -69,7 +69,14 @@ impl Workflow for DevWorkflow {
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
         drain_and_log_directives(&opts, "before-pm").await;
         let specs = agents::pm::run(&brief, &opts).await?;
+        let old_specs = fs.read("specs.md").ok();
         fs.write("specs.md", &specs)?;
+        let _ = opts.tx.send(TuiEvent::FileWritten {
+            agent: "pm".to_string(),
+            path: "specs.md".to_string(),
+            old_content: old_specs,
+            new_content: specs.clone(),
+        });
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "specs-ready".into(),
         });
@@ -81,7 +88,14 @@ impl Workflow for DevWorkflow {
         // ── Phase 3: Tech Lead → architecture.md ─────────────────────────
         drain_and_log_directives(&opts, "before-tech-lead").await;
         let arch = agents::tech_lead::run(&specs, &opts).await?;
+        let old_arch = fs.read("architecture.md").ok();
         fs.write("architecture.md", &arch)?;
+        let _ = opts.tx.send(TuiEvent::FileWritten {
+            agent: "tech_lead".to_string(),
+            path: "architecture.md".to_string(),
+            old_content: old_arch,
+            new_content: arch.clone(),
+        });
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "architecture-ready".into(),
         });
@@ -117,7 +131,14 @@ impl Workflow for DevWorkflow {
                 }
                 let local_fs = FileSystem::new(&project_dir_clone);
                 let code = agents::developer::run(&file_path, &arch_clone, &opts_clone).await?;
+                let old_code = local_fs.read(&file_path).ok();
                 local_fs.write(&file_path, &code)?;
+                let _ = opts_clone.tx.send(TuiEvent::FileWritten {
+                    agent: "developer".to_string(),
+                    path: file_path.clone(),
+                    old_content: old_code,
+                    new_content: code.clone(),
+                });
                 Ok::<(), anyhow::Error>(())
             });
             dev_handles.push(handle);
