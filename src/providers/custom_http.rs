@@ -169,6 +169,7 @@ pub async fn chatgpt_codex_complete(
         "model": model,
         "instructions": preamble,
         "input": input,
+        "store": false,
         "stream": false
     });
     post_json_for_text(OPENAI_CODEX_ENDPOINT, headers, body).await

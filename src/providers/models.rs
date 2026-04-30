@@ -388,9 +388,9 @@ async fn fetch_openai_chatgpt() -> Result<Vec<String>> {
     };
 
     // Filter to ChatGPT-subscription-compatible models (mirrors opencode's codex plugin).
+    // gpt-5.1-codex and gpt-5.1-codex-max are rejected by the backend with
+    // "not supported when using Codex with a ChatGPT account".
     let allowed: std::collections::HashSet<&str> = [
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-max",
         "gpt-5.1-codex-mini",
         "gpt-5.2",
         "gpt-5.2-codex",
@@ -488,8 +488,6 @@ fn static_fallback(provider: &str) -> Vec<String> {
             "gpt-5-mini".to_string(),
         ],
         "openai_chatgpt" => vec![
-            "gpt-5.1-codex".to_string(),
-            "gpt-5.1-codex-max".to_string(),
             "gpt-5.1-codex-mini".to_string(),
             "gpt-5.2".to_string(),
             "gpt-5.2-codex".to_string(),
