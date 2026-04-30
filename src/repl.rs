@@ -572,6 +572,7 @@ pub async fn dispatch(
                         },
                     );
                     let tx_clone = tx.clone();
+                    let tx_done = tx.clone();
                     let mut orch = Orchestrator::new(wf, config_snapshot);
 
                     // Create session info for tracking
@@ -616,25 +617,52 @@ pub async fn dispatch(
                             .run_with_sender(prompt_owned.clone(), false, Some(tx_clone))
                             .await;
 
-                        // Update session status when workflow completes
-                        {
-                            let mut history = state_for_spawn.session_history.lock().unwrap();
-                            if let Some(session) = history.iter_mut().find(|s| s.id == session_id) {
-                                match &result {
-                                    Ok(()) => session.status = SessionStatus::Completed,
-                                    Err(_) => session.status = SessionStatus::Failed,
+                        // Notify the TUI of the final outcome
+                        match &result {
+                            Ok(()) => {
+                                let output_dir = if session_info.workflow == "dev" {
+                                    session_info.directory.clone()
+                                } else {
+                                    session_info.directory.join("cortex-output")
+                                };
+                                let git_hash = std::process::Command::new("git")
+                                    .args(["rev-parse", "HEAD"])
+                                    .current_dir(&output_dir)
+                                    .output()
+                                    .ok()
+                                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty());
+                                let files = list_output_files(&output_dir);
+                                let _ = tx_done.send(TuiEvent::WorkflowComplete {
+                                    output_dir: output_dir.to_string_lossy().to_string(),
+                                    files,
+                                    git_hash: git_hash.clone(),
+                                });
+
+                                // Update session history
+                                let mut history =
+                                    state_for_spawn.session_history.lock().unwrap();
+                                if let Some(session) =
+                                    history.iter_mut().find(|s| s.id == session_id)
+                                {
+                                    session.status = SessionStatus::Completed;
+                                    session.git_hash = git_hash;
                                 }
-                                // Try to get git hash if available
-                                session.git_hash = Some(
-                                    std::process::Command::new("git")
-                                        .arg("rev-parse")
-                                        .arg("HEAD")
-                                        .output()
-                                        .ok()
-                                        .and_then(|output| String::from_utf8(output.stdout).ok())
-                                        .map(|s| s.trim().to_string())
-                                        .unwrap_or_default(),
-                                );
+                            }
+                            Err(e) => {
+                                let _ = tx_done.send(TuiEvent::Error {
+                                    agent: "orchestrator".to_string(),
+                                    message: e.to_string(),
+                                });
+
+                                let mut history =
+                                    state_for_spawn.session_history.lock().unwrap();
+                                if let Some(session) =
+                                    history.iter_mut().find(|s| s.id == session_id)
+                                {
+                                    session.status = SessionStatus::Failed;
+                                }
                             }
                         }
                         let _ = state_for_spawn.save_history();
@@ -868,6 +896,7 @@ pub async fn dispatch(
                 let config_snapshot = Arc::new(config.read().await.clone());
                 let wf = workflows::get_workflow("dev")?;
                 let tx_clone = tx.clone();
+                let tx_done = tx.clone();
                 let orch = Orchestrator::new(wf, config_snapshot);
 
                 {
@@ -888,15 +917,31 @@ pub async fn dispatch(
                     project_dir.display()
                 );
                 tokio::spawn(async move {
-                    let _ = orch
+                    let result = orch
                         .run_with_project_dir(
                             prompt,
                             true,
                             false,
                             Some(tx_clone),
-                            Some(project_dir),
+                            Some(project_dir.clone()),
                         )
                         .await;
+                    match result {
+                        Ok(()) => {
+                            let files = list_output_files(&project_dir);
+                            let _ = tx_done.send(TuiEvent::WorkflowComplete {
+                                output_dir: project_dir.to_string_lossy().to_string(),
+                                files,
+                                git_hash: None,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx_done.send(TuiEvent::Error {
+                                agent: "orchestrator".to_string(),
+                                message: e.to_string(),
+                            });
+                        }
+                    }
                 });
 
                 send(
@@ -1436,4 +1481,17 @@ async fn chat_message(
     }
 
     Ok(false)
+}
+
+fn list_output_files(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            if let Ok(name) = entry.file_name().into_string() {
+                out.push(name);
+            }
+        }
+    }
+    out.sort();
+    out
 }
