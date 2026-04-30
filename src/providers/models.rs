@@ -163,6 +163,38 @@ pub fn default_model_for_config(provider: &str, config: &crate::config::Config) 
     static_fallback(provider).into_iter().next()
 }
 
+/// Ensures a raw model ID is stored with a provider prefix.
+/// Model IDs from aggregators (e.g. `"qwen/qwen3-coder:free"` on OpenRouter)
+/// often contain provider-like prefixes, so only the current provider's own
+/// prefix is treated as already qualified.
+pub fn qualify_model_string(model: &str, provider: &str) -> String {
+    let provider = super::registry::normalize_provider(provider);
+    if let Some((prefix, rest)) = model.split_once('/') {
+        let normalized_prefix = super::registry::normalize_provider(prefix);
+        if super::registry::is_known_provider_prefix(prefix) && normalized_prefix == provider {
+            return format!("{provider}/{rest}");
+        }
+    }
+    format!("{provider}/{model}")
+}
+
+/// Returns the normalized provider prefix of a model string, or `None` if bare.
+pub fn model_prefix(model: &str) -> Option<&str> {
+    let (prefix, _) = model.split_once('/')?;
+    Some(super::registry::normalize_provider(prefix))
+}
+
+/// Set every agent model to the latest (first) model of `provider`.
+/// Called whenever the user switches the active provider.
+pub fn apply_provider_defaults(config: &mut crate::config::Config, provider: &str) {
+    let provider = super::registry::normalize_provider(provider);
+    let Some(default_model) = default_model_for_config(provider, config) else {
+        return;
+    };
+    let qualified = qualify_model_string(&default_model, provider);
+    let _ = config.set_model("all", qualified);
+}
+
 // ---------------------------------------------------------------------------
 // OpenRouter — public endpoint, no auth required
 // ---------------------------------------------------------------------------

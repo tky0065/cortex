@@ -479,6 +479,26 @@ impl App {
                             .to_string()
                     })
                     .unwrap_or_else(|_| "ollama".to_string());
+                // For providers with no static fallback (e.g. lmstudio), the
+                // synchronous sync step couldn't set models. Do it now that we
+                // have the live list.
+                if provider == current_provider {
+                    if let Some(first) = models.first() {
+                        if let Ok(mut cfg) = self.config.try_write() {
+                            let still_on_old_provider = crate::providers::models::model_prefix(
+                                &cfg.models.ceo,
+                            )
+                            .is_none_or(|p| p != provider);
+                            if still_on_old_provider {
+                                let qualified = crate::providers::models::qualify_model_string(
+                                    first, &provider,
+                                );
+                                let _ = cfg.set_model("all", qualified);
+                                let _ = cfg.save();
+                            }
+                        }
+                    }
+                }
                 // If model picker is open in phase 2, populate its model list now.
                 if let PopupState::ModelPicker {
                     editing_role,
@@ -2287,57 +2307,11 @@ fn skill_scope_label(scope: crate::skills::SkillScope) -> &'static str {
 // ---------------------------------------------------------------------------
 
 fn sync_models_for_provider(config: &mut Config, provider: &str) {
-    let provider = crate::providers::registry::normalize_provider(provider);
-    let Some(default_model) = crate::providers::models::default_model_for_config(provider, config)
-    else {
-        return;
-    };
-    let qualified = qualify_model_string(&default_model, provider);
-    let prefixes = current_model_prefixes(config);
-    let uniform = prefixes.len() <= 1;
-
-    if uniform {
-        let _ = config.set_model("all", qualified);
-    } else if model_prefix(&config.models.assistant).is_none_or(|prefix| prefix != provider) {
-        config.models.assistant = qualified;
-    }
+    crate::providers::models::apply_provider_defaults(config, provider);
 }
 
-fn current_model_prefixes(config: &Config) -> std::collections::BTreeSet<String> {
-    [
-        &config.models.ceo,
-        &config.models.pm,
-        &config.models.tech_lead,
-        &config.models.developer,
-        &config.models.qa,
-        &config.models.devops,
-        &config.models.assistant,
-    ]
-    .into_iter()
-    .filter_map(|model| model_prefix(model).map(ToOwned::to_owned))
-    .collect()
-}
-
-fn model_prefix(model: &str) -> Option<&str> {
-    let (prefix, _) = model.split_once('/')?;
-    Some(crate::providers::registry::normalize_provider(prefix))
-}
-
-/// Ensures a raw model ID (e.g. `"qwen/qwen3-coder:free"`) is stored with a
-/// provider prefix (e.g. `"openrouter/qwen/qwen3-coder:free"`). Model IDs
-/// from aggregators often contain provider-like prefixes, so only the current
-/// provider's own prefix is treated as already qualified.
 fn qualify_model_string(model: &str, provider: &str) -> String {
-    let provider = crate::providers::registry::normalize_provider(provider);
-    if let Some((prefix, rest)) = model.split_once('/') {
-        let normalized_prefix = crate::providers::registry::normalize_provider(prefix);
-        if crate::providers::registry::is_known_provider_prefix(prefix)
-            && normalized_prefix == provider
-        {
-            return format!("{provider}/{rest}");
-        }
-    }
-    format!("{provider}/{model}")
+    crate::providers::models::qualify_model_string(model, provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -2666,7 +2640,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_models_for_provider_preserves_mixed_roles_except_assistant() {
+    fn sync_models_for_provider_rewrites_all_roles_even_when_mixed() {
         let mut config = Config::default();
         config.models.ceo = "openrouter/openai/gpt-4.1".to_string();
         config.models.developer = "github_copilot/gpt-4.1".to_string();
@@ -2674,8 +2648,8 @@ mod tests {
 
         sync_models_for_provider(&mut config, "openai_chatgpt");
 
-        assert_eq!(config.models.ceo, "openrouter/openai/gpt-4.1");
-        assert_eq!(config.models.developer, "github_copilot/gpt-4.1");
+        assert!(config.models.ceo.starts_with("openai_chatgpt/"));
+        assert!(config.models.developer.starts_with("openai_chatgpt/"));
         assert!(config.models.assistant.starts_with("openai_chatgpt/"));
     }
 }

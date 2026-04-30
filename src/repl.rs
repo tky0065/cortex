@@ -507,6 +507,7 @@ pub async fn dispatch(
             } else {
                 let name = rest.to_string();
                 let mut cfg = config.write().await;
+                crate::providers::models::apply_provider_defaults(&mut cfg, &name);
                 cfg.set_provider(name.clone());
                 if let Err(e) = cfg.save() {
                     send(
