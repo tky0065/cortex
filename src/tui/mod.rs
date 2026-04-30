@@ -33,7 +33,7 @@ use crate::tui::{
     theme::THEME,
     widgets::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
-        input::InputBar,
+        input::{InputBar, PaletteContext, ResumeSuggestion, default_provider_suggestions},
         logs::{LogEntry, LogsWidget},
         picker::{
             PickerState, PickerWidget, auth_method_picker, model_picker, provider_picker,
@@ -175,8 +175,9 @@ impl App {
         .render(frame, layout.logs);
         self.input_bar.render(frame, layout.input);
         // Command palette floats above the input bar (drawn after so it's on top)
+        let palette_context = self.palette_context();
         self.input_bar
-            .render_palette(frame, frame.area(), layout.input);
+            .render_palette(frame, frame.area(), layout.input, &palette_context);
 
         let elapsed = self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         StatusBarWidget {
@@ -485,10 +486,9 @@ impl App {
                 if provider == current_provider {
                     if let Some(first) = models.first() {
                         if let Ok(mut cfg) = self.config.try_write() {
-                            let still_on_old_provider = crate::providers::models::model_prefix(
-                                &cfg.models.ceo,
-                            )
-                            .is_none_or(|p| p != provider);
+                            let still_on_old_provider =
+                                crate::providers::models::model_prefix(&cfg.models.ceo)
+                                    .is_none_or(|p| p != provider);
                             if still_on_old_provider {
                                 let qualified = crate::providers::models::qualify_model_string(
                                     first, &provider,
@@ -596,6 +596,106 @@ impl App {
     fn ensure_agent(&mut self, agent: &str) {
         if !self.active_agents.iter().any(|a| a.name == agent) {
             self.active_agents.push(ActiveAgent::new(agent.to_string()));
+        }
+    }
+
+    fn palette_context(&self) -> PaletteContext {
+        let input = self.input_bar.input.value();
+        let needs_providers = input.starts_with("/provider ")
+            || input.starts_with("/apikey ")
+            || input.starts_with("/connect ");
+        let needs_models = input.starts_with("/model ");
+        let needs_agents = input.starts_with("/focus ") || input.starts_with("/agent ");
+        let needs_resume_sessions = input.starts_with("/resume ");
+        let needs_skills = input.starts_with("/skill ") || input.starts_with("/skills ");
+
+        let mut providers = Vec::new();
+        if needs_providers {
+            providers = default_provider_suggestions();
+            if let Ok(cfg) = self.config.try_read() {
+                providers.extend(cfg.custom_providers.iter().map(|(name, provider)| {
+                    (
+                        name.clone(),
+                        format!("Custom provider at {}", provider.base_url),
+                    )
+                }));
+            }
+            providers.sort_by(|a, b| a.0.cmp(&b.0));
+            providers.dedup_by(|a, b| a.0 == b.0);
+        }
+
+        let models = if needs_models {
+            let current_provider = self
+                .config
+                .try_read()
+                .map(|cfg| {
+                    crate::providers::registry::normalize_provider(&cfg.provider.default)
+                        .to_string()
+                })
+                .unwrap_or_else(|_| "ollama".to_string());
+            self.model_cache
+                .get(&current_provider)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let agents = if needs_agents {
+            self.active_agents
+                .iter()
+                .map(|agent| agent.name.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let resume_sessions = if needs_resume_sessions {
+            self.repl_state
+                .session_history
+                .lock()
+                .map(|history| {
+                    history
+                        .iter()
+                        .rev()
+                        .map(|session| {
+                            let idea = if session.idea.len() > 55 {
+                                format!("{}...", &session.idea[..55])
+                            } else {
+                                session.idea.clone()
+                            };
+                            ResumeSuggestion {
+                                label: format!("{} {}", session.workflow, idea),
+                                description: session.directory.display().to_string(),
+                                path: session.directory.display().to_string(),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let skills = if needs_skills {
+            crate::skills::list()
+                .map(|records| {
+                    records
+                        .into_iter()
+                        .map(|record| (record.name, record.description))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        PaletteContext {
+            providers,
+            models,
+            agents,
+            resume_sessions,
+            skills,
         }
     }
 
@@ -854,18 +954,19 @@ impl Tui {
         // When the command palette is open, intercept navigation keys.
         // Enter dispatches complete commands immediately and only waits for args
         // on commands like /run and /start.
-        if app.input_bar.palette_open() {
+        let palette_context = app.palette_context();
+        if app.input_bar.palette_open(&palette_context) {
             match key.code {
                 KeyCode::Up => {
                     app.input_bar.palette_up();
                     return false;
                 }
                 KeyCode::Down => {
-                    app.input_bar.palette_down();
+                    app.input_bar.palette_down(&palette_context);
                     return false;
                 }
                 KeyCode::Tab => {
-                    app.input_bar.palette_down();
+                    app.input_bar.palette_down(&palette_context);
                     return false;
                 }
                 KeyCode::Esc => {
@@ -873,7 +974,7 @@ impl Tui {
                     return false;
                 }
                 KeyCode::Enter => {
-                    if let Some(value) = app.input_bar.palette_select() {
+                    if let Some(value) = app.input_bar.palette_select(&palette_context) {
                         if value.ends_with(' ') {
                             return false;
                         }

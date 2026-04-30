@@ -1,4 +1,4 @@
-use crate::tui::theme::THEME;
+use crate::{auth, providers::registry, tui::theme::THEME, workflows};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -44,6 +44,90 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/exit", "Exit cortex"),
 ];
 
+const MODEL_ROLES: &[(&str, &str)] = &[
+    ("ceo", "CEO role model"),
+    ("pm", "Product manager role model"),
+    ("tech_lead", "Tech lead role model"),
+    ("developer", "Developer role model"),
+    ("qa", "QA role model"),
+    ("devops", "DevOps role model"),
+    ("assistant", "REPL assistant model"),
+    ("all", "Set every role model"),
+];
+
+const WEBSEARCH_ACTIONS: &[(&str, &str)] = &[
+    ("enable", "Enable web search context"),
+    ("disable", "Disable web search context"),
+];
+
+const UPDATE_ACTIONS: &[(&str, &str)] = &[
+    ("check", "Check for updates"),
+    ("install", "Install the latest update"),
+];
+
+const SKILL_ACTIONS: &[(&str, &str)] = &[
+    ("list", "List installed skills"),
+    ("show", "Show an installed skill"),
+    ("add", "Add a skill from a source"),
+    ("install", "Alias for add"),
+    ("enable", "Enable an installed skill"),
+    ("disable", "Disable an installed skill"),
+    ("remove", "Remove an installed skill"),
+    ("create", "Create a local skill"),
+    ("help", "Show skill help"),
+];
+
+const FOCUS_TARGETS: &[(&str, &str)] = &[
+    ("all", "Show logs for all agents"),
+    ("off", "Clear the active log filter"),
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaletteItem {
+    pub value: String,
+    pub description: String,
+    pub replacement: String,
+}
+
+impl PaletteItem {
+    fn new(value: impl Into<String>, description: impl Into<String>) -> Self {
+        let value = value.into();
+        Self {
+            replacement: quote_arg_if_needed(&value),
+            value,
+            description: description.into(),
+        }
+    }
+
+    fn with_replacement(
+        value: impl Into<String>,
+        description: impl Into<String>,
+        replacement: impl Into<String>,
+    ) -> Self {
+        Self {
+            value: value.into(),
+            description: description.into(),
+            replacement: replacement.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PaletteContext {
+    pub providers: Vec<(String, String)>,
+    pub models: Vec<String>,
+    pub agents: Vec<String>,
+    pub resume_sessions: Vec<ResumeSuggestion>,
+    pub skills: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeSuggestion {
+    pub label: String,
+    pub description: String,
+    pub path: String,
+}
+
 pub struct InputBar {
     pub input: Input,
     /// Past commands, oldest first.
@@ -78,14 +162,18 @@ impl InputBar {
     // Command palette
     // -----------------------------------------------------------------------
 
-    /// Returns true when the command palette should be visible.
-    pub fn palette_open(&self) -> bool {
+    /// Returns true when a command or argument palette should be visible.
+    pub fn palette_open(&self, context: &PaletteContext) -> bool {
         let v = self.input.value();
-        v.starts_with('/') && !v.contains(' ')
+        self.argument_replacement(context).is_some() || (v.starts_with('/') && !v.contains(' '))
     }
 
-    /// Commands that match what the user has typed so far.
-    pub fn palette_matches(&self) -> Vec<(&'static str, &'static str)> {
+    /// Commands or arguments that match what the user has typed so far.
+    pub fn palette_matches(&self, context: &PaletteContext) -> Vec<PaletteItem> {
+        if let Some(arg) = self.argument_replacement(context) {
+            return arg.matches;
+        }
+
         let prefix = self.input.value();
         if !prefix.starts_with('/') {
             return Vec::new();
@@ -93,7 +181,7 @@ impl InputBar {
         COMMANDS
             .iter()
             .filter(|(cmd, _)| cmd.starts_with(prefix))
-            .map(|(cmd, desc)| (*cmd, *desc))
+            .map(|(cmd, desc)| PaletteItem::new(*cmd, *desc))
             .collect()
     }
 
@@ -105,8 +193,8 @@ impl InputBar {
     }
 
     /// Move the palette cursor down.
-    pub fn palette_down(&mut self) {
-        let len = self.palette_matches().len();
+    pub fn palette_down(&mut self, context: &PaletteContext) {
+        let len = self.palette_matches(context).len();
         if len > 0 && self.palette_idx + 1 < len {
             self.palette_idx += 1;
         }
@@ -114,22 +202,60 @@ impl InputBar {
 
     /// Select the currently highlighted palette item — replaces the input value.
     /// Returns the selected command string (e.g. "/start"), or None if palette is empty.
-    pub fn palette_select(&mut self) -> Option<String> {
-        let matches = self.palette_matches();
+    pub fn palette_select(&mut self, context: &PaletteContext) -> Option<String> {
+        if let Some(arg) = self.argument_replacement(context) {
+            if arg.matches.is_empty() {
+                return None;
+            }
+            let idx = self.palette_idx.min(arg.matches.len() - 1);
+            let item = &arg.matches[idx];
+            let mut value = String::new();
+            value.push_str(&arg.before);
+            value.push_str(&item.replacement);
+            value.push_str(&arg.after);
+            if arg.append_space && !value.ends_with(' ') {
+                value.push(' ');
+            }
+            self.input = Input::new(value.clone());
+            self.palette_idx = 0;
+            return Some(value);
+        }
+
+        let matches = self.palette_matches(context);
         if matches.is_empty() {
             return None;
         }
         let idx = self.palette_idx.min(matches.len() - 1);
-        let (cmd, _) = matches[idx];
+        let item = &matches[idx].value;
+
         // Commands that take arguments get a trailing space; others are complete.
-        let value = if REQUIRES_ARGS.contains(&cmd) {
-            format!("{} ", cmd)
+        let value = if REQUIRES_ARGS.contains(&item.as_str()) {
+            format!("{} ", item)
         } else {
-            cmd.to_string()
+            item.to_string()
         };
         self.input = Input::new(value.clone());
         self.palette_idx = 0;
         Some(value)
+    }
+
+    fn argument_replacement(&self, context: &PaletteContext) -> Option<ArgumentPalette> {
+        let parsed = ParsedCommand::parse(self.input.value())?;
+        if parsed.command.is_empty() || parsed.current.quoted {
+            return None;
+        }
+
+        let matches = argument_matches(&parsed, context);
+        if matches.is_empty() {
+            return None;
+        }
+
+        Some(ArgumentPalette {
+            before: self.input.value()[..parsed.current.start].to_string(),
+            after: self.input.value()[parsed.current.end..].to_string(),
+            append_space: append_space_after_argument(&parsed),
+            matches,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -266,11 +392,17 @@ impl InputBar {
 
     /// Render the command palette as a floating overlay anchored above `input_area`.
     /// Call this after `render()`, passing the full terminal area and the input bar rect.
-    pub fn render_palette(&self, frame: &mut Frame, full_area: Rect, input_area: Rect) {
-        if !self.palette_open() {
+    pub fn render_palette(
+        &self,
+        frame: &mut Frame,
+        full_area: Rect,
+        input_area: Rect,
+        context: &PaletteContext,
+    ) {
+        if !self.palette_open(context) {
             return;
         }
-        let matches = self.palette_matches();
+        let matches = self.palette_matches(context);
         if matches.is_empty() {
             return;
         }
@@ -291,7 +423,12 @@ impl InputBar {
         };
 
         let cursor = self.palette_idx.min(matches.len().saturating_sub(1));
-        let cmd_col = matches.iter().map(|(c, _)| c.len()).max().unwrap_or(8) + 3;
+        let cmd_col = matches
+            .iter()
+            .map(|item| item.value.len())
+            .max()
+            .unwrap_or(8)
+            + 3;
 
         use ratatui::widgets::Clear;
         frame.render_widget(Clear, palette_area);
@@ -299,7 +436,7 @@ impl InputBar {
         let items: Vec<ListItem> = matches
             .iter()
             .enumerate()
-            .map(|(i, (cmd, desc))| {
+            .map(|(i, item)| {
                 let selected = i == cursor;
                 let (cmd_style, desc_style, row_bg) = if selected {
                     (
@@ -317,10 +454,10 @@ impl InputBar {
                         Color::Reset,
                     )
                 };
-                let cmd_padded = format!(" {:<width$}", cmd, width = cmd_col);
+                let cmd_padded = format!(" {:<width$}", item.value, width = cmd_col);
                 let line = Line::from(vec![
                     Span::styled(cmd_padded, cmd_style),
-                    Span::styled(desc.to_string(), desc_style),
+                    Span::styled(item.description.clone(), desc_style),
                 ])
                 .style(Style::default().bg(row_bg));
                 ListItem::new(line)
@@ -352,6 +489,250 @@ const REQUIRES_ARGS: &[&str] = &[
     "/connect",
 ];
 
+struct ArgumentPalette {
+    before: String,
+    after: String,
+    append_space: bool,
+    matches: Vec<PaletteItem>,
+}
+
+#[derive(Debug)]
+struct ParsedCommand<'a> {
+    command: &'a str,
+    args: Vec<ParsedArg<'a>>,
+    current: ParsedArg<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ParsedArg<'a> {
+    index: usize,
+    start: usize,
+    end: usize,
+    text: &'a str,
+    quoted: bool,
+}
+
+impl<'a> ParsedCommand<'a> {
+    fn parse(value: &'a str) -> Option<Self> {
+        if !value.starts_with('/') {
+            return None;
+        }
+        let command_end = value.find(char::is_whitespace)?;
+        let command = &value[..command_end];
+        let mut args = Vec::new();
+        let mut pos = command_end;
+        let bytes_len = value.len();
+
+        while pos < bytes_len {
+            let skipped = skip_whitespace(value, pos);
+            if skipped == bytes_len {
+                break;
+            }
+            pos = skipped;
+            let arg_start = pos;
+            let mut chars = value[pos..].char_indices();
+            let (_, first) = chars.next()?;
+            if first == '"' {
+                let content_start = pos + first.len_utf8();
+                let mut content_end = bytes_len;
+                let mut arg_end = bytes_len;
+                for (offset, ch) in value[content_start..].char_indices() {
+                    if ch == '"' {
+                        content_end = content_start + offset;
+                        arg_end = content_end + ch.len_utf8();
+                        break;
+                    }
+                }
+                args.push(ParsedArg {
+                    index: args.len(),
+                    start: arg_start,
+                    end: arg_end,
+                    text: &value[content_start..content_end],
+                    quoted: true,
+                });
+                pos = arg_end;
+            } else {
+                let mut arg_end = bytes_len;
+                for (offset, ch) in value[pos..].char_indices() {
+                    if ch.is_whitespace() {
+                        arg_end = pos + offset;
+                        break;
+                    }
+                }
+                args.push(ParsedArg {
+                    index: args.len(),
+                    start: arg_start,
+                    end: arg_end,
+                    text: &value[arg_start..arg_end],
+                    quoted: false,
+                });
+                pos = arg_end;
+            }
+        }
+
+        let current = if value.ends_with(char::is_whitespace) {
+            ParsedArg {
+                index: args.len(),
+                start: value.len(),
+                end: value.len(),
+                text: "",
+                quoted: false,
+            }
+        } else {
+            *args.last()?
+        };
+
+        Some(Self {
+            command,
+            args,
+            current,
+        })
+    }
+}
+
+fn skip_whitespace(value: &str, mut pos: usize) -> usize {
+    while pos < value.len() {
+        let Some(ch) = value[pos..].chars().next() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        pos += ch.len_utf8();
+    }
+    pos
+}
+
+fn argument_matches(parsed: &ParsedCommand<'_>, context: &PaletteContext) -> Vec<PaletteItem> {
+    let candidates = match (parsed.command, parsed.current.index) {
+        ("/start" | "/run", 0) => workflows::available_workflows()
+            .iter()
+            .map(|workflow| PaletteItem::new(workflow.name, workflow.description))
+            .collect(),
+        ("/websearch", 0) => static_items(WEBSEARCH_ACTIONS),
+        ("/update", 0) => static_items(UPDATE_ACTIONS),
+        ("/skill" | "/skills", 0) => static_items(SKILL_ACTIONS),
+        ("/skill" | "/skills", 1) if skill_command_takes_installed_name(parsed) => context
+            .skills
+            .iter()
+            .map(|(name, description)| PaletteItem::new(name, description))
+            .collect(),
+        ("/apikey" | "/provider" | "/connect", 0) => context
+            .providers
+            .iter()
+            .map(|(name, description)| PaletteItem::new(name, description))
+            .collect(),
+        ("/connect", 1) => parsed
+            .args
+            .first()
+            .map(|provider| {
+                auth::methods_for_provider(provider.text)
+                    .into_iter()
+                    .map(|method| PaletteItem::new(method.id, method.description))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        ("/model", 0) => static_items(MODEL_ROLES),
+        ("/model", 1) => context
+            .models
+            .iter()
+            .map(|model| PaletteItem::new(model, "Cached model"))
+            .collect(),
+        ("/focus", 0) => FOCUS_TARGETS
+            .iter()
+            .map(|(value, description)| PaletteItem::new(*value, *description))
+            .chain(
+                context
+                    .agents
+                    .iter()
+                    .map(|agent| PaletteItem::new(agent, "Active agent")),
+            )
+            .collect(),
+        ("/agent", 0) => context
+            .agents
+            .iter()
+            .map(|agent| PaletteItem::new(agent, "Active agent"))
+            .collect(),
+        ("/resume", 0) => context
+            .resume_sessions
+            .iter()
+            .map(|session| {
+                PaletteItem::with_replacement(
+                    &session.label,
+                    &session.description,
+                    quote_arg_if_needed(&session.path),
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    filter_items(candidates, parsed.current.text)
+}
+
+fn static_items(items: &[(&str, &str)]) -> Vec<PaletteItem> {
+    items
+        .iter()
+        .map(|(value, description)| PaletteItem::new(*value, *description))
+        .collect()
+}
+
+fn filter_items(items: Vec<PaletteItem>, prefix: &str) -> Vec<PaletteItem> {
+    if prefix.is_empty() {
+        return items;
+    }
+    let prefix = prefix.to_lowercase();
+    items
+        .into_iter()
+        .filter(|item| {
+            let value = item.value.to_lowercase();
+            let replacement = item.replacement.to_lowercase();
+            value.starts_with(&prefix)
+                || replacement.starts_with(&prefix)
+                || value.split('/').any(|segment| segment.starts_with(&prefix))
+        })
+        .collect()
+}
+
+fn skill_command_takes_installed_name(parsed: &ParsedCommand<'_>) -> bool {
+    matches!(
+        parsed.args.first().map(|arg| arg.text),
+        Some(
+            "show" | "enable" | "activate" | "disable" | "deactivate" | "remove" | "delete" | "rm"
+        )
+    )
+}
+
+fn append_space_after_argument(parsed: &ParsedCommand<'_>) -> bool {
+    match (parsed.command, parsed.current.index) {
+        ("/start" | "/run", 0) => true,
+        ("/skill" | "/skills", 0) => true,
+        ("/skill" | "/skills", 1) => false,
+        ("/apikey", 0) => true,
+        ("/connect", 0) => true,
+        ("/connect", 1) => false,
+        ("/model", 0) => true,
+        ("/model", 1) => false,
+        ("/agent", 0) => true,
+        _ => false,
+    }
+}
+
+fn quote_arg_if_needed(value: &str) -> String {
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
+pub fn default_provider_suggestions() -> Vec<(String, String)> {
+    registry::BUILTIN_PROVIDERS
+        .iter()
+        .map(|provider| (provider.id.to_string(), provider.description.to_string()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +751,41 @@ mod tests {
                 KeyModifiers::NONE,
             )));
         }
+    }
+
+    fn context() -> PaletteContext {
+        PaletteContext {
+            providers: vec![
+                ("ollama".to_string(), "local Ollama server".to_string()),
+                ("openrouter".to_string(), "API key required".to_string()),
+                ("web_search".to_string(), "Brave Search API key".to_string()),
+            ],
+            models: vec![
+                "ollama/qwen2.5-coder:32b".to_string(),
+                "ollama/llama3.1:8b".to_string(),
+            ],
+            agents: vec!["ceo".to_string(), "developer:src/main.rs".to_string()],
+            resume_sessions: vec![
+                ResumeSuggestion {
+                    label: "dev build app".to_string(),
+                    description: "/tmp/cortex-app".to_string(),
+                    path: "/tmp/cortex-app".to_string(),
+                },
+                ResumeSuggestion {
+                    label: "marketing launch".to_string(),
+                    description: "/tmp/cortex project".to_string(),
+                    path: "/tmp/cortex project".to_string(),
+                },
+            ],
+            skills: vec![
+                ("rust".to_string(), "Rust workflow skill".to_string()),
+                ("docs".to_string(), "Documentation skill".to_string()),
+            ],
+        }
+    }
+
+    fn values(items: Vec<PaletteItem>) -> Vec<String> {
+        items.into_iter().map(|item| item.value).collect()
     }
 
     #[test]
@@ -507,33 +923,37 @@ mod tests {
     fn palette_opens_on_slash() {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/");
-        assert!(bar.palette_open());
-        assert!(!bar.palette_matches().is_empty());
+        let ctx = context();
+        assert!(bar.palette_open(&ctx));
+        assert!(!bar.palette_matches(&ctx).is_empty());
     }
 
     #[test]
     fn palette_filters_as_typed() {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/mod");
-        let m = bar.palette_matches();
+        let ctx = context();
+        let m = bar.palette_matches(&ctx);
         assert_eq!(m.len(), 1);
-        assert_eq!(m[0].0, "/model");
+        assert_eq!(m[0].value, "/model");
     }
 
     #[test]
     fn palette_includes_init_command() {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/ini");
-        let matches = bar.palette_matches();
-        assert_eq!(matches, vec![("/init", "Generate or update AGENTS.md")]);
+        let matches = bar.palette_matches(&context());
+        assert_eq!(matches[0].value, "/init");
+        assert_eq!(matches[0].description, "Generate or update AGENTS.md");
     }
 
     #[test]
     fn palette_navigation() {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/");
+        let ctx = context();
         assert_eq!(bar.palette_idx, 0);
-        bar.palette_down();
+        bar.palette_down(&ctx);
         assert_eq!(bar.palette_idx, 1);
         bar.palette_up();
         assert_eq!(bar.palette_idx, 0);
@@ -543,7 +963,7 @@ mod tests {
     fn palette_select_inserts_command() {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/hel");
-        let selected = bar.palette_select();
+        let selected = bar.palette_select(&context());
         assert_eq!(selected, Some("/help".to_string()));
         assert_eq!(bar.input.value(), "/help");
     }
@@ -552,7 +972,7 @@ mod tests {
     fn palette_select_complete_command_can_dispatch_immediately() {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/status");
-        let selected = bar.palette_select();
+        let selected = bar.palette_select(&context());
         assert_eq!(selected, Some("/status".to_string()));
         assert!(!bar.input.value().ends_with(' '));
     }
@@ -561,8 +981,143 @@ mod tests {
     fn palette_select_arg_command_waits_for_prompt() {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/ru");
-        let selected = bar.palette_select();
+        let selected = bar.palette_select(&context());
         assert_eq!(selected, Some("/run ".to_string()));
         assert!(bar.input.value().ends_with(' '));
+    }
+
+    #[test]
+    fn workflow_palette_opens_after_start_space() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/start ");
+        let ctx = context();
+        assert!(bar.palette_open(&ctx));
+
+        let matches = bar.palette_matches(&ctx);
+        assert_eq!(matches[0].value, "dev");
+        assert!(matches.iter().any(|item| item.value == "code-review"));
+    }
+
+    #[test]
+    fn workflow_palette_opens_after_run_space() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/run ");
+        let ctx = context();
+        assert!(bar.palette_open(&ctx));
+
+        let names = values(bar.palette_matches(&ctx));
+        assert_eq!(
+            names,
+            vec!["dev", "marketing", "prospecting", "code-review"]
+        );
+    }
+
+    #[test]
+    fn workflow_palette_filters_by_prefix() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/start ma");
+
+        let matches = bar.palette_matches(&context());
+        assert_eq!(matches[0].value, "marketing");
+        assert_eq!(matches[0].description, "Marketing and content workflow");
+    }
+
+    #[test]
+    fn workflow_palette_select_inserts_workflow_and_keeps_prompt_open() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/run code");
+        let selected = bar.palette_select(&context());
+
+        assert_eq!(selected, Some("/run code-review ".to_string()));
+        assert_eq!(bar.input.value(), "/run code-review ");
+    }
+
+    #[test]
+    fn workflow_palette_stays_closed_for_default_workflow_prompt() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/start \"build a chat app\"");
+        let ctx = context();
+
+        assert!(!bar.palette_open(&ctx));
+        assert!(bar.palette_matches(&ctx).is_empty());
+    }
+
+    #[test]
+    fn workflow_palette_stays_closed_after_workflow_selection() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/start dev ");
+        let ctx = context();
+
+        assert!(!bar.palette_open(&ctx));
+        assert!(bar.palette_matches(&ctx).is_empty());
+    }
+
+    #[test]
+    fn websearch_palette_suggests_actions() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/websearch e");
+        assert_eq!(values(bar.palette_matches(&context())), vec!["enable"]);
+    }
+
+    #[test]
+    fn skill_palette_suggests_installed_skill_names() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/skill enable r");
+        assert_eq!(values(bar.palette_matches(&context())), vec!["rust"]);
+    }
+
+    #[test]
+    fn provider_palette_suggests_providers() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/provider open");
+        assert_eq!(values(bar.palette_matches(&context())), vec!["openrouter"]);
+    }
+
+    #[test]
+    fn connect_palette_suggests_auth_methods_after_provider() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/connect ollama ");
+        assert_eq!(values(bar.palette_matches(&context())), vec!["local"]);
+    }
+
+    #[test]
+    fn model_palette_suggests_roles_then_cached_models() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/model devel");
+        assert_eq!(values(bar.palette_matches(&context())), vec!["developer"]);
+
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/model developer llama");
+        assert_eq!(
+            values(bar.palette_matches(&context())),
+            vec!["ollama/llama3.1:8b"]
+        );
+    }
+
+    #[test]
+    fn agent_palettes_suggest_active_agents() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/focus dev");
+        assert_eq!(
+            values(bar.palette_matches(&context())),
+            vec!["developer:src/main.rs"]
+        );
+
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/agent ce");
+        assert_eq!(values(bar.palette_matches(&context())), vec!["ceo"]);
+    }
+
+    #[test]
+    fn resume_palette_inserts_quoted_paths_when_needed() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/resume marketing");
+        let selected = bar.palette_select(&context());
+
+        assert_eq!(
+            selected,
+            Some("/resume \"/tmp/cortex project\"".to_string())
+        );
+        assert_eq!(bar.input.value(), "/resume \"/tmp/cortex project\"");
     }
 }

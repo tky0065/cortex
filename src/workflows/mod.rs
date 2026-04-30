@@ -13,6 +13,43 @@ pub mod dev;
 pub mod marketing;
 pub mod prospecting;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkflowInfo {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+pub const AVAILABLE_WORKFLOWS: &[WorkflowInfo] = &[
+    WorkflowInfo {
+        name: "dev",
+        description: "Software development workflow",
+    },
+    WorkflowInfo {
+        name: "marketing",
+        description: "Marketing and content workflow",
+    },
+    WorkflowInfo {
+        name: "prospecting",
+        description: "Freelance outreach workflow",
+    },
+    WorkflowInfo {
+        name: "code-review",
+        description: "Review an existing project",
+    },
+];
+
+pub fn available_workflows() -> &'static [WorkflowInfo] {
+    AVAILABLE_WORKFLOWS
+}
+
+pub fn available_workflow_names() -> String {
+    available_workflows()
+        .iter()
+        .map(|workflow| workflow.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[derive(Clone)]
 pub struct RunOptions {
     pub auto: bool,
@@ -55,8 +92,9 @@ pub fn get_workflow(name: &str) -> Result<Box<dyn Workflow>> {
         "prospecting" => Ok(Box::new(prospecting::ProspectingWorkflow)),
         "code-review" => Ok(Box::new(code_review::CodeReviewWorkflow)),
         other => anyhow::bail!(
-            "Unknown workflow '{}'. Available: dev, marketing, prospecting, code-review",
-            other
+            "Unknown workflow '{}'. Available: {}",
+            other,
+            available_workflow_names()
         ),
     }
 }
@@ -113,6 +151,29 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
         format!("{}...", truncated.trim_end())
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn available_workflow_names_match_registry() {
+        assert_eq!(
+            available_workflow_names(),
+            "dev, marketing, prospecting, code-review"
+        );
+    }
+
+    #[test]
+    fn unknown_workflow_error_lists_available_workflows() {
+        let err = match get_workflow("unknown") {
+            Ok(_) => panic!("unknown workflow should fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("Unknown workflow 'unknown'"));
+        assert!(err.contains("Available: dev, marketing, prospecting, code-review"));
     }
 }
 

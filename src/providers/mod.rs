@@ -266,7 +266,7 @@ fn emit_text(tx: &crate::tui::events::TuiSender, agent_name: &str, text: &str) {
 /// Drains a streaming response into a `String`, forwarding each text token as `TuiEvent::TokenChunk`.
 ///
 /// While waiting for the **first token**, a background heartbeat fires every 5 seconds and sends
-/// `TuiEvent::AgentProgress { "Waiting for model response... Xs" }` so the TUI stays visually
+/// `TuiEvent::AgentProgress { "Working ... Xs" }` so the TUI stays visually
 /// alive during slow API queue times (e.g. free models on OpenRouter with long TTFT).
 async fn consume_stream<R: Clone + Send + 'static>(
     mut stream: StreamingResult<R>,
@@ -289,7 +289,7 @@ async fn consume_stream<R: Clone + Send + 'static>(
                     let elapsed = start.elapsed().as_secs();
                     let _ = tx_hb.send(TuiEvent::AgentProgress {
                         agent: agent_hb.clone(),
-                        message: format!("Waiting for model response... ({}s)", elapsed),
+                        message: format!("Working ... ({}s)", elapsed),
                     });
                 }
                 _ = cancel_hb.cancelled() => break,
@@ -337,7 +337,7 @@ async fn consume_chat_stream<R: Clone + Send + 'static>(
                     let elapsed = start.elapsed().as_secs();
                     let _ = tx_hb.send(TuiEvent::AgentProgress {
                         agent: agent_hb.clone(),
-                        message: format!("Waiting for model response... ({}s)", elapsed),
+                        message: format!("Working ... ({}s)", elapsed),
                     });
                 }
                 _ = cancel_hb.cancelled() => break,
@@ -463,7 +463,7 @@ fn chatgpt_heartbeat(tx: &crate::tui::events::TuiSender, agent_name: &str) -> Ca
                     let elapsed = start.elapsed().as_secs();
                     let _ = tx_hb.send(TuiEvent::AgentProgress {
                         agent: agent_hb.clone(),
-                        message: format!("Waiting for model response... ({}s)", elapsed),
+                        message: format!("Working ... ({}s)", elapsed),
                     });
                 }
                 _ = cancel_hb.cancelled() => break,
