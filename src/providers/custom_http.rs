@@ -17,7 +17,9 @@ const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_ISSUER: &str = "https://auth.openai.com";
 // Official Responses API — works with ChatGPT OAuth tokens obtained via
 // codex_cli_simplified_flow=true (no paid API key required for ChatGPT subscribers)
-const OPENAI_CODEX_ENDPOINT: &str = "https://api.openai.com/v1/responses";
+// /v1/chat/completions works with the OAuth token from codex_cli_simplified_flow=true.
+// /v1/responses requires api.responses.write scope that the OAuth flow does NOT grant.
+const OPENAI_CODEX_ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
 const OPENAI_OAUTH_PORT: u16 = 1455;
 const OPENAI_OAUTH_CALLBACK_PATH: &str = "/auth/callback";
 
@@ -123,20 +125,14 @@ pub async fn chatgpt_codex_complete(
     );
     headers.insert(USER_AGENT, HeaderValue::from_static("cortex"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert("OpenAI-Beta", HeaderValue::from_static("responses=v1"));
     if let Some(account_id) = record.account_id.as_deref() {
         headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
     }
 
-    // api.openai.com/v1/responses uses the Responses API format
-    let input: Vec<_> = turns
-        .iter()
-        .map(|turn| json!({"role": turn.role, "content": turn.content}))
-        .collect();
+    // /v1/chat/completions — standard format, no special scope needed
     let body = json!({
         "model": model,
-        "instructions": preamble,
-        "input": input,
+        "messages": openai_messages(preamble, turns),
         "stream": false
     });
     post_json_for_text(OPENAI_CODEX_ENDPOINT, headers, body).await

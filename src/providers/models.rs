@@ -328,17 +328,22 @@ async fn fetch_openai_compatible(provider: &str, env_var: &str, url: &str) -> Re
     if key.is_empty() {
         return Ok(static_fallback(provider));
     }
-    let resp = reqwest::Client::new()
-        .get(url)
-        .bearer_auth(&key)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<OpenAiModelsResponse>()
-        .await?;
-    let mut ids: Vec<String> = resp.data.into_iter().map(|m| m.id).collect();
-    ids.sort();
-    Ok(ids)
+    let result: Result<Vec<String>, _> = async {
+        let resp = reqwest::Client::new()
+            .get(url)
+            .bearer_auth(&key)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<OpenAiModelsResponse>()
+            .await?;
+        let mut ids: Vec<String> = resp.data.into_iter().map(|m| m.id).collect();
+        ids.sort();
+        anyhow::Ok(ids)
+    }
+    .await;
+    // Fall back to static list on any HTTP/network error (e.g., restricted API keys)
+    Ok(result.unwrap_or_else(|_| static_fallback(provider)))
 }
 
 /// Fetch ChatGPT-subscription-compatible models.
