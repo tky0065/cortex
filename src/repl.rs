@@ -160,7 +160,8 @@ pub async fn dispatch(
                 "  /config                       — print active configuration",
                 "  /model [<role> <model>]       — show or change a role's model",
                 "  /provider [<name>]            — show or change the default provider",
-                "  /apikey <provider> <key>      — set an API key (openrouter/groq/together/web_search)",
+                "  /connect [provider method]    — connect provider auth",
+                "  /apikey <provider> <key>      — set an API key",
                 "  /websearch [enable|disable]   — toggle web search context injection for all agents",
                 "  /skill                        — browse, install, enable, disable, and remove skills",
                 "  /update [check|<version>]      — check for or install Cortex updates",
@@ -398,10 +399,13 @@ pub async fn dispatch(
                 .unwrap_or((rest, ""));
 
             if provider.is_empty() || key_str.is_empty() {
-                send(tx, TuiEvent::Error {
-                    agent: "apikey".to_string(),
-                    message: "usage: /apikey <provider> <key>  (providers: openrouter, groq, together, web_search)".to_string(),
-                });
+                send(
+                    tx,
+                    TuiEvent::Error {
+                        agent: "apikey".to_string(),
+                        message: "usage: /apikey <provider> <key>".to_string(),
+                    },
+                );
                 return Ok(false);
             }
 
@@ -437,6 +441,10 @@ pub async fn dispatch(
                     );
                 }
             }
+        }
+
+        "/connect" => {
+            handle_connect_command(rest, tx, config).await;
         }
 
         "/model" => {
@@ -919,6 +927,168 @@ fn send(tx: &TuiSender, event: TuiEvent) {
     let _ = tx.send(event);
 }
 
+async fn handle_connect_command(rest: &str, tx: &TuiSender, config: Arc<RwLock<Config>>) {
+    let args = rest.split_whitespace().collect::<Vec<_>>();
+    if args.is_empty() {
+        send(tx, TuiEvent::OpenConnectProviderPicker);
+        return;
+    }
+
+    let provider = args[0];
+    let methods = crate::auth::methods_for_provider(provider);
+    if methods.is_empty() {
+        send(
+            tx,
+            TuiEvent::Error {
+                agent: "connect".to_string(),
+                message: format!("unknown provider '{provider}'"),
+            },
+        );
+        return;
+    }
+
+    if args.len() == 1 {
+        for method in methods {
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "connect".to_string(),
+                    chunk: format!(
+                        "  {} — {} ({})",
+                        method.id, method.label, method.description
+                    ),
+                },
+            );
+        }
+        return;
+    }
+
+    let method_id = args[1];
+    let secret = args
+        .get(2..)
+        .map(|parts| parts.join(" "))
+        .unwrap_or_default();
+    let Some(method) = crate::auth::method_by_id(provider, method_id) else {
+        send(
+            tx,
+            TuiEvent::Error {
+                agent: "connect".to_string(),
+                message: format!("unknown auth method '{method_id}' for provider '{provider}'"),
+            },
+        );
+        return;
+    };
+
+    if let Some(message) = crate::auth::connect_blocker(provider, method_id) {
+        send(
+            tx,
+            TuiEvent::Error {
+                agent: "connect".to_string(),
+                message: message.to_string(),
+            },
+        );
+        return;
+    }
+
+    let record = match method.id {
+        "chatgpt_browser" => {
+            match crate::providers::custom_http::chatgpt_browser_auth_with_url(|url| {
+                send(
+                    tx,
+                    TuiEvent::AuthUrl {
+                        provider: "openai_chatgpt".to_string(),
+                        url: url.to_string(),
+                        message: "Open this URL in your browser to connect ChatGPT Plus/Pro."
+                            .to_string(),
+                    },
+                );
+                Ok(())
+            })
+            .await
+            {
+                Ok(record) => record,
+                Err(e) => {
+                    send(
+                        tx,
+                        TuiEvent::Error {
+                            agent: "connect".to_string(),
+                            message: e.to_string(),
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+        "github_device" => match crate::auth::connect_github_copilot_device().await {
+            Ok(record) => record,
+            Err(e) => {
+                send(
+                    tx,
+                    TuiEvent::Error {
+                        agent: "connect".to_string(),
+                        message: e.to_string(),
+                    },
+                );
+                return;
+            }
+        },
+        _ => match crate::auth::record_from_secret(provider, method_id, secret) {
+            Ok(record) => record,
+            Err(e) => {
+                send(
+                    tx,
+                    TuiEvent::Error {
+                        agent: "connect".to_string(),
+                        message: e.to_string(),
+                    },
+                );
+                return;
+            }
+        },
+    };
+
+    let selected_provider = if provider == "openai" && method.id.starts_with("chatgpt") {
+        "openai_chatgpt"
+    } else {
+        provider
+    };
+
+    let mut store = crate::auth::AuthStore::load().unwrap_or_default();
+    store.set(record);
+    if let Err(e) = store.save() {
+        send(
+            tx,
+            TuiEvent::Error {
+                agent: "connect".to_string(),
+                message: e.to_string(),
+            },
+        );
+        return;
+    }
+
+    let mut cfg = config.write().await;
+    cfg.set_provider(selected_provider.to_string());
+    let saved = cfg.save();
+    drop(cfg);
+
+    match saved {
+        Ok(()) => send(
+            tx,
+            TuiEvent::TokenChunk {
+                agent: "connect".to_string(),
+                chunk: format!("  ✓ {selected_provider} connected with {method_id}"),
+            },
+        ),
+        Err(e) => send(
+            tx,
+            TuiEvent::Error {
+                agent: "connect".to_string(),
+                message: format!("connected but failed to persist config: {e}"),
+            },
+        ),
+    }
+}
+
 async fn handle_update_command(rest: &str, tx: &TuiSender) {
     send(
         tx,
@@ -1220,7 +1390,15 @@ async fn chat_message(
 
     let result = {
         let bus = state.agent_bus.read().await.clone();
-        crate::assistant::run(message, history_snapshot, &model, tx, Arc::clone(&config), bus).await
+        crate::assistant::run(
+            message,
+            history_snapshot,
+            &model,
+            tx,
+            Arc::clone(&config),
+            bus,
+        )
+        .await
     };
 
     match result {

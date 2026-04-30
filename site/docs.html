@@ -139,13 +139,14 @@ function TOC({ active }) {
 function Content() {
   return (
     <main className="docs-content">
-      <span className="docs-eyebrow">Documentation · v0.1.4 beta</span>
+      <span className="docs-eyebrow">Documentation · v0.1.5 beta</span>
       <h1>Cortex</h1>
       <p style={{ fontSize: 18, color: "var(--fg)" }}>Orchestrate specialized AI agents to build and ship your projects from your terminal. Cortex is currently in beta.</p>
 
       <section id="introduction" className="docs-section">
         <h2>Introduction</h2>
         <p><strong>Status:</strong> Cortex is in beta. It is ready for early adopters, while workflows, providers, and generated project structure may still evolve before a stable 1.0 release.</p>
+        <p><strong>0.1.5 beta highlights:</strong> expanded provider auth through <code>/connect</code>, ChatGPT Plus/Pro streaming through the Codex Responses backend, GitHub Copilot device login, GitLab Duo auth, Vertex AI and Bedrock provider entries, Gemini Gemma compatibility, project <code>AGENTS.md</code> context, skill injection, and a richer TUI.</p>
         <p>Cortex runs like a REPL by default — type <code>cortex</code> to launch the TUI. Inside, you give it an idea via a slash command and watch six specialized agents take it from brief to deployable repo: <strong>CEO → PM → Tech Lead → Developer ×N → QA → DevOps</strong>.</p>
         <p>Each agent reads only the files it needs from disk — never the full transcript. This <em>file-as-memory</em> pattern keeps context windows bounded even on multi-hour runs.</p>
       </section>
@@ -166,7 +167,7 @@ function Content() {
           <thead><tr><th>Requirement</th><th>When needed</th></tr></thead>
           <tbody>
             <tr><td>Ollama</td><td>Default local provider</td></tr>
-            <tr><td>OpenRouter / Groq / Together</td><td>Remote model providers</td></tr>
+            <tr><td>Provider API key or account auth</td><td>Remote model providers</td></tr>
             <tr><td>Brave Search API</td><td>Optional web search context</td></tr>
           </tbody>
         </table>
@@ -207,10 +208,14 @@ skills_enabled = true
 max_skill_context_chars = 12000
 
 [api_keys]
+# openai     = "sk-..."
+# anthropic  = "sk-ant-..."
+# gemini     = "AIza..."
 # openrouter = "sk-or-..."
 # groq       = "gsk_..."
 # together   = "tg-..."
 # web_search = "BSA..."`}</code></pre>
+        <p>OAuth and device-login credentials are stored separately in <code>~/.cortex/auth.json</code> by <code>/connect</code>.</p>
       </section>
 
       <section id="models" className="docs-section">
@@ -220,11 +225,29 @@ max_skill_context_chars = 12000
           <thead><tr><th>Prefix</th><th>Backend</th><th>Env var</th></tr></thead>
           <tbody>
             <tr><td>ollama/</td><td>Local Ollama instance</td><td>—</td></tr>
+            <tr><td>lmstudio/</td><td>Local LM Studio server</td><td>—</td></tr>
+            <tr><td>openai/</td><td>OpenAI API</td><td>OPENAI_API_KEY</td></tr>
+            <tr><td>openai_chatgpt/</td><td>ChatGPT Plus/Pro Codex backend</td><td>/connect openai chatgpt_browser</td></tr>
+            <tr><td>anthropic/</td><td>Anthropic API</td><td>ANTHROPIC_API_KEY</td></tr>
+            <tr><td>gemini/</td><td>Google Gemini API, including Gemma models</td><td>GEMINI_API_KEY</td></tr>
+            <tr><td>mistral/</td><td>Mistral AI</td><td>MISTRAL_API_KEY</td></tr>
+            <tr><td>deepseek/</td><td>DeepSeek API</td><td>DEEPSEEK_API_KEY</td></tr>
+            <tr><td>xai/</td><td>xAI API</td><td>XAI_API_KEY</td></tr>
+            <tr><td>cohere/</td><td>Cohere API</td><td>COHERE_API_KEY</td></tr>
+            <tr><td>perplexity/</td><td>Perplexity API</td><td>PERPLEXITY_API_KEY</td></tr>
+            <tr><td>huggingface/</td><td>Hugging Face Inference Providers</td><td>HUGGINGFACE_API_KEY</td></tr>
+            <tr><td>azure_openai/</td><td>Azure OpenAI</td><td>AZURE_OPENAI_API_KEY + endpoint env</td></tr>
+            <tr><td>github_copilot/</td><td>GitHub Copilot subscription backend</td><td>/connect github_copilot github_device</td></tr>
+            <tr><td>gitlab_duo/</td><td>GitLab Duo compatible accounts</td><td>/connect gitlab_duo</td></tr>
+            <tr><td>google_vertex/</td><td>Google Vertex AI</td><td>Google ADC / gcloud</td></tr>
+            <tr><td>amazon_bedrock/</td><td>Amazon Bedrock</td><td>AWS credential chain</td></tr>
             <tr><td>openrouter/</td><td>OpenRouter API</td><td>OPENROUTER_API_KEY</td></tr>
             <tr><td>groq/</td><td>Groq API</td><td>GROQ_API_KEY</td></tr>
             <tr><td>together/</td><td>Together AI</td><td>TOGETHER_API_KEY</td></tr>
+            <tr><td>fireworks/, deepinfra/, cerebras/, moonshot/, zai/, 302ai/, alibaba/, cloudflare/, minimax/, nebius/, scaleway/, vercel_ai_gateway/</td><td>Hosted or aggregator OpenAI-compatible APIs</td><td>Provider-specific API key</td></tr>
           </tbody>
         </table>
+        <p>Gemma models served through the Gemini API, such as <code>gemini/gemma-3-12b-it</code>, do not accept developer/system instructions. Cortex keeps them usable by inlining its instructions into the user prompt while leaving native <code>gemini-*</code> models on the standard system-instruction path.</p>
         <p>If no prefix is given, <code>ollama</code> is assumed. You can mix providers per role:</p>
         <pre><code>{`[models]
 ceo       = "openrouter/anthropic/claude-3-opus"
@@ -240,6 +263,12 @@ qa        = "groq/llama3-70b-8192"`}</code></pre>
 /apikey groq       gsk_...
 /apikey together   tg-...
 /apikey web_search BSA...`}</code></pre>
+        <p>Use <code>/connect</code> for interactive auth flows and account-based providers:</p>
+        <pre><code>{`/connect
+/connect openai
+/connect openai chatgpt_browser
+/connect github_copilot github_device
+/connect amazon_bedrock aws_profile`}</code></pre>
         <h3>Option B — environment variables (session-only)</h3>
         <pre><code>{`export OPENROUTER_API_KEY="sk-or-..."
 export GROQ_API_KEY="gsk_..."
@@ -263,6 +292,7 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td>/config</td><td>Display active config values</td></tr>
             <tr><td>/model [&lt;role&gt; &lt;model&gt;]</td><td>Show or change a role's model</td></tr>
             <tr><td>/provider [&lt;name&gt;]</td><td>Show or change the default provider</td></tr>
+            <tr><td>/connect [provider method]</td><td>Connect provider auth or open the provider picker</td></tr>
             <tr><td>/apikey &lt;provider&gt; &lt;key&gt;</td><td>Set an API key</td></tr>
             <tr><td>/websearch [enable|disable]</td><td>Toggle web search injection</td></tr>
             <tr><td>/skill</td><td>Browse and manage reusable Cortex skills</td></tr>
@@ -449,6 +479,9 @@ rate       = "€600/day"`}</code></pre>
         <h2>Providers</h2>
         <p>The <code>providers::complete(model_str, preamble, prompt)</code> function parses the prefix of the model string and selects the correct rig client:</p>
         <pre><code>{`"ollama/qwen2.5-coder:32b"   → rig_ollama::Client      (no API key)
+"openai_chatgpt/gpt-5.5"      → ChatGPT Codex stream   (OAuth via /connect)
+"gemini/gemma-3-12b-it"       → Gemini with inline instruction fallback
+"amazon_bedrock/<model-id>"   → AWS Bedrock Runtime    (AWS credential chain)
 "openrouter/gpt-4o"           → rig_openrouter::Client  (OPENROUTER_API_KEY)
 "groq/llama3-70b-8192"        → groq::Client            (GROQ_API_KEY)
 "together/mistralai/Mixtral"  → together::Client        (TOGETHER_API_KEY)`}</code></pre>
@@ -476,6 +509,7 @@ rate       = "€600/day"`}</code></pre>
         <p><strong>RunOptions</strong> — threaded through every workflow and agent: <code>config</code>, <code>tx</code>, <code>project_dir</code>, <code>cancel</code>, <code>resume_tx</code>, <code>auto</code>, <code>verbose</code>.</p>
         <p><strong>TUI event bus</strong> — all agent output flows through <code>TuiEvent</code> over <code>mpsc::UnboundedSender</code>: <code>WorkflowStarted</code>, <code>AgentStarted</code>, <code>TokenChunk</code>, <code>AgentDone</code>, <code>PhaseComplete</code>, <code>InteractivePause</code>, <code>Resume</code>, <code>Error</code>.</p>
         <p><strong>Assistant streaming</strong> — free-form REPL messages stream visible assistant text while private tool-call XML stays hidden from the user. Project <code>AGENTS.md</code> and relevant skills are added to prompts before provider calls.</p>
+        <p><strong>Provider auth</strong> — <code>/connect</code> opens a searchable provider picker generated from the provider registry, then stores OAuth/device/API credentials in <code>~/.cortex/auth.json</code>.</p>
         <p><strong>Parallel workers</strong> — the developer phase uses <code>tokio::spawn</code> + <code>Arc&lt;Semaphore&gt;</code> to run up to <code>max_parallel_workers</code> concurrently. Each worker writes its output file immediately.</p>
       </section>
 
@@ -488,7 +522,7 @@ rate       = "€600/day"`}</code></pre>
         <pre><code>cargo  go  npm  pip  git  docker</code></pre>
         <p>LLM output is treated as untrusted input. Any command not on this list is rejected.</p>
         <h3>API keys</h3>
-        <p>Keys can be read from environment variables or stored locally in <code>~/.cortex/config.toml</code> via <code>/apikey</code>. Never commit keys to source control.</p>
+        <p>Keys can be read from environment variables or stored locally in <code>~/.cortex/config.toml</code> via <code>/apikey</code>. OAuth/device/account credentials are stored in <code>~/.cortex/auth.json</code> via <code>/connect</code>. Never commit keys or auth stores to source control.</p>
       </section>
 
       <section id="output" className="docs-section">

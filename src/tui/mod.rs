@@ -1084,9 +1084,10 @@ impl Tui {
             KeyCode::Backspace => state.pop_search(),
             KeyCode::Enter => {
                 if let Some(provider) = state.selected_id() {
+                    let methods = crate::auth::methods_for_provider(&provider);
                     app.popup = PopupState::AuthMethodPicker {
                         provider: provider.clone(),
-                        picker: auth_method_picker(&provider),
+                        picker: auth_method_picker(&provider, &methods),
                     };
                 }
             }

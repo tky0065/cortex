@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,6 +13,19 @@ pub struct Config {
     pub api_keys: ApiKeysConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
+    pub custom_providers: BTreeMap<String, CustomProviderConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CustomProviderConfig {
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +36,26 @@ pub struct ProviderConfig {
 /// Optional API keys stored in config.toml (never required for Ollama).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ApiKeysConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gemini: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mistral: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deepseek: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xai: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cohere: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perplexity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub huggingface: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azure_openai: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openrouter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,6 +147,7 @@ impl Default for Config {
             },
             api_keys: ApiKeysConfig::default(),
             tools: ToolsConfig::default(),
+            custom_providers: BTreeMap::new(),
         }
     }
 }
@@ -195,12 +230,27 @@ impl Config {
     /// Store an API key for a provider. Returns error for unknown providers.
     pub fn set_api_key(&mut self, provider: &str, key: String) -> Result<()> {
         match provider {
+            "openai" => self.api_keys.openai = Some(key),
+            "anthropic" => self.api_keys.anthropic = Some(key),
+            "gemini" | "google" => self.api_keys.gemini = Some(key),
+            "mistral" => self.api_keys.mistral = Some(key),
+            "deepseek" => self.api_keys.deepseek = Some(key),
+            "xai" => self.api_keys.xai = Some(key),
+            "cohere" => self.api_keys.cohere = Some(key),
+            "perplexity" => self.api_keys.perplexity = Some(key),
+            "huggingface" | "hf" => self.api_keys.huggingface = Some(key),
+            "azure_openai" | "azure" => self.api_keys.azure_openai = Some(key),
             "openrouter" => self.api_keys.openrouter = Some(key),
             "groq" => self.api_keys.groq = Some(key),
             "together" => self.api_keys.together = Some(key),
             "web_search" => self.api_keys.web_search = Some(key),
+            custom if self.custom_providers.contains_key(custom) => {
+                if let Some(provider) = self.custom_providers.get_mut(custom) {
+                    provider.api_key = Some(key);
+                }
+            }
             other => anyhow::bail!(
-                "Unknown provider '{}'. Valid providers: openrouter, groq, together, web_search",
+                "Unknown provider '{}'. Valid providers: openai, anthropic, gemini, mistral, deepseek, xai, cohere, perplexity, huggingface, azure_openai, openrouter, groq, together, web_search, or a configured custom provider",
                 other
             ),
         }
@@ -211,11 +261,24 @@ impl Config {
     #[allow(dead_code)]
     pub fn get_api_key(&self, provider: &str) -> Option<&str> {
         match provider {
+            "openai" => self.api_keys.openai.as_deref(),
+            "anthropic" => self.api_keys.anthropic.as_deref(),
+            "gemini" | "google" => self.api_keys.gemini.as_deref(),
+            "mistral" => self.api_keys.mistral.as_deref(),
+            "deepseek" => self.api_keys.deepseek.as_deref(),
+            "xai" => self.api_keys.xai.as_deref(),
+            "cohere" => self.api_keys.cohere.as_deref(),
+            "perplexity" => self.api_keys.perplexity.as_deref(),
+            "huggingface" | "hf" => self.api_keys.huggingface.as_deref(),
+            "azure_openai" | "azure" => self.api_keys.azure_openai.as_deref(),
             "openrouter" => self.api_keys.openrouter.as_deref(),
             "groq" => self.api_keys.groq.as_deref(),
             "together" => self.api_keys.together.as_deref(),
             "web_search" => self.api_keys.web_search.as_deref(),
-            _ => None,
+            custom => self
+                .custom_providers
+                .get(custom)
+                .and_then(|provider| provider.api_key.as_deref()),
         }
     }
 
@@ -229,6 +292,36 @@ impl Config {
         // SAFETY: single-threaded at startup / before any threads are spawned;
         // in TUI context called while holding the config write-lock.
         unsafe {
+            if let Some(k) = &self.api_keys.openai {
+                std::env::set_var("OPENAI_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.anthropic {
+                std::env::set_var("ANTHROPIC_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.gemini {
+                std::env::set_var("GEMINI_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.mistral {
+                std::env::set_var("MISTRAL_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.deepseek {
+                std::env::set_var("DEEPSEEK_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.xai {
+                std::env::set_var("XAI_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.cohere {
+                std::env::set_var("COHERE_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.perplexity {
+                std::env::set_var("PERPLEXITY_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.huggingface {
+                std::env::set_var("HUGGINGFACE_API_KEY", k);
+            }
+            if let Some(k) = &self.api_keys.azure_openai {
+                std::env::set_var("AZURE_OPENAI_API_KEY", k);
+            }
             if let Some(k) = &self.api_keys.openrouter {
                 std::env::set_var("OPENROUTER_API_KEY", k);
             }

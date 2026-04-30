@@ -6,13 +6,15 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 **Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
-## What's new in 0.1.4 beta
+## What's new in 0.1.5 beta
 
-- **Beta Release Track**: Cortex 0.1.4 marks the project as beta across the CLI metadata, README, and website.
+- **Beta Release Track**: Cortex 0.1.5 keeps the project on the beta track across the CLI metadata, README, and website.
 - **Professional Progress Indicators**: Replaced the bulky green gauge with a discrete inline progress bar (`[███░░] 60%`) and an animated spinner for active agents.
 - **Scrollable Agent Panels**: View long reports directly in the TUI using **Alt + Up/Down** or **PageUp/Down**.
 - **`cortex init` / `/init`**: Scans the current project and maintains `AGENTS.md` as durable agent context.
 - **Project Context Injection**: `AGENTS.md` is automatically injected into workflow agents and assistant prompts.
+- **Expanded Provider System**: `/connect` now exposes the full provider registry, including ChatGPT Plus/Pro OAuth, GitHub Copilot device login, GitLab Duo auth, Vertex AI, Bedrock, local providers, hosted APIs, aggregators, and custom OpenAI-compatible endpoints.
+- **Provider Streaming Fixes**: ChatGPT Plus/Pro now uses the Codex Responses stream required by the backend; Gemma models on Gemini avoid unsupported developer/system instructions by inlining Cortex instructions into the user prompt.
 - **Expanded TUI**: Improved command palette, skill picker, and status widgets.
 
 ---
@@ -79,7 +81,7 @@ The installer downloads `cortex.exe`, verifies its SHA-256 checksum, installs it
 | Requirement | When needed |
 |-------------|-------------|
 | Ollama | Default local provider |
-| OpenRouter, Groq, or Together API key | Remote model providers |
+| Provider API key or account auth | Remote model providers |
 | Brave Search API key | Optional web search context |
 
 ### Build from source
@@ -100,7 +102,7 @@ cargo build --release
 Cortex checks for a newer GitHub Release when the TUI starts. If an update exists, it prints a non-blocking log message:
 
 ```text
-Update available: 0.1.3 -> v0.1.4. Run /update to install.
+Update available: 0.1.4 -> v0.1.5. Run /update to install.
 ```
 
 Update from the terminal:
@@ -108,7 +110,7 @@ Update from the terminal:
 ```bash
 cortex update --check
 cortex update
-cortex update --version v0.1.4
+cortex update --version v0.1.5
 ```
 
 Update from the REPL:
@@ -116,7 +118,7 @@ Update from the REPL:
 ```text
 /update check
 /update
-/update v0.1.4
+/update v0.1.5
 ```
 
 The updater downloads the matching GitHub Release archive, verifies `SHA256SUMS`, and replaces the current `cortex` binary. On Windows, restart the terminal after updating.
@@ -168,11 +170,16 @@ skills_enabled = true       # inject relevant installed skills into agent prompt
 max_skill_context_chars = 12000
 
 [api_keys]
+# openai     = "sk-..."
+# anthropic  = "sk-ant-..."
+# gemini     = "AIza..."
 # openrouter = "sk-or-..."
 # groq       = "gsk_..."
 # together   = "tg-..."
 # web_search = "BSA..."    # Brave Search API key
 ```
+
+OAuth and device-login credentials are stored separately in `~/.cortex/auth.json` by `/connect`.
 
 ### Model string format
 
@@ -181,11 +188,30 @@ Every model value follows `"<provider>/<model-name>"`. Supported providers:
 | Prefix | Backend | Env var required |
 |--------|---------|------------------|
 | `ollama/` | Local Ollama instance | — |
+| `lmstudio/` | Local LM Studio server | — |
+| `openai/` | OpenAI API | `OPENAI_API_KEY` |
+| `openai_chatgpt/` | ChatGPT Plus/Pro Codex backend | `/connect openai chatgpt_browser` |
+| `anthropic/` | Anthropic API | `ANTHROPIC_API_KEY` |
+| `gemini/` | Google Gemini API, including Gemma models | `GEMINI_API_KEY` |
+| `mistral/` | Mistral AI | `MISTRAL_API_KEY` |
+| `deepseek/` | DeepSeek API | `DEEPSEEK_API_KEY` |
+| `xai/` | xAI API | `XAI_API_KEY` |
+| `cohere/` | Cohere API | `COHERE_API_KEY` |
+| `perplexity/` | Perplexity API | `PERPLEXITY_API_KEY` |
+| `huggingface/` | Hugging Face Inference Providers | `HUGGINGFACE_API_KEY` |
+| `azure_openai/` | Azure OpenAI | `AZURE_OPENAI_API_KEY` + endpoint env |
+| `github_copilot/` | GitHub Copilot subscription backend | `/connect github_copilot github_device` |
+| `gitlab_duo/` | GitLab Duo compatible accounts | `/connect gitlab_duo` |
+| `google_vertex/` | Google Vertex AI | Google ADC / `gcloud` |
+| `amazon_bedrock/` | Amazon Bedrock | AWS credential chain |
 | `openrouter/` | OpenRouter API | `OPENROUTER_API_KEY` |
 | `groq/` | Groq API | `GROQ_API_KEY` |
 | `together/` | Together AI | `TOGETHER_API_KEY` |
+| `fireworks/`, `deepinfra/`, `cerebras/`, `moonshot/`, `zai/`, `302ai/`, `alibaba/`, `cloudflare/`, `minimax/`, `nebius/`, `scaleway/`, `vercel_ai_gateway/` | Hosted or aggregator OpenAI-compatible APIs | provider-specific API key |
 
 If no prefix is given, `ollama` is assumed.
+
+Gemma models served through the Gemini API, such as `gemini/gemma-3-12b-it`, do not accept developer/system instructions. Cortex keeps them usable by inlining its instructions into the user prompt while leaving native `gemini-*` models on the standard system-instruction path.
 
 **Example — mix providers per role:**
 
@@ -207,6 +233,16 @@ API keys can be set in two ways:
 /apikey groq       gsk_...
 /apikey together   tg-...
 /apikey web_search BSA...
+```
+
+Use `/connect` for interactive auth flows and account-based providers:
+
+```text
+/connect                         # open the provider picker
+/connect openai                  # list OpenAI auth methods
+/connect openai chatgpt_browser  # ChatGPT Plus/Pro OAuth browser flow
+/connect github_copilot github_device
+/connect amazon_bedrock aws_profile
 ```
 
 **Option B — environment variables (session-only):**
@@ -242,7 +278,8 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/config` | Display active config values |
 | `/model [<role> <model>]` | Show or change a role's model |
 | `/provider [<name>]` | Show or change the default provider |
-| `/apikey <provider> <key>` | Set an API key (openrouter / groq / together / web_search) |
+| `/connect [provider method]` | Connect provider auth or open the provider picker |
+| `/apikey <provider> <key>` | Set an API key |
 | `/websearch [enable\|disable]` | Toggle web search context injection for all agents |
 | `/skill` / `/skills` | Browse, install, enable, disable, and remove Cortex skills |
 | `/update [check\|<version>]` | Check for or install Cortex updates |
@@ -579,6 +616,9 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 
 ```
 "ollama/qwen2.5-coder:32b"  → rig_ollama::Client (local, no API key)
+"openai_chatgpt/gpt-5.5"     → ChatGPT Codex Responses stream (OAuth via /connect)
+"gemini/gemma-3-12b-it"      → Gemini client with inline instructions fallback
+"amazon_bedrock/<model-id>"  → AWS Bedrock Runtime (AWS credential chain)
 "openrouter/gpt-4o"          → rig_openrouter::Client (OPENROUTER_API_KEY)
 "groq/llama3-70b-8192"       → groq::Client (GROQ_API_KEY)
 "together/mistralai/Mixtral" → together::Client (TOGETHER_API_KEY)
@@ -671,7 +711,7 @@ cargo  go  npm  pip  git  docker
 LLM output is treated as untrusted input. Any command not on this list is rejected.
 
 ### Provider API keys
-API keys can be read from environment variables or stored locally in `~/.cortex/config.toml` via `/apikey`. Never commit keys to source control.
+API keys can be read from environment variables or stored locally in `~/.cortex/config.toml` via `/apikey`. OAuth/device/account credentials are stored in `~/.cortex/auth.json` via `/connect`. Never commit keys or auth stores to source control.
 
 ---
 
@@ -732,7 +772,7 @@ cargo fmt
 4. Create and push a version tag:
 
 ```bash
-git tag v0.1.4
+git tag v0.1.5
 git push origin main --tags
 ```
 

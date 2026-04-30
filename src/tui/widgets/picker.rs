@@ -344,42 +344,82 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 /// Build a PickerState for provider selection.
 /// `current` is the currently configured default provider string.
-pub fn provider_picker(current: &str) -> PickerState {
-    let providers = vec![
-        PickerGroup {
+pub fn provider_picker(
+    current: &str,
+    custom_providers: &std::collections::BTreeMap<String, crate::config::CustomProviderConfig>,
+) -> PickerState {
+    let mut local = Vec::new();
+    let mut hosted = Vec::new();
+    let mut aggregators = Vec::new();
+
+    for provider in crate::providers::registry::BUILTIN_PROVIDERS {
+        let item = PickerItem {
+            id: provider.id.to_string(),
+            label: provider.name.to_string(),
+            description: Some(provider.description.to_string()),
+            checked: current == provider.id,
+        };
+        match provider.kind {
+            crate::providers::registry::ProviderKind::Local => local.push(item),
+            crate::providers::registry::ProviderKind::Hosted => hosted.push(item),
+            crate::providers::registry::ProviderKind::Aggregator => aggregators.push(item),
+            crate::providers::registry::ProviderKind::Custom => {}
+        }
+    }
+
+    let mut providers = Vec::new();
+    if !local.is_empty() {
+        providers.push(PickerGroup {
             title: "Local".to_string(),
-            items: vec![PickerItem {
-                id: "ollama".to_string(),
-                label: "Ollama".to_string(),
-                description: Some("local models via ollama".to_string()),
-                checked: current == "ollama",
-            }],
-        },
-        PickerGroup {
-            title: "Cloud".to_string(),
-            items: vec![
-                PickerItem {
-                    id: "openrouter".to_string(),
-                    label: "OpenRouter".to_string(),
-                    description: Some("API key required".to_string()),
-                    checked: current == "openrouter",
-                },
-                PickerItem {
-                    id: "groq".to_string(),
-                    label: "Groq".to_string(),
-                    description: Some("API key required — very fast inference".to_string()),
-                    checked: current == "groq",
-                },
-                PickerItem {
-                    id: "together".to_string(),
-                    label: "Together AI".to_string(),
-                    description: Some("API key required".to_string()),
-                    checked: current == "together",
-                },
-            ],
-        },
-    ];
+            items: local,
+        });
+    }
+    if !hosted.is_empty() {
+        providers.push(PickerGroup {
+            title: "Hosted".to_string(),
+            items: hosted,
+        });
+    }
+    if !aggregators.is_empty() {
+        providers.push(PickerGroup {
+            title: "Aggregators".to_string(),
+            items: aggregators,
+        });
+    }
+    if !custom_providers.is_empty() {
+        providers.push(PickerGroup {
+            title: "Custom".to_string(),
+            items: custom_providers
+                .iter()
+                .map(|(id, provider)| PickerItem {
+                    id: id.clone(),
+                    label: id.clone(),
+                    description: Some(provider.base_url.clone()),
+                    checked: current == id,
+                })
+                .collect(),
+        });
+    }
     PickerState::new("Connect a provider", providers)
+}
+
+pub fn auth_method_picker(provider: &str, methods: &[crate::auth::AuthMethodSpec]) -> PickerState {
+    let items = methods
+        .iter()
+        .map(|method| PickerItem {
+            id: method.id.to_string(),
+            label: method.label.to_string(),
+            description: Some(method.description.to_string()),
+            checked: false,
+        })
+        .collect();
+    PickerState::new(
+        format!("Connect {provider}"),
+        vec![PickerGroup {
+            title: "Auth methods".to_string(),
+            items,
+        }],
+    )
 }
 
 /// Build a PickerState for model/role selection.

@@ -3,7 +3,9 @@
 use anyhow::Result;
 
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, bus_agent_started, bus_agent_done, send_agent_progress, send_agent_summary};
+use crate::workflows::{
+    RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
+};
 
 const PREAMBLE: &str = include_str!("../prompts/researcher.md");
 

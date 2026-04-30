@@ -19,7 +19,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/continue", "Resume an interactive pause"),
     ("/config", "Print active configuration"),
     ("/model", "Switch model"),
-    ("/provider", "Connect provider"),
+    ("/provider", "Switch provider"),
+    ("/connect", "Connect provider auth"),
     (
         "/apikey",
         "Set an API key (openrouter/groq/together/web_search)",
@@ -348,6 +349,7 @@ const REQUIRES_ARGS: &[&str] = &[
     "/update",
     "/model",
     "/provider",
+    "/connect",
 ];
 
 #[cfg(test)]

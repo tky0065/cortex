@@ -56,6 +56,8 @@ pub enum TuiEvent {
     },
     /// Open the interactive provider picker popup.
     OpenProviderPicker,
+    /// Open provider picker and then auth-method selection.
+    OpenConnectProviderPicker,
     /// Open the interactive model picker popup.
     OpenModelPicker,
     /// Open the interactive resume picker popup.
@@ -70,6 +72,17 @@ pub enum TuiEvent {
     ModelsLoaded {
         provider: String,
         models: Vec<String>,
+    },
+    /// Show a browser authorization URL for an account connection flow.
+    AuthUrl {
+        provider: String,
+        url: String,
+        message: String,
+    },
+    /// Close any matching authorization popup after the flow completes.
+    AuthComplete {
+        provider: String,
+        message: String,
     },
     /// Fired when the skills.sh leaderboard has been fetched.
     SkillsCatalogLoaded {

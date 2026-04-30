@@ -1,5 +1,6 @@
 mod agent_bus;
 mod assistant;
+mod auth;
 mod config;
 mod context;
 mod orchestrator;

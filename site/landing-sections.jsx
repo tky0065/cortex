@@ -38,6 +38,7 @@ const WORKFLOWS = [
   { name: "marketing", desc: "Strategy, copy, KPIs, calendar.", cmd: "/start marketing" },
   { name: "prospecting", desc: "Find prospects, draft personalized outreach.", cmd: "/start prospecting" },
   { name: "code-review", desc: "Quality, security, performance audit.", cmd: "/start code-review" },
+  { name: "connect", desc: "Choose from the full provider registry and save auth.", cmd: "/connect" },
   { name: "init", desc: "Scan a project and generate durable AGENTS.md context.", cmd: "cortex init" },
   { name: "skill", desc: "Install reusable instructions for specialized agent behavior.", cmd: "/skill" },
 ];

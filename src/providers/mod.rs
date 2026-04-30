@@ -239,6 +239,17 @@ fn display_chunks(text: &str) -> Vec<String> {
     chunks
 }
 
+fn gemini_supports_system_instruction(model: &str) -> bool {
+    !model.starts_with("gemma-")
+}
+
+fn inline_preamble_prompt(preamble: &str, prompt: &str) -> String {
+    if preamble.trim().is_empty() {
+        return prompt.to_string();
+    }
+    format!("Instructions:\n{preamble}\n\nUser request:\n{prompt}")
+}
+
 fn send_display_text(tx: &crate::tui::events::TuiSender, agent_name: &str, text: &str) {
     for chunk in display_chunks(text) {
         let _ = tx.send(TuiEvent::TokenChunk {
@@ -380,6 +391,89 @@ async fn consume_chat_stream<R: Clone + Send + 'static>(
     Ok(full_response)
 }
 
+async fn consume_chatgpt_codex_stream(
+    model: &str,
+    preamble: &str,
+    turns: &[custom_http::ChatTurn],
+    tx: &crate::tui::events::TuiSender,
+    agent_name: &str,
+) -> Result<String> {
+    let cancel = chatgpt_heartbeat(tx, agent_name);
+    let cancel_delta = cancel.clone();
+    let response = custom_http::chatgpt_codex_complete_streaming(model, preamble, turns, |delta| {
+        cancel_delta.cancel();
+        send_display_text(tx, agent_name, delta);
+    })
+    .await;
+    cancel.cancel();
+    response
+}
+
+async fn consume_chatgpt_codex_chat_stream(
+    model: &str,
+    preamble: &str,
+    turns: &[custom_http::ChatTurn],
+    tx: &crate::tui::events::TuiSender,
+    agent_name: &str,
+) -> Result<String> {
+    let cancel = chatgpt_heartbeat(tx, agent_name);
+    let cancel_delta = cancel.clone();
+    let mut filter = ToolCallStreamFilter::new();
+    let mut sent_visible = false;
+
+    let response = custom_http::chatgpt_codex_complete_streaming(model, preamble, turns, |delta| {
+        cancel_delta.cancel();
+        for visible in filter.push(delta) {
+            sent_visible = true;
+            send_display_text(tx, agent_name, &visible);
+        }
+    })
+    .await;
+    cancel.cancel();
+
+    let full_response = response?;
+    if let Some(visible) = filter.flush()
+        && !visible.is_empty()
+    {
+        sent_visible = true;
+        send_display_text(tx, agent_name, &visible);
+    }
+    if !sent_visible {
+        let visible = crate::assistant::strip_tool_calls_for_display(&full_response);
+        if !visible.is_empty() {
+            send_display_text(tx, agent_name, &visible);
+        }
+    }
+    Ok(full_response)
+}
+
+fn chatgpt_heartbeat(tx: &crate::tui::events::TuiSender, agent_name: &str) -> CancellationToken {
+    let cancel = CancellationToken::new();
+    let cancel_hb = cancel.clone();
+    let tx_hb = tx.clone();
+    let agent_hb = agent_name.to_string();
+
+    tokio::spawn(async move {
+        let start = std::time::Instant::now();
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let elapsed = start.elapsed().as_secs();
+                    let _ = tx_hb.send(TuiEvent::AgentProgress {
+                        agent: agent_hb.clone(),
+                        message: format!("Waiting for model response... ({}s)", elapsed),
+                    });
+                }
+                _ = cancel_hb.cancelled() => break,
+            }
+        }
+    });
+
+    cancel
+}
+
 /// Single entry point for LLM completions with streaming support.
 /// Sends `TuiEvent::TokenChunk` to `options.tx` for each token.
 /// Sends `TuiEvent::AgentProgress` heartbeats while waiting for the first token.
@@ -456,8 +550,14 @@ pub async fn complete(
             let key = configured_or_env_key(&options.config, provider)?;
             let client = rig::providers::gemini::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Gemini client init failed: {e}"))?;
-            let agent = client.agent(model).preamble(&enriched_preamble).build();
-            let stream = agent.stream_prompt(&enriched_prompt).await;
+            let stream = if gemini_supports_system_instruction(model) {
+                let agent = client.agent(model).preamble(&enriched_preamble).build();
+                agent.stream_prompt(&enriched_prompt).await
+            } else {
+                let agent = client.agent(model).build();
+                let prompt = inline_preamble_prompt(&enriched_preamble, &enriched_prompt);
+                agent.stream_prompt(&prompt).await
+            };
             consume_stream(stream, options, agent_name).await
         }
         "mistral" => {
@@ -557,7 +657,7 @@ pub async fn complete(
             let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name)
                 .await
-                .map_err(|e| lmstudio_connection_hint(e))
+                .map_err(lmstudio_connection_hint)
         }
         "google_vertex" => {
             let turns = custom_http::message_turns_from_prompt(&enriched_prompt);
@@ -580,10 +680,8 @@ pub async fn complete(
         }
         "openai_chatgpt" => {
             let turns = custom_http::message_turns_from_prompt(&enriched_prompt);
-            let response =
-                custom_http::chatgpt_codex_complete(model, &enriched_preamble, &turns).await?;
-            emit_text(&options.tx, agent_name, &response);
-            Ok(response)
+            consume_chatgpt_codex_stream(model, &enriched_preamble, &turns, &options.tx, agent_name)
+                .await
         }
         openai_compatible if openai_compatible_base_url(openai_compatible).is_some() => {
             let (name, base_url) = openai_compatible_base_url(openai_compatible)
@@ -674,6 +772,25 @@ pub async fn complete_chat(
                 .await
                 .map_err(|e| anyhow::anyhow!("Together chat error: {e}"))
         }
+        "gemini" => {
+            let key = configured_or_env_key(&Config::load()?, provider)?;
+            let client = rig::providers::gemini::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Gemini client init failed: {e}"))?;
+            if gemini_supports_system_instruction(model) {
+                let agent = client.agent(model).preamble(preamble).build();
+                agent
+                    .chat(user_msg, history)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Gemini chat error: {e}"))
+            } else {
+                let agent = client.agent(model).build();
+                let prompt = inline_preamble_prompt(preamble, prompt);
+                agent
+                    .chat(Message::user(&prompt), history)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Gemini chat error: {e}"))
+            }
+        }
         "openai_chatgpt" => {
             let turns = custom_http::message_turns_from_history(&history, prompt);
             custom_http::chatgpt_codex_complete(model, preamble, &turns).await
@@ -744,8 +861,14 @@ pub async fn complete_chat_stream(
             let key = configured_or_env_key(config, provider)?;
             let client = rig::providers::gemini::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Gemini client init failed: {e}"))?;
-            let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = if gemini_supports_system_instruction(model) {
+                let agent = client.agent(model).preamble(preamble).build();
+                agent.stream_chat(prompt, history).await
+            } else {
+                let agent = client.agent(model).build();
+                let prompt = inline_preamble_prompt(preamble, prompt);
+                agent.stream_chat(&prompt, history).await
+            };
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Gemini chat stream error: {e}"))
@@ -867,7 +990,7 @@ pub async fn complete_chat_stream(
             let stream = agent.stream_chat(prompt, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
-                .map_err(|e| lmstudio_connection_hint(e))
+                .map_err(lmstudio_connection_hint)
         }
         "google_vertex" => {
             let turns = custom_http::message_turns_from_history(&history, prompt);
@@ -889,9 +1012,7 @@ pub async fn complete_chat_stream(
         }
         "openai_chatgpt" => {
             let turns = custom_http::message_turns_from_history(&history, prompt);
-            let response = custom_http::chatgpt_codex_complete(model, preamble, &turns).await?;
-            emit_text(tx, agent_name, &response);
-            Ok(response)
+            consume_chatgpt_codex_chat_stream(model, preamble, &turns, tx, agent_name).await
         }
         openai_compatible if openai_compatible_base_url(openai_compatible).is_some() => {
             let (name, base_url) = openai_compatible_base_url(openai_compatible)
@@ -953,6 +1074,23 @@ mod tests {
             display_chunks("hello world\nok"),
             vec!["hello ", "world\n", "ok"]
         );
+    }
+
+    #[test]
+    fn gemma_models_do_not_use_system_instruction() {
+        assert!(!gemini_supports_system_instruction("gemma-3-12b-it"));
+        assert!(!gemini_supports_system_instruction("gemma-3n-e4b-it"));
+        assert!(gemini_supports_system_instruction("gemini-2.5-flash"));
+        assert!(gemini_supports_system_instruction("gemini-2.5-pro"));
+    }
+
+    #[test]
+    fn inline_preamble_prompt_preserves_instructions_and_request() {
+        assert_eq!(
+            inline_preamble_prompt("Be concise.", "hello"),
+            "Instructions:\nBe concise.\n\nUser request:\nhello"
+        );
+        assert_eq!(inline_preamble_prompt("   ", "hello"), "hello");
     }
 
     #[test]

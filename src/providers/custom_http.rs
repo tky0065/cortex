@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use rig::message::UserContent;
 use serde::Deserialize;
@@ -111,68 +112,22 @@ pub async fn chatgpt_codex_complete(
     preamble: &str,
     turns: &[ChatTurn],
 ) -> Result<String> {
-    let record = usable_auth_record("openai").await?;
-    let token = record
-        .access_token
-        .as_deref()
-        .context("OpenAI ChatGPT auth is missing an access token")?;
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}"))?,
-    );
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_str(&format!(
-            "opencode/0.1.0 ({} {}; {})",
-            node_platform(),
-            sysinfo_release(),
-            node_arch(),
-        ))?,
-    );
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    // Required by chatgpt.com/backend-api/codex/responses — mirrors opencode behaviour
-    headers.insert("originator", HeaderValue::from_static("opencode"));
-    headers.insert(
-        "session_id",
-        HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())?,
-    );
-    // Stainless SDK headers that the OpenAI Node SDK adds (the Codex endpoint expects them)
-    headers.insert("x-stainless-lang", HeaderValue::from_static("js"));
-    headers.insert(
-        "x-stainless-package-version",
-        HeaderValue::from_static("4.98.0"),
-    );
-    headers.insert("x-stainless-runtime", HeaderValue::from_static("node"));
-    headers.insert(
-        "x-stainless-runtime-version",
-        HeaderValue::from_static("v22.0.0"),
-    );
-    headers.insert(
-        "x-stainless-os",
-        HeaderValue::from_static(stainless_os()),
-    );
-    headers.insert(
-        "x-stainless-arch",
-        HeaderValue::from_str(node_arch())?,
-    );
-    if let Some(account_id) = record.account_id.as_deref() {
-        headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
-    }
+    chatgpt_codex_complete_streaming(model, preamble, turns, |_| {}).await
+}
 
-    // chatgpt.com/backend-api/codex/responses uses Responses API format, not chat completions
-    let input: Vec<_> = turns
-        .iter()
-        .map(|t| json!({"role": t.role, "content": t.content}))
-        .collect();
-    let body = json!({
-        "model": model,
-        "instructions": preamble,
-        "input": input,
-        "store": false,
-        "stream": false
-    });
-    post_json_for_text(OPENAI_CODEX_ENDPOINT, headers, body).await
+pub async fn chatgpt_codex_complete_streaming<F>(
+    model: &str,
+    preamble: &str,
+    turns: &[ChatTurn],
+    on_delta: F,
+) -> Result<String>
+where
+    F: FnMut(&str),
+{
+    let record = usable_auth_record("openai").await?;
+    let headers = chatgpt_codex_headers(&record)?;
+    let body = chatgpt_codex_body(model, preamble, turns, true);
+    post_sse_for_text(OPENAI_CODEX_ENDPOINT, headers, body, on_delta).await
 }
 
 pub async fn github_copilot_complete(
@@ -375,6 +330,66 @@ fn openai_messages(preamble: &str, turns: &[ChatTurn]) -> Vec<Value> {
     messages
 }
 
+fn chatgpt_codex_headers(record: &AuthRecord) -> Result<HeaderMap> {
+    let token = record
+        .access_token
+        .as_deref()
+        .context("OpenAI ChatGPT auth is missing an access token")?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}"))?,
+    );
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_str(&format!(
+            "opencode/0.1.0 ({} {}; {})",
+            node_platform(),
+            sysinfo_release(),
+            node_arch(),
+        ))?,
+    );
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    // Required by chatgpt.com/backend-api/codex/responses — mirrors opencode behaviour.
+    headers.insert("originator", HeaderValue::from_static("opencode"));
+    headers.insert(
+        "session_id",
+        HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())?,
+    );
+    // Stainless SDK headers that the OpenAI Node SDK adds.
+    headers.insert("x-stainless-lang", HeaderValue::from_static("js"));
+    headers.insert(
+        "x-stainless-package-version",
+        HeaderValue::from_static("4.98.0"),
+    );
+    headers.insert("x-stainless-runtime", HeaderValue::from_static("node"));
+    headers.insert(
+        "x-stainless-runtime-version",
+        HeaderValue::from_static("v22.0.0"),
+    );
+    headers.insert("x-stainless-os", HeaderValue::from_static(stainless_os()));
+    headers.insert("x-stainless-arch", HeaderValue::from_str(node_arch())?);
+    if let Some(account_id) = record.account_id.as_deref() {
+        headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
+    }
+    Ok(headers)
+}
+
+fn chatgpt_codex_body(model: &str, preamble: &str, turns: &[ChatTurn], stream: bool) -> Value {
+    // chatgpt.com/backend-api/codex/responses uses Responses API format, not chat completions.
+    let input: Vec<_> = turns
+        .iter()
+        .map(|t| json!({"role": t.role, "content": t.content}))
+        .collect();
+    json!({
+        "model": model,
+        "instructions": preamble,
+        "input": input,
+        "store": false,
+        "stream": stream
+    })
+}
+
 async fn exchange_openai_code(
     code: &str,
     redirect_uri: &str,
@@ -452,6 +467,41 @@ async fn post_json_for_text(url: &str, headers: HeaderMap, body: Value) -> Resul
     extract_text(&value).context("provider response did not contain text")
 }
 
+async fn post_sse_for_text<F>(
+    url: &str,
+    headers: HeaderMap,
+    body: Value,
+    mut on_delta: F,
+) -> Result<String>
+where
+    F: FnMut(&str),
+{
+    let resp = reqwest::Client::new()
+        .post(url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("request failed: {url}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        bail!("{status} from {url}: {}", response_error_detail(&body_text));
+    }
+
+    let mut parser = SseTextParser::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.with_context(|| format!("stream chunk failed: {url}"))?;
+        let chunk_text = String::from_utf8_lossy(&chunk);
+        for delta in parser.push(&chunk_text)? {
+            on_delta(&delta);
+        }
+    }
+    parser.finish()
+}
+
 async fn post_json(url: &str, headers: HeaderMap, body: Value) -> Result<Value> {
     let resp = reqwest::Client::new()
         .post(url)
@@ -464,23 +514,148 @@ async fn post_json(url: &str, headers: HeaderMap, body: Value) -> Result<Value> 
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
-        // Try to extract a clean error message from JSON error bodies
-        let detail = serde_json::from_str::<Value>(&body_text)
-            .ok()
-            .and_then(|v| {
-                v.pointer("/error/message")
-                    .or_else(|| v.get("message"))
-                    .or_else(|| v.get("error"))
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-            })
-            .unwrap_or(body_text);
-        bail!("{status} from {url}: {detail}");
+        bail!("{status} from {url}: {}", response_error_detail(&body_text));
     }
 
     resp.json()
         .await
         .with_context(|| format!("provider returned invalid JSON: {url}"))
+}
+
+fn response_error_detail(body_text: &str) -> String {
+    serde_json::from_str::<Value>(body_text)
+        .ok()
+        .and_then(|v| error_message_from_value(&v))
+        .unwrap_or_else(|| body_text.to_string())
+}
+
+fn error_message_from_value(value: &Value) -> Option<String> {
+    if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Some(message.to_string());
+    }
+    if let Some(message) = value.get("message").and_then(Value::as_str) {
+        return Some(message.to_string());
+    }
+    if let Some(error) = value.get("error") {
+        if let Some(message) = error.as_str() {
+            return Some(message.to_string());
+        }
+        if let Some(message) = error.get("message").and_then(Value::as_str) {
+            return Some(message.to_string());
+        }
+    }
+    if value.get("type").and_then(Value::as_str) == Some("error")
+        && let Some(message) = value.get("message").and_then(Value::as_str)
+    {
+        return Some(message.to_string());
+    }
+    None
+}
+
+#[derive(Debug, Default)]
+struct SseTextParser {
+    buffer: String,
+    full_text: String,
+    final_text: Option<String>,
+}
+
+impl SseTextParser {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn push(&mut self, chunk: &str) -> Result<Vec<String>> {
+        self.buffer.push_str(chunk);
+        let mut deltas = Vec::new();
+
+        while let Some((event, rest)) = split_sse_event(&self.buffer) {
+            self.buffer = rest.to_string();
+            if let Some(delta) = self.process_event(&event)? {
+                deltas.push(delta);
+            }
+        }
+
+        Ok(deltas)
+    }
+
+    fn finish(mut self) -> Result<String> {
+        if !self.buffer.trim().is_empty() {
+            let event = std::mem::take(&mut self.buffer);
+            let _ = self.process_event(&event)?;
+        }
+        if self.full_text.is_empty()
+            && let Some(final_text) = self.final_text
+        {
+            return Ok(final_text);
+        }
+        Ok(self.full_text)
+    }
+
+    fn process_event(&mut self, event: &str) -> Result<Option<String>> {
+        let data = event
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() || data.trim() == "[DONE]" {
+            return Ok(None);
+        }
+
+        let value: Value = serde_json::from_str(&data)
+            .with_context(|| format!("invalid ChatGPT Codex stream event: {data}"))?;
+        if let Some(message) = error_message_from_value(&value) {
+            bail!("ChatGPT Codex stream error: {message}");
+        }
+
+        let event_type = value.get("type").and_then(Value::as_str);
+        if matches!(
+            event_type,
+            Some("response.completed" | "response.output_item.done")
+        ) && let Some(text) = extract_text(
+            value
+                .get("response")
+                .or_else(|| value.get("item"))
+                .unwrap_or(&value),
+        ) {
+            self.final_text = Some(text);
+        }
+
+        let Some(delta) = stream_delta_text(&value) else {
+            return Ok(None);
+        };
+        self.full_text.push_str(&delta);
+        Ok(Some(delta))
+    }
+}
+
+fn split_sse_event(buffer: &str) -> Option<(String, &str)> {
+    if let Some(idx) = buffer.find("\n\n") {
+        return Some((buffer[..idx].to_string(), &buffer[idx + 2..]));
+    }
+    if let Some(idx) = buffer.find("\r\n\r\n") {
+        return Some((buffer[..idx].to_string(), &buffer[idx + 4..]));
+    }
+    None
+}
+
+fn stream_delta_text(value: &Value) -> Option<String> {
+    for pointer in ["/delta", "/text", "/output_text", "/content/0/text"] {
+        if let Some(text) = value.pointer(pointer).and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            return Some(text.to_string());
+        }
+    }
+
+    if let Some(delta) = value.get("delta")
+        && let Some(text) = extract_text(delta)
+        && !text.is_empty()
+    {
+        return Some(text);
+    }
+
+    None
 }
 
 fn extract_text(value: &Value) -> Option<String> {
@@ -690,6 +865,63 @@ mod tests {
     fn extracts_openai_compatible_text() {
         let value = json!({"choices":[{"message":{"content":"ok"}}]});
         assert_eq!(extract_text(&value).as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn parses_sse_text_deltas() {
+        let mut parser = SseTextParser::new();
+
+        let deltas = parser
+            .push(
+                "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+            )
+            .unwrap();
+        assert_eq!(deltas, vec!["Hel"]);
+
+        let deltas = parser
+            .push("data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\ndata: [DONE]\n\n")
+            .unwrap();
+        assert_eq!(deltas, vec!["lo"]);
+        assert_eq!(parser.finish().unwrap(), "Hello");
+    }
+
+    #[test]
+    fn parses_sse_events_across_chunks() {
+        let mut parser = SseTextParser::new();
+
+        assert!(
+            parser
+                .push("data: {\"type\":\"response.output_text.delta\",")
+                .unwrap()
+                .is_empty()
+        );
+        let deltas = parser.push("\"delta\":\"ok\"}\n\n").unwrap();
+
+        assert_eq!(deltas, vec!["ok"]);
+        assert_eq!(parser.finish().unwrap(), "ok");
+    }
+
+    #[test]
+    fn sse_completed_event_is_fallback_text() {
+        let mut parser = SseTextParser::new();
+        let deltas = parser
+            .push(
+                "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"done\"}}\n\n",
+            )
+            .unwrap();
+
+        assert!(deltas.is_empty());
+        assert_eq!(parser.finish().unwrap(), "done");
+    }
+
+    #[test]
+    fn sse_error_event_returns_message() {
+        let mut parser = SseTextParser::new();
+        let err = parser
+            .push("data: {\"type\":\"error\",\"message\":\"bad model\"}\n\n")
+            .unwrap_err();
+
+        assert!(err.to_string().contains("bad model"));
     }
 
     #[test]

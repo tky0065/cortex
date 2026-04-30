@@ -110,17 +110,37 @@ Send an instruction to a specific agent that will be picked up at the next phase
 
 #[derive(Debug)]
 enum ToolCall {
-    WriteFile { path: String, content: String },
-    ReadFile { path: String },
-    ListFiles { path: String },
-    RunCommand { command: String, args: String },
-    WebSearch { query: String },
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    ReadFile {
+        path: String,
+    },
+    ListFiles {
+        path: String,
+    },
+    RunCommand {
+        command: String,
+        args: String,
+    },
+    WebSearch {
+        query: String,
+    },
     /// Query the status and output of one or all workflow agents.
-    QueryAgentStatus { agent: Option<String> },
+    QueryAgentStatus {
+        agent: Option<String>,
+    },
     /// Run a standalone agent with a custom instruction (outside any workflow).
-    DelegateToAgent { agent: String, instruction: String },
+    DelegateToAgent {
+        agent: String,
+        instruction: String,
+    },
     /// Inject a directive into the currently-running workflow for an agent to pick up.
-    InjectDirective { agent: String, instruction: String },
+    InjectDirective {
+        agent: String,
+        instruction: String,
+    },
 }
 
 #[derive(Debug)]
@@ -402,7 +422,9 @@ async fn execute_tool(
                             Some(record) => {
                                 let out_part = match &record.output {
                                     None => String::new(),
-                                    Some(o) => format!("\nOutput preview:\n{}", &o[..o.len().min(500)]),
+                                    Some(o) => {
+                                        format!("\nOutput preview:\n{}", &o[..o.len().min(500)])
+                                    }
                                 };
                                 format!("Agent '{}' — status: {}{}", name, record.status, out_part)
                             }
@@ -426,7 +448,11 @@ async fn execute_tool(
                             }
                         }
                     };
-                    ToolResult { call: display, output, success: true }
+                    ToolResult {
+                        call: display,
+                        output,
+                        success: true,
+                    }
                 }
             }
         }
@@ -481,12 +507,8 @@ async fn execute_tool(
                 }
                 Err(e) => {
                     if let Some(ref bus) = agent_bus {
-                        bus.update_agent(
-                            agent,
-                            AgentStatus::Error(e.to_string()),
-                            None,
-                        )
-                        .await;
+                        bus.update_agent(agent, AgentStatus::Error(e.to_string()), None)
+                            .await;
                     }
                     ToolResult {
                         call: display,
@@ -536,10 +558,14 @@ fn describe_tool(call: &ToolCall) -> String {
         ToolCall::RunCommand { command, args } if args.is_empty() => format!("running {}", command),
         ToolCall::RunCommand { command, args } => format!("running {} {}", command, args),
         ToolCall::WebSearch { query } => format!("searching web for {}", query),
-        ToolCall::QueryAgentStatus { agent: Some(a) } => format!("querying status of agent '{}'", a),
+        ToolCall::QueryAgentStatus { agent: Some(a) } => {
+            format!("querying status of agent '{}'", a)
+        }
         ToolCall::QueryAgentStatus { agent: None } => "querying all agent statuses".to_string(),
         ToolCall::DelegateToAgent { agent, .. } => format!("delegating task to agent '{}'", agent),
-        ToolCall::InjectDirective { agent, .. } => format!("injecting directive to agent '{}'", agent),
+        ToolCall::InjectDirective { agent, .. } => {
+            format!("injecting directive to agent '{}'", agent)
+        }
     }
 }
 
@@ -612,11 +638,13 @@ pub async fn run(
             },
         );
 
+        let config_snapshot = config.read().await.clone();
         let reply = crate::providers::complete_chat_stream(
             model,
             &assistant_preamble(&config, &current_message).await,
             conv_history.clone(),
             &current_message,
+            &config_snapshot,
             tx,
             "assistant",
         )
@@ -664,7 +692,8 @@ pub async fn run(
                 },
             );
 
-            let result = execute_tool(call, &sandbox, Arc::clone(&config), agent_bus.clone(), tx).await;
+            let result =
+                execute_tool(call, &sandbox, Arc::clone(&config), agent_bus.clone(), tx).await;
 
             let status_icon = if result.success { "✓" } else { "✗" };
             send(
