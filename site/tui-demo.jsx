@@ -115,7 +115,7 @@ const SCRIPT = [
     set: { DEVOPS: "done" },
     log: [
       "08:49:08  devops    | ✓ wrote Dockerfile, docker-compose.yml",
-      "08:49:08  ✦ [phase:complete] cortex-output/hello-go-cli/",
+      "08:49:08  ✦ [phase:complete] ./",
     ],
   },
   { t: 11500, restart: true },

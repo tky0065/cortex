@@ -14,6 +14,7 @@ use crate::tools::terminal;
 use crate::tui::events::{TuiEvent, TuiSender};
 
 const MAX_ITERATIONS: usize = 15;
+const EMPTY_FINAL_REPLY: &str = "Je n'ai pas recu de reponse texte du modele. Reessaie avec un autre modele ou reformule la demande.";
 
 /// System prompt describing the assistant's capabilities and tool format.
 pub const PREAMBLE: &str = "\
@@ -347,6 +348,16 @@ fn describe_tool(call: &ToolCall) -> String {
     }
 }
 
+fn empty_final_retry_prompt(original_message: &str, previous_prompt: &str) -> String {
+    format!(
+        "Your previous answer contained no visible text for the user.\n\
+         Answer the original request in natural language now. Do not call tools unless strictly necessary, and do not include tool_call XML.\n\n\
+         Original request:\n{}\n\n\
+         Available context/tool results from the previous turn:\n{}",
+        original_message, previous_prompt
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -371,6 +382,7 @@ pub async fn run(
     let mut conv_history = history;
     let mut current_message = message.to_string();
     let mut final_reply = String::new();
+    let mut retried_empty_final = false;
 
     for iteration in 0..MAX_ITERATIONS {
         // ── LLM call ──────────────────────────────────────────────────────────
@@ -400,6 +412,25 @@ pub async fn run(
         let calls = parse_tool_calls(&reply);
         if calls.is_empty() {
             let visible = strip_tool_calls(&reply);
+            if visible.trim().is_empty() {
+                if !retried_empty_final {
+                    conv_history.push(rig::completion::Message::user(&current_message));
+                    conv_history.push(rig::completion::Message::assistant(&reply));
+                    current_message = empty_final_retry_prompt(message, &current_message);
+                    retried_empty_final = true;
+                    continue;
+                }
+
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "assistant".to_string(),
+                        chunk: EMPTY_FINAL_REPLY.to_string(),
+                    },
+                );
+                final_reply = EMPTY_FINAL_REPLY.to_string();
+                break;
+            }
             final_reply = visible;
             // No tool calls → task is done
             break;
@@ -446,6 +477,17 @@ pub async fn run(
             "Here are the tool results:\n{}\nContinue the task if more tools are needed. Otherwise, provide the final answer in natural language. Do not include tool_call XML.",
             results_block
         );
+    }
+
+    if final_reply.trim().is_empty() {
+        send(
+            tx,
+            TuiEvent::TokenChunk {
+                agent: "assistant".to_string(),
+                chunk: EMPTY_FINAL_REPLY.to_string(),
+            },
+        );
+        final_reply = EMPTY_FINAL_REPLY.to_string();
     }
 
     Ok(final_reply)
@@ -568,6 +610,19 @@ Then I will summarize."#;
     fn strips_only_tool_call_when_no_visible_text() {
         let text = "<tool_call><name>read_file</name><path>AGENTS.md</path></tool_call>";
         assert_eq!(strip_tool_calls(text), "");
+    }
+
+    #[test]
+    fn empty_final_retry_prompt_keeps_request_and_context() {
+        let prompt = empty_final_retry_prompt(
+            "je veux apprendre les concepts avances de rust",
+            "Here are the tool results...",
+        );
+
+        assert!(prompt.contains("je veux apprendre les concepts avances de rust"));
+        assert!(prompt.contains("Here are the tool results..."));
+        assert!(prompt.contains("no visible text"));
+        assert!(prompt.contains("do not include tool_call XML"));
     }
 
     #[test]

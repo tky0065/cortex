@@ -199,7 +199,8 @@ async fn main() -> Result<()> {
                 "Resume and complete the project in: {}",
                 project_dir.display()
             );
-            orch.run_with_opts(prompt, true, verbose, None).await?;
+            orch.run_with_project_dir(prompt, true, verbose, None, Some(project_dir))
+                .await?;
         }
         Some(Commands::Init { force }) => {
             let outcome =

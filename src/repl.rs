@@ -769,7 +769,15 @@ pub async fn dispatch(
                     project_dir.display()
                 );
                 tokio::spawn(async move {
-                    let _ = orch.run_with_sender(prompt, true, Some(tx_clone)).await;
+                    let _ = orch
+                        .run_with_project_dir(
+                            prompt,
+                            true,
+                            false,
+                            Some(tx_clone),
+                            Some(project_dir),
+                        )
+                        .await;
                 });
 
                 send(

@@ -133,7 +133,8 @@ cortex
 cortex start "build a CLI password manager in Go" --auto --workflow dev
 ```
 
-The generated project appears under `./cortex-output/<slugified-idea>/`.
+For the `dev` workflow, generated files are written directly into the directory
+where `cortex` was launched.
 
 ---
 
@@ -311,10 +312,10 @@ cortex init
 
 ```bash
 # CLI
-cortex resume ./cortex-output/build-a-todo-app
+cortex resume ./demo
 
 # REPL
-/resume ./cortex-output/build-a-todo-app
+/resume ./demo
 ```
 
 Cortex re-runs the dev workflow with a prompt that asks the agents to continue from the existing files in the directory. Best used when a run was aborted mid-way.
@@ -443,7 +444,7 @@ User idea
 [DevOps]       Generates Dockerfile, docker-compose.yml, git commit
     │
     ▼
-Output: ./cortex-output/<project-name>/
+Output: ./
 ```
 
 **Output files:**
@@ -677,7 +678,7 @@ Add `-v` to any command to write full agent I/O to `cortex.log` in the working d
 
 ```bash
 cortex -v start "build a CLI tool" --auto
-cortex -v resume ./cortex-output/my-project
+cortex -v resume ./demo
 ```
 
 The log file is appended (not overwritten) and each session is marked with a Unix timestamp header.
@@ -738,20 +739,21 @@ The `.github/workflows/release.yml` workflow builds macOS, Linux, and Windows bi
 
 ## 16. Output Structure
 
-All output lands under `./cortex-output/` relative to the directory where `cortex` was run.
+The `dev` workflow writes generated project files directly into the directory where
+`cortex` was run. Other workflows keep their generated artifacts under
+`./cortex-output/`.
 
 ### dev workflow
 
 ```
-cortex-output/
-└── build-a-todo-rest-api/      ← slugified from your idea
-    ├── specs.md
-    ├── architecture.md
-    ├── src/
-    │   ├── main.rs
-    │   └── ...
-    ├── Dockerfile
-    └── docker-compose.yml
+./
+├── specs.md
+├── architecture.md
+├── src/
+│   ├── main.rs
+│   └── ...
+├── Dockerfile
+└── docker-compose.yml
 ```
 
 ### marketing workflow

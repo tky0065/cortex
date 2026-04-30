@@ -31,9 +31,8 @@ impl Workflow for DevWorkflow {
                 .collect(),
         });
 
-        // Create project directory
-        let project_name = slugify(&prompt);
-        let project_dir = options.project_dir.join(&project_name);
+        // Use the launch directory as the project sandbox.
+        let project_dir = options.project_dir.clone();
         std::fs::create_dir_all(&project_dir)
             .with_context(|| format!("Cannot create project dir: {}", project_dir.display()))?;
 
@@ -184,11 +183,7 @@ impl Workflow for DevWorkflow {
 
         let _ = opts.tx.send(TuiEvent::TokenChunk {
             agent: "orchestrator".into(),
-            chunk: format!(
-                "Project '{}' created at: {}",
-                project_name,
-                project_dir.display()
-            ),
+            chunk: format!("Project created at: {}", project_dir.display()),
         });
 
         Ok(())
@@ -218,23 +213,6 @@ pub async fn ask_user(agent: &str, question: &str, opts: &RunOptions) -> Result<
         } => Ok(answer),
         _ = opts.cancel.cancelled() => Ok(String::new()),
     }
-}
-
-fn slugify(s: &str) -> String {
-    let slug = s
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    slug.split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
 }
 
 /// If the CEO output is a clarification request, extract the question text.

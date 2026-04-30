@@ -88,8 +88,26 @@ impl Orchestrator {
         verbose: bool,
         tx: Option<TuiSender>,
     ) -> Result<()> {
+        self.run_with_project_dir(prompt, auto, verbose, tx, None)
+            .await
+    }
+
+    pub async fn run_with_project_dir(
+        &self,
+        prompt: String,
+        auto: bool,
+        verbose: bool,
+        tx: Option<TuiSender>,
+        project_dir: Option<std::path::PathBuf>,
+    ) -> Result<()> {
         // Resolve the primary event sender (TUI or throw-away).
         let tx = tx.unwrap_or_else(|| channel().0);
+        let project_dir = project_dir.unwrap_or_else(|| {
+            default_project_dir(
+                self.workflow.name(),
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            )
+        });
 
         // When verbose, tap a clone of the sender into a logging task.
         if verbose {
@@ -138,15 +156,11 @@ impl Orchestrator {
                 }
             });
             // Use the tee sender as the workflow sender.
-            let project_dir = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .join("cortex-output");
-
             let options = RunOptions {
                 auto,
                 config: Arc::clone(&self.config),
                 tx: tee_tx.clone(),
-                project_dir,
+                project_dir: project_dir.clone(),
                 cancel: self.cancel.clone(),
                 resume_tx: Arc::clone(&self.resume_tx),
                 resume_rx: Arc::clone(&self.resume_rx),
@@ -166,10 +180,6 @@ impl Orchestrator {
                 }
             };
         }
-
-        let project_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join("cortex-output");
 
         let options = RunOptions {
             auto,
@@ -197,13 +207,39 @@ impl Orchestrator {
     }
 }
 
+fn default_project_dir(workflow_name: &str, cwd: std::path::PathBuf) -> std::path::PathBuf {
+    if workflow_name == "dev" {
+        cwd
+    } else {
+        cwd.join("cortex-output")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use super::default_project_dir;
     use crate::tui::events::{TuiEvent, channel};
+
+    #[test]
+    fn dev_workflow_defaults_to_current_directory() {
+        let cwd = PathBuf::from("/tmp/demo");
+        assert_eq!(default_project_dir("dev", cwd.clone()), cwd);
+    }
+
+    #[test]
+    fn non_dev_workflows_keep_cortex_output_directory() {
+        let cwd = PathBuf::from("/tmp/demo");
+        assert_eq!(
+            default_project_dir("marketing", cwd.clone()),
+            cwd.join("cortex-output")
+        );
+    }
 
     /// Phase events sent in sequence must arrive in the same order.
     #[tokio::test]

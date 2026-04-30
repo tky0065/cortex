@@ -178,7 +178,7 @@ function Content() {
         <CopyLine cmd='/start dev "build a REST API for a todo-list app in Rust"' />
         <p>Or one-shot from the terminal:</p>
         <CopyLine cmd='cortex start "build a CLI password manager in Go" --auto --workflow dev' />
-        <p>The generated project lands at <code>./cortex-output/&lt;slugified-idea&gt;/</code>.</p>
+        <p>For the <code>dev</code> workflow, generated files land directly in the directory where <code>cortex</code> was launched.</p>
       </section>
 
       <section id="config" className="docs-section">
@@ -339,7 +339,7 @@ cortex skill create <name> --description "When to use this skill" --project`}</c
 
       <section id="resume" className="docs-section">
         <h2>Resuming a run</h2>
-        <CopyLine cmd="cortex resume ./cortex-output/build-a-todo-app" />
+        <CopyLine cmd="cortex resume ./demo" />
         <p>Cortex re-runs the dev workflow with a prompt that asks the agents to continue from existing files. Best used when a run was aborted mid-way.</p>
       </section>
 
@@ -492,17 +492,16 @@ rate       = "€600/day"`}</code></pre>
 
       <section id="output" className="docs-section">
         <h2>Output structure</h2>
-        <p>All output lands under <code>./cortex-output/</code> relative to where <code>cortex</code> was run.</p>
+        <p>The <code>dev</code> workflow writes project files directly into the directory where <code>cortex</code> was run. Other workflows keep their generated artifacts under <code>./cortex-output/</code>.</p>
         <h3>dev</h3>
-        <pre><code>{`cortex-output/
-└── build-a-todo-rest-api/
-    ├── specs.md
-    ├── architecture.md
-    ├── src/
-    │   ├── main.rs
-    │   └── ...
-    ├── Dockerfile
-    └── docker-compose.yml`}</code></pre>
+        <pre><code>{`./
+├── specs.md
+├── architecture.md
+├── src/
+│   ├── main.rs
+│   └── ...
+├── Dockerfile
+└── docker-compose.yml`}</code></pre>
         <h3>marketing</h3>
         <pre><code>{`cortex-output/
 └── marketing-campaign/

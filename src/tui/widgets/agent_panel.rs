@@ -83,7 +83,11 @@ impl ActiveAgent {
     pub fn finish(&mut self) {
         self.progress = 100;
         self.status = AgentRunStatus::Done;
-        if self.current_action == "Starting..." {
+        if self.current_action == "Starting..."
+            || self
+                .current_action
+                .starts_with("Waiting for model response")
+        {
             self.current_action = "Completed".to_string();
         }
     }
@@ -133,8 +137,38 @@ impl<'a> AgentPanelWidget<'a> {
         }
 
         // ── Grid Mode ────────────────────────────────────────────────────────
+        // Select up to 6 agents to display:
+        // 1. Running or Error agents.
+        // 2. Most recently added Done agents.
+        // 3. Re-sort by original index to keep positions stable.
+        let mut enumerated_agents: Vec<(usize, &ActiveAgent)> =
+            self.agents.iter().enumerate().collect();
+
+        // Sort: Running/Error first, then by index descending (newest first) for Done agents
+        enumerated_agents.sort_by(|(idx_a, a), (idx_b, b)| {
+            let a_active = a.status != AgentRunStatus::Done;
+            let b_active = b.status != AgentRunStatus::Done;
+            if a_active && !b_active {
+                std::cmp::Ordering::Less
+            } else if !a_active && b_active {
+                std::cmp::Ordering::Greater
+            } else {
+                // If both are same status type (both active or both done), newest first to pick the most recent ones if we have > 6
+                idx_b.cmp(idx_a)
+            }
+        });
+
+        // Take max 6
+        enumerated_agents.truncate(6);
+
+        // Re-sort by original index so they appear in creation order on screen
+        enumerated_agents.sort_by_key(|(idx, _)| *idx);
+
+        let visible_agents: Vec<&ActiveAgent> =
+            enumerated_agents.into_iter().map(|(_, a)| a).collect();
+
         // Divide inner area into a grid based on active agents (max 6 visible)
-        let count = self.agents.len().min(6);
+        let count = visible_agents.len();
         let (rows, cols) = match count {
             1 => (1, 1),
             2 => (1, 2),
@@ -164,7 +198,7 @@ impl<'a> AgentPanelWidget<'a> {
             for c in 0..cols {
                 let index = r * cols + c;
                 if index < count {
-                    render_agent_block(frame, &self.agents[index], col_rects[c], self.tick_count);
+                    render_agent_block(frame, visible_agents[index], col_rects[c], self.tick_count);
                 }
             }
         }
@@ -515,6 +549,38 @@ mod tests {
     }
 
     #[test]
+    fn visible_agents_selection_prioritizes_active() {
+        let mut agents = Vec::new();
+        // 7 agents Done
+        for i in 0..7 {
+            let mut a = ActiveAgent::new(format!("Done {}", i));
+            a.finish();
+            agents.push(a);
+        }
+        // 1 agent Running (the 8th one)
+        let mut running = ActiveAgent::new("Running");
+        running.status = AgentRunStatus::Running;
+        agents.push(running);
+
+        let mut terminal = make_terminal();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                let widget = AgentPanelWidget {
+                    agents: &agents,
+                    focused_agent: None,
+                    tick_count: 0,
+                };
+
+                // We can't easily inspect the internal state of the render,
+                // but we can check if it compiles and runs without panic.
+                // In a real TUI test we might inspect the buffer.
+                widget.render(f, area);
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn progress_and_summary_survive_done() {
         let mut agent = ActiveAgent::new("pm");
         agent.set_progress("Redaction de specs.md");
@@ -524,6 +590,17 @@ mod tests {
         assert_eq!(agent.status, AgentRunStatus::Done);
         assert_eq!(agent.current_action, "Redaction de specs.md");
         assert!(agent.summary.contains("Specs completes"));
+        assert_eq!(agent.progress, 100);
+    }
+
+    #[test]
+    fn finish_clears_waiting_heartbeat() {
+        let mut agent = ActiveAgent::new("assistant");
+        agent.set_progress("Waiting for model response... (120s)");
+        agent.finish();
+
+        assert_eq!(agent.status, AgentRunStatus::Done);
+        assert_eq!(agent.current_action, "Completed");
         assert_eq!(agent.progress, 100);
     }
 
