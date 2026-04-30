@@ -416,16 +416,32 @@ async fn post_json_for_text(url: &str, headers: HeaderMap, body: Value) -> Resul
 }
 
 async fn post_json(url: &str, headers: HeaderMap, body: Value) -> Result<Value> {
-    reqwest::Client::new()
+    let resp = reqwest::Client::new()
         .post(url)
         .headers(headers)
         .json(&body)
         .send()
         .await
-        .with_context(|| format!("request failed: {url}"))?
-        .error_for_status()
-        .with_context(|| format!("provider rejected request: {url}"))?
-        .json()
+        .with_context(|| format!("request failed: {url}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        // Try to extract a clean error message from JSON error bodies
+        let detail = serde_json::from_str::<Value>(&body_text)
+            .ok()
+            .and_then(|v| {
+                v.pointer("/error/message")
+                    .or_else(|| v.get("message"))
+                    .or_else(|| v.get("error"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or(body_text);
+        bail!("{status} from {url}: {detail}");
+    }
+
+    resp.json()
         .await
         .with_context(|| format!("provider returned invalid JSON: {url}"))
 }
