@@ -6,6 +6,12 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 **Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
+## What's new in 0.1.6 beta
+
+- **Live Diff Viewer**: Every time an agent writes a file, a popup appears automatically showing added lines in green and deleted lines in red — like Claude, Copilot, or Gemini. Navigate multiple files with `n`/`p`, scroll with `j`/`k`, dismiss with `q`/`Esc`.
+- **Agent Stream Buffer Cap**: The streaming buffer is capped at 50 000 characters per agent, preventing unbounded memory growth on long runs.
+- **Refreshed TUI Style**: Rounded borders on all panels for a cleaner look, new `◐◓◑◒` spinner replacing the braille dots, and a gradient on streamed text (newest line full-bright, older lines progressively dimmer).
+
 ## What's new in 0.1.5 beta
 
 - **Beta Release Track**: Cortex 0.1.5 keeps the project on the beta track across the CLI metadata, README, and website.
@@ -102,7 +108,7 @@ cargo build --release
 Cortex checks for a newer GitHub Release when the TUI starts. If an update exists, it prints a non-blocking log message:
 
 ```text
-Update available: 0.1.4 -> v0.1.5. Run /update to install.
+Update available: 0.1.5 -> v0.1.6. Run /update to install.
 ```
 
 Update from the terminal:
@@ -110,7 +116,7 @@ Update from the terminal:
 ```bash
 cortex update --check
 cortex update
-cortex update --version v0.1.5
+cortex update --version v0.1.6
 ```
 
 Update from the REPL:
@@ -118,7 +124,7 @@ Update from the REPL:
 ```text
 /update check
 /update
-/update v0.1.5
+/update v0.1.6
 ```
 
 The updater downloads the matching GitHub Release archive, verifies `SHA256SUMS`, and replaces the current `cortex` binary. On Windows, restart the terminal after updating.
@@ -772,7 +778,7 @@ cargo fmt
 4. Create and push a version tag:
 
 ```bash
-git tag v0.1.5
+git tag v0.1.6
 git push origin main --tags
 ```
 
