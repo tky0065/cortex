@@ -34,6 +34,11 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/clear", "Clear visible logs"),
     ("/logs", "Toggle log panel"),
     ("/help", "Show all commands"),
+    ("/agents", "List all agent statuses from the bus"),
+    (
+        "/agent",
+        "Send a directive to a running agent: /agent <name> \"<msg>\"",
+    ),
     ("/quit", "Exit cortex"),
     ("/exit", "Exit cortex"),
 ];
