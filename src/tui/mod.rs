@@ -2009,6 +2009,7 @@ fn is_control_agent(agent: &str) -> bool {
             | "connect"
             | "model"
             | "models"
+            | "orchestrator"
             | "provider"
             | "repl"
             | "resume"

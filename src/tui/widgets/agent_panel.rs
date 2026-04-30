@@ -169,13 +169,22 @@ impl<'a> AgentPanelWidget<'a> {
 
         // Divide inner area into a grid based on active agents (max 6 visible)
         let count = visible_agents.len();
-        let (rows, cols) = match count {
-            1 => (1, 1),
-            2 => (1, 2),
-            3 | 4 => (2, 2),
-            5 | 6 => (2, 3),
-            _ => (2, 3),
+
+        // Responsive grid: adjust columns based on available width to keep panels readable.
+        // min_col_width = 35 chars is a reasonable floor for readable agent output.
+        let min_col_width = 35;
+        let available_width = inner.width as usize;
+        let max_cols = (available_width / min_col_width).max(1);
+
+        let desired_cols = match count {
+            1 => 1,
+            2 => 2,
+            3 | 4 => 2,
+            _ => 3,
         };
+
+        let cols = desired_cols.min(max_cols);
+        let rows = (count + cols - 1) / cols;
 
         let row_constraints: Vec<Constraint> = (0..rows)
             .map(|_| Constraint::Ratio(1, rows as u32))
