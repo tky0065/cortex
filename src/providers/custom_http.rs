@@ -488,7 +488,7 @@ fn build_openai_authorize_url(redirect_uri: &str, challenge: &str, state: &str) 
         ("response_type", "code"),
         ("client_id", OPENAI_CLIENT_ID),
         ("redirect_uri", redirect_uri),
-        ("scope", "openid profile email offline_access"),
+        ("scope", "openid profile email offline_access model.request"),
         ("code_challenge", challenge),
         ("code_challenge_method", "S256"),
         ("id_token_add_organizations", "true"),
