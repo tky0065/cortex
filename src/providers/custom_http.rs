@@ -15,11 +15,9 @@ use crate::auth::{AuthMethod, AuthRecord, AuthStore};
 
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_ISSUER: &str = "https://auth.openai.com";
-// Official Responses API — works with ChatGPT OAuth tokens obtained via
-// codex_cli_simplified_flow=true (no paid API key required for ChatGPT subscribers)
-// /v1/chat/completions works with the OAuth token from codex_cli_simplified_flow=true.
-// /v1/responses requires api.responses.write scope that the OAuth flow does NOT grant.
-const OPENAI_CODEX_ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
+// opencode intercepts /v1/chat/completions and redirects to this internal endpoint.
+// The OAuth token from codex_cli_simplified_flow=true works here with the right headers.
+const OPENAI_CODEX_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_OAUTH_PORT: u16 = 1455;
 const OPENAI_OAUTH_CALLBACK_PATH: &str = "/auth/callback";
 
@@ -123,13 +121,27 @@ pub async fn chatgpt_codex_complete(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {token}"))?,
     );
-    headers.insert(USER_AGENT, HeaderValue::from_static("cortex"));
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_str(&format!(
+            "opencode/0.1.0 ({} {}; {})",
+            std::env::consts::OS,
+            sysinfo_release(),
+            std::env::consts::ARCH
+        ))?,
+    );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    // Required by chatgpt.com/backend-api/codex/responses — mirrors opencode behaviour
+    headers.insert("originator", HeaderValue::from_static("opencode"));
+    headers.insert(
+        "session_id",
+        HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())?,
+    );
     if let Some(account_id) = record.account_id.as_deref() {
         headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
     }
 
-    // /v1/chat/completions — standard format, no special scope needed
+    // Chat completions format — forwarded as-is to the Codex endpoint
     let body = json!({
         "model": model,
         "messages": openai_messages(preamble, turns),
@@ -488,7 +500,7 @@ fn build_openai_authorize_url(redirect_uri: &str, challenge: &str, state: &str) 
         ("response_type", "code"),
         ("client_id", OPENAI_CLIENT_ID),
         ("redirect_uri", redirect_uri),
-        ("scope", "openid profile email offline_access model.request"),
+        ("scope", "openid profile email offline_access"),
         ("code_challenge", challenge),
         ("code_challenge_method", "S256"),
         ("id_token_add_organizations", "true"),
@@ -605,6 +617,17 @@ fn parse_query(query: &str) -> std::collections::BTreeMap<String, String> {
             Some((percent_decode(key), percent_decode(value)))
         })
         .collect()
+}
+
+/// Returns a best-effort OS release string (e.g. "24.0.0" on macOS).
+fn sysinfo_release() -> String {
+    std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "0.0.0".to_string())
 }
 
 #[cfg(test)]
