@@ -15,8 +15,8 @@ use crate::auth::{AuthMethod, AuthRecord, AuthStore};
 
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_ISSUER: &str = "https://auth.openai.com";
-// Public Responses API endpoint — works with ChatGPT OAuth access tokens
-const OPENAI_CODEX_ENDPOINT: &str = "https://api.openai.com/v1/responses";
+// ChatGPT subscription Codex endpoint (does NOT require a paid OpenAI API key)
+const OPENAI_CODEX_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_OAUTH_PORT: u16 = 1455;
 const OPENAI_OAUTH_CALLBACK_PATH: &str = "/auth/callback";
 
@@ -122,20 +122,17 @@ pub async fn chatgpt_codex_complete(
     );
     headers.insert(USER_AGENT, HeaderValue::from_static("cortex"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert("originator", HeaderValue::from_static("openai-codex-cli"));
+    // The Codex endpoint identifies clients via this header (mirrors opencode)
+    headers.insert("originator", HeaderValue::from_static("opencode"));
     if let Some(account_id) = record.account_id.as_deref() {
         headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
     }
 
-    // Responses API format: instructions (system prompt) + input (turns)
-    let input: Vec<_> = turns
-        .iter()
-        .map(|turn| json!({"role": turn.role, "content": turn.content}))
-        .collect();
+    // The Codex endpoint is reached by intercepting /v1/chat/completions requests —
+    // it accepts the standard chat completions body format, not Responses API format.
     let body = json!({
         "model": model,
-        "instructions": preamble,
-        "input": input,
+        "messages": openai_messages(preamble, turns),
         "stream": false
     });
     post_json_for_text(OPENAI_CODEX_ENDPOINT, headers, body).await
