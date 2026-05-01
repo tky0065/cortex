@@ -28,7 +28,7 @@ use tui_input::backend::crossterm::EventHandler;
 
 use crate::config::Config;
 use crate::tui::{
-    events::{TuiEvent, TuiReceiver, TuiSender},
+    events::{Task, TuiEvent, TuiReceiver, TuiSender},
     layout::compute,
     theme::THEME,
     widgets::{
@@ -42,6 +42,7 @@ use crate::tui::{
         },
         pipeline::{AgentState, AgentStatus, PipelineWidget},
         status_bar::{StatusBarState, StatusBarWidget},
+        tasks::TasksWidget,
     },
 };
 
@@ -117,6 +118,7 @@ struct SkillPickerState {
 struct App {
     input_bar: InputBar,
     logs: Vec<LogEntry>,
+    tasks: Vec<Task>,
     pipeline: Vec<AgentState>,
     active_agents: Vec<ActiveAgent>,
     log_filter: Option<String>,
@@ -141,6 +143,7 @@ impl App {
         Self {
             input_bar: InputBar::new(),
             logs: vec![LogEntry::system("cortex ready — type /help for commands.")],
+            tasks: Vec::new(),
             pipeline: Vec::new(),
             active_agents: Vec::new(),
             log_filter: None,
@@ -157,7 +160,7 @@ impl App {
     }
 
     fn draw(&self, frame: &mut Frame) {
-        let layout = compute(frame);
+        let layout = compute(frame, self.tasks.len());
 
         let (provider, model) = self
             .config
@@ -175,6 +178,12 @@ impl App {
             tick_count: self.tick_count,
         }
         .render(frame, layout.agents);
+
+        TasksWidget {
+            tasks: &self.tasks,
+        }
+        .render(frame, layout.tasks);
+
         LogsWidget {
             entries: &self.logs,
             filter: self.log_filter.as_deref(),
@@ -302,9 +311,13 @@ impl App {
 
     fn on_orchestrator_event(&mut self, event: TuiEvent) {
         match &event {
+            TuiEvent::TasksUpdated { tasks } => {
+                self.tasks = tasks.clone();
+            }
             TuiEvent::WorkflowStarted { workflow, agents } => {
                 self.pipeline = agents.iter().map(|n| AgentState::idle(n)).collect();
                 self.active_agents.clear();
+                self.tasks.clear();
                 self.tokens_total = 0;
                 self.start_time = Some(std::time::Instant::now());
                 self.logs.push(LogEntry::system(format!(

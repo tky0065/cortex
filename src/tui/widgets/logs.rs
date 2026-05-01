@@ -125,14 +125,14 @@ fn format_entry(entry: &LogEntry) -> Line<'static> {
 
     match &entry.agent {
         None => {
-            let msg = Span::styled(entry.message.clone(), Style::default().fg(THEME.text));
-            Line::from(vec![ts, Span::styled("◈ ", THEME.secondary), msg])
+            let msg = Span::styled(entry.message.clone(), Style::default().fg(THEME.muted));
+            Line::from(vec![ts, Span::styled("◈ ", THEME.muted), msg])
         }
         Some(agent) => {
             let (tag_color, msg_color) = if entry.is_error {
                 (THEME.error, THEME.error)
             } else {
-                (THEME.primary, THEME.text)
+                (THEME.muted, THEME.muted)
             };
 
             let tag = Span::styled(agent.to_string(), THEME.agent_tag(tag_color));

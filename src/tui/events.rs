@@ -1,9 +1,19 @@
 use tokio::sync::mpsc;
 
+/// A single task in a workflow.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Task {
+    pub description: String,
+    pub is_done: bool,
+}
+
 /// Events sent from the orchestrator to the TUI renderer.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum TuiEvent {
+    TasksUpdated {
+        tasks: Vec<Task>,
+    },
     WorkflowStarted {
         workflow: String,
         agents: Vec<String>,

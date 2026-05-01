@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_bus::AgentBus;
 use crate::config::Config;
-use crate::tui::events::{TuiEvent, TuiSender, channel};
+use crate::tui::events::{Task, TuiEvent, TuiSender, channel};
 use crate::workflows::{RunOptions, Workflow};
 
 pub struct Orchestrator {
@@ -109,6 +109,9 @@ impl Orchestrator {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )
         });
+
+        // Spawn a background task to watch TASKS.md for UI updates.
+        spawn_task_watcher(tx.clone(), project_dir.clone(), self.cancel.clone());
 
         // Create a fresh AgentBus for this workflow run and share it with the REPL.
         let agent_bus = AgentBus::new();
@@ -222,6 +225,59 @@ fn default_project_dir(workflow_name: &str, cwd: std::path::PathBuf) -> std::pat
     } else {
         cwd.join("cortex-output")
     }
+}
+
+/// Polls for a TASKS.md file in the project directory and sends TasksUpdated events.
+fn spawn_task_watcher(tx: TuiSender, project_dir: std::path::PathBuf, cancel: CancellationToken) {
+    tokio::spawn(async move {
+        let tasks_path = project_dir.join("TASKS.md");
+        let mut last_content = String::new();
+
+        loop {
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            if tasks_path.exists() {
+                if let Ok(content) = tokio::fs::read_to_string(&tasks_path).await {
+                    if content != last_content {
+                        let tasks = parse_tasks(&content);
+                        let _ = tx.send(TuiEvent::TasksUpdated { tasks });
+                        last_content = content;
+                    }
+                }
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+    });
+}
+
+fn parse_tasks(content: &str) -> Vec<Task> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with("- [ ] ") {
+                Some(Task {
+                    description: line[6..].to_string(),
+                    is_done: false,
+                })
+            } else if line.starts_with("- [x] ") {
+                Some(Task {
+                    description: line[6..].to_string(),
+                    is_done: true,
+                })
+            } else if line.starts_with("- [X] ") {
+                Some(Task {
+                    description: line[6..].to_string(),
+                    is_done: true,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

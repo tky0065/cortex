@@ -6,3 +6,4 @@ pub mod picker;
 pub mod pipeline;
 pub mod status_bar;
 pub mod summary;
+pub mod tasks;
