@@ -6,6 +6,13 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 **Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
+## What's new in 0.1.7 beta
+
+- **Task Management Widget**: A dedicated panel in the TUI now displays the real-time status of all tasks within a workflow, making it easier to track progress at a glance.
+- **Workflow Explorer**: Use `/workflows` in the REPL or `cortex workflows` in the CLI to see a list of all available workflows and their detailed descriptions.
+- **Responsive Agent Grid**: The TUI now intelligently adapts the agent panel layout to fit smaller terminal windows, ensuring readability even in constrained spaces.
+- **Professional Progress Indicators**: Refined visual feedback with better alignment and clearer status icons across all widgets.
+
 ## What's new in 0.1.6 beta
 
 - **Inline Mentions**: Type `@` in the TUI to autocomplete project files and folders, or `$` to autocomplete installed skills. Referenced files/folders are injected into model context, and `$skill` forces that skill into the request.
@@ -109,7 +116,7 @@ cargo build --release
 Cortex checks for a newer GitHub Release when the TUI starts. If an update exists, it prints a non-blocking log message:
 
 ```text
-Update available: 0.1.5 -> v0.1.6. Run /update to install.
+Update available: 0.1.5 -> v0.1.7. Run /update to install.
 ```
 
 Update from the terminal:
@@ -117,7 +124,7 @@ Update from the terminal:
 ```bash
 cortex update --check
 cortex update
-cortex update --version v0.1.6
+cortex update --version v0.1.7
 ```
 
 Update from the REPL:
@@ -125,7 +132,7 @@ Update from the REPL:
 ```text
 /update check
 /update
-/update v0.1.6
+/update v0.1.7
 ```
 
 The updater downloads the matching GitHub Release archive, verifies `SHA256SUMS`, and replaces the current `cortex` binary. On Windows, restart the terminal after updating.
@@ -785,7 +792,7 @@ cargo fmt
 4. Create and push a version tag:
 
 ```bash
-git tag v0.1.6
+git tag v0.1.7
 git push origin main --tags
 ```
 

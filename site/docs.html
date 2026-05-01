@@ -139,15 +139,15 @@ function TOC({ active }) {
 function Content() {
   return (
     <main className="docs-content">
-      <span className="docs-eyebrow">Documentation · v0.1.6 beta</span>
+      <span className="docs-eyebrow">Documentation · v0.1.7 beta</span>
       <h1>Cortex</h1>
       <p style={{ fontSize: 18, color: "var(--fg)" }}>Orchestrate specialized AI agents to build and ship your projects from your terminal. Cortex is currently in beta.</p>
 
       <section id="introduction" className="docs-section">
         <h2>Introduction</h2>
         <p><strong>Status:</strong> Cortex is in beta. It is ready for early adopters, while workflows, providers, and generated project structure may still evolve before a stable 1.0 release.</p>
+        <p><strong>0.1.7 beta highlights:</strong> task management widget (track progress in real-time), workflow explorer (list all workflows with <code>/workflows</code>), responsive agent grid (UI adapts to small terminals), professional progress indicators.</p>
         <p><strong>0.1.6 beta highlights:</strong> live diff viewer (file writes show added/removed lines in green/red), agent stream buffer cap (50 000 chars, prevents memory growth), refreshed TUI style (rounded borders on all panels, new ◐◓◑◒ spinner, gradient text on streaming content).</p>
-        <p><strong>0.1.5 beta highlights:</strong> expanded provider auth through <code>/connect</code>, ChatGPT Plus/Pro streaming through the Codex Responses backend, GitHub Copilot device login, GitLab Duo auth, Vertex AI and Bedrock provider entries, Gemini Gemma compatibility, project <code>AGENTS.md</code> context, skill injection, and a richer TUI.</p>
         <p>Cortex runs like a REPL by default — type <code>cortex</code> to launch the TUI. Inside, you give it an idea via a slash command and watch six specialized agents take it from brief to deployable repo: <strong>CEO → PM → Tech Lead → Developer ×N → QA → DevOps</strong>.</p>
         <p>Each agent reads only the files it needs from disk — never the full transcript. This <em>file-as-memory</em> pattern keeps context windows bounded even on multi-hour runs.</p>
       </section>
@@ -286,6 +286,7 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td>/start &lt;workflow&gt; "&lt;idea&gt;"</td><td>Launch a workflow</td></tr>
             <tr><td>/run &lt;workflow&gt; "&lt;prompt&gt;"</td><td>Alias for /start</td></tr>
             <tr><td>/resume &lt;dir&gt;</td><td>Resume an interrupted workflow</td></tr>
+            <tr><td>/workflows</td><td>List all available workflows and descriptions</td></tr>
             <tr><td>/init [--force]</td><td>Scan the current project and generate/update AGENTS.md</td></tr>
             <tr><td>/status</td><td>Show whether a workflow is running</td></tr>
             <tr><td>/abort</td><td>Cancel at the next checkpoint</td></tr>

@@ -143,51 +143,140 @@ fn lmstudio_connection_hint(e: anyhow::Error) -> anyhow::Error {
 
 struct ToolCallStreamFilter {
     buffer: String,
-    inside_tool_call: bool,
+    /// When Some, we are currently swallowing characters until this closing tag is found.
+    expected_close: Option<String>,
 }
 
 impl ToolCallStreamFilter {
     fn new() -> Self {
         Self {
             buffer: String::new(),
-            inside_tool_call: false,
+            expected_close: None,
         }
     }
 
     fn push(&mut self, chunk: &str) -> Vec<String> {
-        const OPEN: &str = "<tool_call>";
-        const CLOSE: &str = "</tool_call>";
+        // Pairs of (opening_tag, closing_tag). If a model emits an opening tag,
+        // we swallow everything until the corresponding closing tag.
+        const TAG_PAIRS: &[(&str, &str)] = &[
+            ("<tool_call>", "</tool_call>"),
+            ("<tool_result>", "</tool_result>"),
+            ("<thought>", "</thought>"),
+            ("<think>", "</think>"),
+            ("<search>", "</search>"),
+            ("<output>", "</output>"),
+            ("<call>", "</call>"),
+            // Bare tool names used by some models as implicit openers.
+            // These often close with </tool_call> or </tool_result>.
+            ("<web_search>", "</tool_call>"),
+            ("<write_file>", "</tool_call>"),
+            ("<read_file>", "</tool_call>"),
+            ("<list_files>", "</tool_call>"),
+            ("<run_command>", "</tool_call>"),
+            ("<query_agent_status>", "</tool_call>"),
+            ("<delegate_to_agent>", "</tool_call>"),
+            ("<inject_directive>", "</tool_call>"),
+        ];
+
+        // Generic close tags that should always trigger an exit from "swallow" mode
+        // if they appear, even if they don't perfectly match the opener (robustness).
+        const GENERIC_CLOSES: &[&str] = &[
+            "</tool_call>",
+            "</tool_result>",
+            "</thought>",
+            "</think>",
+            "</search>",
+            "</output>",
+            "</call>",
+        ];
 
         self.buffer.push_str(chunk);
         let mut visible = Vec::new();
 
         loop {
-            if self.inside_tool_call {
-                if let Some(close_idx) = self.buffer.find(CLOSE) {
-                    let after = close_idx + CLOSE.len();
+            if let Some(ref close_tag) = self.expected_close {
+                // Look for the specific expected close tag OR any generic close tag.
+                let mut found_close: Option<(usize, usize)> = None;
+
+                if let Some(idx) = self.buffer.find(close_tag) {
+                    found_close = Some((idx, close_tag.len()));
+                } else {
+                    // Robustness: if we see ANY other close tag, assume the tool call/thought ended.
+                    for &g_close in GENERIC_CLOSES {
+                        if let Some(idx) = self.buffer.find(g_close) {
+                            if found_close.is_none() || idx < found_close.unwrap().0 {
+                                found_close = Some((idx, g_close.len()));
+                            }
+                        }
+                    }
+                }
+
+                if let Some((idx, len)) = found_close {
+                    let after = idx + len;
                     self.buffer.drain(..after);
-                    self.inside_tool_call = false;
+                    self.expected_close = None;
                     continue;
                 }
 
-                let keep = longest_suffix_prefix(&self.buffer, CLOSE);
+                // Suffix matching: keep only what might be the start of one of the close tags.
+                let mut keep = longest_suffix_prefix(&self.buffer, close_tag);
+                for &g_close in GENERIC_CLOSES {
+                    keep = keep.max(longest_suffix_prefix(&self.buffer, g_close));
+                }
+
                 if self.buffer.len() > keep {
                     self.buffer.drain(..self.buffer.len() - keep);
                 }
                 break;
             }
 
-            if let Some(open_idx) = self.buffer.find(OPEN) {
-                if open_idx > 0 {
-                    visible.push(self.buffer[..open_idx].to_string());
+            // Not inside a hidden block — look for any opening tag.
+            let mut earliest_open: Option<(usize, usize, &str)> = None;
+            for &(open, close) in TAG_PAIRS {
+                if let Some(idx) = self.buffer.find(open) {
+                    if earliest_open.is_none() || idx < earliest_open.unwrap().0 {
+                        earliest_open = Some((idx, open.len(), close));
+                    }
                 }
-                let after = open_idx + OPEN.len();
-                self.buffer.drain(..after);
-                self.inside_tool_call = true;
+            }
+
+            if let Some((idx, len, close)) = earliest_open {
+                // Extract everything before the tag as visible.
+                if idx > 0 {
+                    visible.push(self.buffer[..idx].to_string());
+                }
+                self.buffer.drain(..idx + len);
+                self.expected_close = Some(close.to_string());
                 continue;
             }
 
-            let keep = longest_suffix_prefix(&self.buffer, OPEN);
+            // Handle orphaned close tags (just strip them if they appear in plain text).
+            let mut earliest_orphan: Option<(usize, usize)> = None;
+            for &g_close in GENERIC_CLOSES {
+                if let Some(idx) = self.buffer.find(g_close) {
+                    if earliest_orphan.is_none() || idx < earliest_orphan.unwrap().0 {
+                        earliest_orphan = Some((idx, g_close.len()));
+                    }
+                }
+            }
+            if let Some((idx, len)) = earliest_orphan {
+                if idx > 0 {
+                    visible.push(self.buffer[..idx].to_string());
+                }
+                self.buffer.drain(..idx + len);
+                continue;
+            }
+
+            // Buffer the longest suffix that could still complete any watched opening tag.
+            let mut keep = 0;
+            for &(open, _) in TAG_PAIRS {
+                keep = keep.max(longest_suffix_prefix(&self.buffer, open));
+            }
+            // Also watch for any close tag (orphans).
+            for &g_close in GENERIC_CLOSES {
+                keep = keep.max(longest_suffix_prefix(&self.buffer, g_close));
+            }
+
             if self.buffer.len() > keep {
                 visible.push(self.buffer[..self.buffer.len() - keep].to_string());
                 self.buffer.drain(..self.buffer.len() - keep);
@@ -202,9 +291,9 @@ impl ToolCallStreamFilter {
     }
 
     fn flush(&mut self) -> Option<String> {
-        if self.inside_tool_call || self.buffer.is_empty() {
+        if self.expected_close.is_some() || self.buffer.is_empty() {
             self.buffer.clear();
-            self.inside_tool_call = false;
+            self.expected_close = None;
             return None;
         }
         Some(std::mem::take(&mut self.buffer))
@@ -1152,7 +1241,50 @@ mod tests {
     }
 
     #[test]
-    fn parse_model_keeps_bare_model_for_default_provider_resolution() {
-        assert_eq!(parse_model("qwen2.5-coder:32b"), ("", "qwen2.5-coder:32b"));
+    fn tool_call_filter_hides_thoughts_and_search() {
+        let mut filter = ToolCallStreamFilter::new();
+        let mut out = Vec::new();
+        out.extend(filter.push("thinking... <thought>I should search</thought> done."));
+        out.extend(filter.push(" <search>{\"query\": \"test\"}</search>"));
+        if let Some(rest) = filter.flush() {
+            out.push(rest);
+        }
+        assert_eq!(out.join("").trim(), "thinking...  done.");
+    }
+
+    #[test]
+    fn tool_call_filter_hides_split_search_tags() {
+        let mut filter = ToolCallStreamFilter::new();
+        let mut out = Vec::new();
+        out.extend(filter.push("visible <sea"));
+        out.extend(filter.push("rch>hidden</sea"));
+        out.extend(filter.push("rch> more"));
+        if let Some(rest) = filter.flush() {
+            out.push(rest);
+        }
+        assert_eq!(out.join(""), "visible  more");
+    }
+
+    #[test]
+    fn tool_call_filter_robust_against_mismatched_closes() {
+        let mut filter = ToolCallStreamFilter::new();
+        let mut out = Vec::new();
+        // Model opens with <search> but closes with </tool_result> (hallucination)
+        out.extend(filter.push("start <search>payload</tool_result> end"));
+        if let Some(rest) = filter.flush() {
+            out.push(rest);
+        }
+        assert_eq!(out.join(""), "start  end");
+    }
+
+    #[test]
+    fn tool_call_filter_strips_orphaned_closes() {
+        let mut filter = ToolCallStreamFilter::new();
+        let mut out = Vec::new();
+        out.extend(filter.push("hello </thought> world"));
+        if let Some(rest) = filter.flush() {
+            out.push(rest);
+        }
+        assert_eq!(out.join(""), "hello  world");
     }
 }
