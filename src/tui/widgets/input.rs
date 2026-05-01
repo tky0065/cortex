@@ -119,6 +119,7 @@ pub struct PaletteContext {
     pub agents: Vec<String>,
     pub resume_sessions: Vec<ResumeSuggestion>,
     pub skills: Vec<(String, String)>,
+    pub project_paths: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -165,11 +166,17 @@ impl InputBar {
     /// Returns true when a command or argument palette should be visible.
     pub fn palette_open(&self, context: &PaletteContext) -> bool {
         let v = self.input.value();
-        self.argument_replacement(context).is_some() || (v.starts_with('/') && !v.contains(' '))
+        self.mention_replacement(context).is_some()
+            || self.argument_replacement(context).is_some()
+            || (v.starts_with('/') && !v.contains(' '))
     }
 
     /// Commands or arguments that match what the user has typed so far.
     pub fn palette_matches(&self, context: &PaletteContext) -> Vec<PaletteItem> {
+        if let Some(mention) = self.mention_replacement(context) {
+            return mention.matches;
+        }
+
         if let Some(arg) = self.argument_replacement(context) {
             return arg.matches;
         }
@@ -203,6 +210,24 @@ impl InputBar {
     /// Select the currently highlighted palette item — replaces the input value.
     /// Returns the selected command string (e.g. "/start"), or None if palette is empty.
     pub fn palette_select(&mut self, context: &PaletteContext) -> Option<String> {
+        if let Some(mention) = self.mention_replacement(context) {
+            if mention.matches.is_empty() {
+                return None;
+            }
+            let idx = self.palette_idx.min(mention.matches.len() - 1);
+            let item = &mention.matches[idx];
+            let mut value = String::new();
+            value.push_str(&mention.before);
+            value.push_str(&item.replacement);
+            value.push_str(&mention.after);
+            if mention.append_space && !value.ends_with(' ') {
+                value.push(' ');
+            }
+            self.input = Input::new(value.clone());
+            self.palette_idx = 0;
+            return Some(value);
+        }
+
         if let Some(arg) = self.argument_replacement(context) {
             if arg.matches.is_empty() {
                 return None;
@@ -237,6 +262,64 @@ impl InputBar {
         self.input = Input::new(value.clone());
         self.palette_idx = 0;
         Some(value)
+    }
+
+    fn mention_replacement(&self, context: &PaletteContext) -> Option<ArgumentPalette> {
+        let value = self.input.value();
+        let cursor = self.input.cursor().min(value.len());
+        let before_cursor = &value[..cursor];
+        let token_start = before_cursor
+            .char_indices()
+            .rev()
+            .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx + ch.len_utf8()))
+            .unwrap_or(0);
+        let token = &value[token_start..cursor];
+        let trigger = token.chars().next()?;
+        if !matches!(trigger, '@' | '$') {
+            return None;
+        }
+        if token[trigger.len_utf8()..].contains('@') || token[trigger.len_utf8()..].contains('$') {
+            return None;
+        }
+
+        let prefix = &token[trigger.len_utf8()..];
+        let matches = match trigger {
+            '@' => context
+                .project_paths
+                .iter()
+                .filter(|(path, _)| mention_matches(path, prefix))
+                .map(|(path, description)| {
+                    PaletteItem::with_replacement(
+                        format!("@{path}"),
+                        description,
+                        format!("@{path}"),
+                    )
+                })
+                .collect(),
+            '$' => context
+                .skills
+                .iter()
+                .filter(|(name, _)| mention_matches(name, prefix))
+                .map(|(name, description)| {
+                    PaletteItem::with_replacement(
+                        format!("${name}"),
+                        description,
+                        format!("${name}"),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        if matches.is_empty() {
+            return None;
+        }
+
+        Some(ArgumentPalette {
+            before: value[..token_start].to_string(),
+            after: value[cursor..].to_string(),
+            append_space: true,
+            matches,
+        })
     }
 
     fn argument_replacement(&self, context: &PaletteContext) -> Option<ArgumentPalette> {
@@ -694,6 +777,15 @@ fn filter_items(items: Vec<PaletteItem>, prefix: &str) -> Vec<PaletteItem> {
         .collect()
 }
 
+fn mention_matches(value: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    let value = value.to_ascii_lowercase();
+    let prefix = prefix.to_ascii_lowercase();
+    value.starts_with(&prefix) || value.split('/').any(|segment| segment.starts_with(&prefix))
+}
+
 fn skill_command_takes_installed_name(parsed: &ParsedCommand<'_>) -> bool {
     matches!(
         parsed.args.first().map(|arg| arg.text),
@@ -780,6 +872,11 @@ mod tests {
             skills: vec![
                 ("rust".to_string(), "Rust workflow skill".to_string()),
                 ("docs".to_string(), "Documentation skill".to_string()),
+            ],
+            project_paths: vec![
+                ("src/".to_string(), "Directory".to_string()),
+                ("src/main.rs".to_string(), "File".to_string()),
+                ("README.md".to_string(), "File".to_string()),
             ],
         }
     }
@@ -1064,6 +1161,36 @@ mod tests {
         let mut bar = InputBar::new();
         type_into(&mut bar, "/skill enable r");
         assert_eq!(values(bar.palette_matches(&context())), vec!["rust"]);
+    }
+
+    #[test]
+    fn at_mentions_suggest_project_paths_inline() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "explique @main");
+        assert!(bar.palette_open(&context()));
+        assert_eq!(
+            values(bar.palette_matches(&context())),
+            vec!["@src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn at_mentions_insert_selected_path_inline() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "lis @read");
+        let selected = bar.palette_select(&context());
+
+        assert_eq!(selected, Some("lis @README.md ".to_string()));
+        assert_eq!(bar.input.value(), "lis @README.md ");
+    }
+
+    #[test]
+    fn dollar_mentions_suggest_skills_inline() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "utilise $ru");
+
+        assert!(bar.palette_open(&context()));
+        assert_eq!(values(bar.palette_matches(&context())), vec!["$rust"]);
     }
 
     #[test]

@@ -1376,6 +1376,7 @@ fn relevance_score(definition: &SkillDefinition, agent_name: &str, prompt: &str)
         }
     }
     if prompt.contains(&format!("@skill:{}", definition.name))
+        || prompt.contains(&format!("${}", definition.name))
         || prompt.contains(&format!("/{}", definition.name))
     {
         score += 20;
@@ -1571,5 +1572,6 @@ mod tests {
             content: String::new(),
         };
         assert!(relevance_score(&definition, "developer", "use @skill:api-docs") >= 20);
+        assert!(relevance_score(&definition, "developer", "use $api-docs") >= 20);
     }
 }

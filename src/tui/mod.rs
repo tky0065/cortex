@@ -657,7 +657,9 @@ impl App {
         let needs_models = input.starts_with("/model ");
         let needs_agents = input.starts_with("/focus ") || input.starts_with("/agent ");
         let needs_resume_sessions = input.starts_with("/resume ");
-        let needs_skills = input.starts_with("/skill ") || input.starts_with("/skills ");
+        let needs_skills =
+            input.starts_with("/skill ") || input.starts_with("/skills ") || input.contains('$');
+        let needs_project_paths = input.contains('@');
 
         let mut providers = Vec::new();
         if needs_providers {
@@ -740,12 +742,27 @@ impl App {
             Vec::new()
         };
 
+        let project_paths = if needs_project_paths {
+            let prefix = input
+                .split_whitespace()
+                .rev()
+                .find_map(|token| token.strip_prefix('@'))
+                .unwrap_or_default();
+            crate::mentions::path_suggestions(prefix)
+                .into_iter()
+                .map(|suggestion| (suggestion.path, suggestion.description))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         PaletteContext {
             providers,
             models,
             agents,
             resume_sessions,
             skills,
+            project_paths,
         }
     }
 

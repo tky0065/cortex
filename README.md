@@ -8,6 +8,7 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 ## What's new in 0.1.6 beta
 
+- **Inline Mentions**: Type `@` in the TUI to autocomplete project files and folders, or `$` to autocomplete installed skills. Referenced files/folders are injected into model context, and `$skill` forces that skill into the request.
 - **Live Diff Viewer**: Every time an agent writes a file, a popup appears automatically showing added lines in green and deleted lines in red — like Claude, Copilot, or Gemini. Navigate multiple files with `n`/`p`, scroll with `j`/`k`, dismiss with `q`/`Esc`.
 - **Agent Stream Buffer Cap**: The streaming buffer is capped at 50 000 characters per agent, preventing unbounded memory growth on long runs.
 - **Refreshed TUI Style**: Rounded borders on all panels for a cleaner look, new `◐◓◑◒` spinner replacing the braille dots, and a gradient on streamed text (newest line full-bright, older lines progressively dimmer).
@@ -301,7 +302,7 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | **Alt + ↑ / ↓** | Scroll active agent content (5 lines) |
 | **PageUp / PageDown** | Fast scroll active agent content (15 lines) |
 | **↑ / ↓** | Cycle through command history |
-| **Tab** | Trigger command palette or autocomplete |
+| **Tab** | Trigger command palette or autocomplete `/`, `@`, and `$` suggestions |
 | **Ctrl + C** | Abort current action or exit |
 | **Ctrl + Y** | Copy all visible logs and agent output to clipboard |
 
@@ -312,6 +313,8 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 /start marketing "launch campaign for SaaS productivity app"
 /start prospecting "find Python freelancers in Paris"
 /start code-review ./my-project
+explain @src/repl.rs with $rust
+/start dev "improve @src/tui/ using $ratatui"
 ```
 
 The workflow name can be omitted (defaults to `dev`):
@@ -388,6 +391,8 @@ The command scans the current directory, detects stack, manifests, commands, and
 
 Future workflow agents and the assistant automatically receive the current directory's `AGENTS.md` as durable project context before planning or editing. `init` skips dependency folders, generated artifacts, VCS metadata, agent caches, binary files, and likely secret files. If the LLM returns empty output or provider generation fails, Cortex writes a deterministic fallback section instead of leaving `AGENTS.md` empty.
 
+Inside the TUI input bar, type `@` to autocomplete project files and folders. Mentioned files are injected into the prompt; mentioned folders inject a compact tree and bounded text snippets. Suggestions skip generated, dependency, cache, VCS, and secret-like paths such as `node_modules`, `target`, `.git`, `.env`, and `.venv`.
+
 ---
 
 ## 7. Skills
@@ -404,6 +409,8 @@ cortex skill create <name> --description "When to use this skill" --project
 ```
 
 Inside the TUI, `/skill` opens the skill browser/manager and `/skill <subcommand>` runs the same management commands from the REPL. Project-scoped skills are preferred over global skills with the same name. Skill injection is controlled by `tools.skills_enabled` and bounded by `tools.max_skill_context_chars`.
+
+In free-form prompts and workflow prompts, type `$` to autocomplete installed skills. A mention like `$rust` forces that skill into the model context for the request, even if the automatic relevance scoring would not have selected it.
 
 ---
 
