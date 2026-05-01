@@ -486,10 +486,16 @@ pub async fn complete(
     options: &crate::workflows::RunOptions,
     agent_name: &str,
 ) -> Result<String> {
+    let mention_context = crate::mentions::resolve_prompt_mentions(prompt);
+    let prompt_with_mentions = if mention_context.is_empty() {
+        prompt.to_string()
+    } else {
+        format!("{prompt}{mention_context}")
+    };
     let skill_context = if options.config.tools.skills_enabled {
         crate::skills::context_for_prompt(
             agent_name,
-            prompt,
+            &prompt_with_mentions,
             options.config.tools.max_skill_context_chars,
         )
         .unwrap_or_default()
@@ -513,12 +519,12 @@ pub async fn complete(
     };
 
     // Extract a concise search query from the first 200 chars of the prompt.
-    let search_query: String = prompt.chars().take(200).collect();
+    let search_query: String = prompt_with_mentions.chars().take(200).collect();
     let web_context = crate::tools::web_search::fetch_context(&search_query, &options.config).await;
     let enriched_prompt = if web_context.is_empty() {
-        prompt.to_string()
+        prompt_with_mentions
     } else {
-        format!("{}{}", prompt, web_context)
+        format!("{}{}", prompt_with_mentions, web_context)
     };
 
     let (provider, model) = parse_model(model_str);
@@ -828,6 +834,12 @@ pub async fn complete_chat_stream(
     tx: &crate::tui::events::TuiSender,
     agent_name: &str,
 ) -> Result<String> {
+    let mention_context = crate::mentions::resolve_prompt_mentions(prompt);
+    let prompt_with_mentions = if mention_context.is_empty() {
+        prompt.to_string()
+    } else {
+        format!("{prompt}{mention_context}")
+    };
     let (provider, model) = parse_model(model_str);
     let provider = if provider.is_empty() {
         registry::normalize_provider(&config.provider.default)
@@ -842,7 +854,7 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("OpenAI client init failed: {e}"))?
                 .completions_api();
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("OpenAI chat stream error: {e}"))
@@ -852,7 +864,7 @@ pub async fn complete_chat_stream(
             let client = rig::providers::anthropic::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Anthropic client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Anthropic chat stream error: {e}"))
@@ -863,10 +875,10 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("Gemini client init failed: {e}"))?;
             let stream = if gemini_supports_system_instruction(model) {
                 let agent = client.agent(model).preamble(preamble).build();
-                agent.stream_chat(prompt, history).await
+                agent.stream_chat(&prompt_with_mentions, history).await
             } else {
                 let agent = client.agent(model).build();
-                let prompt = inline_preamble_prompt(preamble, prompt);
+                let prompt = inline_preamble_prompt(preamble, &prompt_with_mentions);
                 agent.stream_chat(&prompt, history).await
             };
             consume_chat_stream(stream, tx, agent_name)
@@ -878,7 +890,7 @@ pub async fn complete_chat_stream(
             let client = rig::providers::mistral::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Mistral client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Mistral chat stream error: {e}"))
@@ -888,7 +900,7 @@ pub async fn complete_chat_stream(
             let client = rig::providers::deepseek::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("DeepSeek client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("DeepSeek chat stream error: {e}"))
@@ -898,7 +910,7 @@ pub async fn complete_chat_stream(
             let client = rig::providers::xai::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("xAI client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("xAI chat stream error: {e}"))
@@ -908,7 +920,7 @@ pub async fn complete_chat_stream(
             let client = rig::providers::cohere::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Cohere client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Cohere chat stream error: {e}"))
@@ -918,7 +930,7 @@ pub async fn complete_chat_stream(
             let client = rig::providers::perplexity::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Perplexity client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Perplexity chat stream error: {e}"))
@@ -928,7 +940,7 @@ pub async fn complete_chat_stream(
             let client = rig::providers::huggingface::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Hugging Face client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Hugging Face chat stream error: {e}"))
@@ -948,7 +960,7 @@ pub async fn complete_chat_stream(
                 .build()
                 .map_err(|e| anyhow::anyhow!("Azure OpenAI client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Azure OpenAI chat stream error: {e}"))
@@ -956,7 +968,7 @@ pub async fn complete_chat_stream(
         "openrouter" => {
             let client = openrouter::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("OpenRouter chat stream error: {e}"))
@@ -964,7 +976,7 @@ pub async fn complete_chat_stream(
         "groq" => {
             let client = groq::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Groq chat stream error: {e}"))
@@ -972,7 +984,7 @@ pub async fn complete_chat_stream(
         "together" => {
             let client = together::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Together chat stream error: {e}"))
@@ -987,31 +999,31 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("LM Studio client init failed: {e}"))?
                 .completions_api();
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(lmstudio_connection_hint)
         }
         "google_vertex" => {
-            let turns = custom_http::message_turns_from_history(&history, prompt);
+            let turns = custom_http::message_turns_from_history(&history, &prompt_with_mentions);
             let response = custom_http::vertex_complete(model, preamble, &turns).await?;
             emit_text(tx, agent_name, &response);
             Ok(response)
         }
         "amazon_bedrock" => {
-            let turns = custom_http::message_turns_from_history(&history, prompt);
+            let turns = custom_http::message_turns_from_history(&history, &prompt_with_mentions);
             let response = bedrock::complete(model, preamble, &turns).await?;
             emit_text(tx, agent_name, &response);
             Ok(response)
         }
         "github_copilot" => {
-            let turns = custom_http::message_turns_from_history(&history, prompt);
+            let turns = custom_http::message_turns_from_history(&history, &prompt_with_mentions);
             let response = custom_http::github_copilot_complete(model, preamble, &turns).await?;
             emit_text(tx, agent_name, &response);
             Ok(response)
         }
         "openai_chatgpt" => {
-            let turns = custom_http::message_turns_from_history(&history, prompt);
+            let turns = custom_http::message_turns_from_history(&history, &prompt_with_mentions);
             consume_chatgpt_codex_chat_stream(model, preamble, &turns, tx, agent_name).await
         }
         openai_compatible if openai_compatible_base_url(openai_compatible).is_some() => {
@@ -1025,7 +1037,7 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("{name} client init failed: {e}"))?
                 .completions_api();
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("{name} chat stream error: {e}"))
@@ -1048,7 +1060,7 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("Custom provider '{custom}' init failed: {e}"))?
                 .completions_api();
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Custom provider '{custom}' chat stream error: {e}"))
@@ -1056,7 +1068,7 @@ pub async fn complete_chat_stream(
         _ => {
             let client = ollama::client()?;
             let agent = client.agent(model).preamble(preamble).build();
-            let stream = agent.stream_chat(prompt, history).await;
+            let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
                 .await
                 .map_err(|e| anyhow::anyhow!("Ollama chat stream error: {e}"))

@@ -3,6 +3,7 @@ mod assistant;
 mod auth;
 mod config;
 mod context;
+mod mentions;
 mod orchestrator;
 mod project_context;
 mod providers;

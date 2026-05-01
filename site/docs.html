@@ -314,11 +314,12 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td><strong>Alt + ↑ / ↓</strong></td><td>Scroll active agent content (5 lines)</td></tr>
             <tr><td><strong>PageUp / PageDown</strong></td><td>Fast scroll active agent content (15 lines)</td></tr>
             <tr><td><strong>↑ / ↓</strong></td><td>Cycle through command history</td></tr>
-            <tr><td><strong>Tab</strong></td><td>Trigger command palette or autocomplete</td></tr>
+            <tr><td><strong>Tab</strong></td><td>Trigger command palette or autocomplete <code>/</code>, <code>@</code>, and <code>$</code> suggestions</td></tr>
             <tr><td><strong>Ctrl + C</strong></td><td>Abort current action or exit</td></tr>
             <tr><td><strong>Ctrl + Y</strong></td><td>Copy all visible output to clipboard</td></tr>
           </tbody>
         </table>
+        <p>In free-form prompts and workflow prompts, type <code>@</code> to mention project files or folders and <code>$</code> to force an installed skill into context. For example: <code>explain @src/repl.rs with $rust</code>.</p>
       </section>
 
       <section id="cli" className="docs-section">
@@ -366,7 +367,7 @@ cortex skill enable <name> --project
 cortex skill disable <name> --project
 cortex skill remove <name> --project
 cortex skill create <name> --description "When to use this skill" --project`}</code></pre>
-        <p>Inside the TUI, <code>/skill</code> opens the skill browser/manager. <code>/skill &lt;subcommand&gt;</code> runs the same commands from the REPL. Project-scoped skills override global skills with the same name.</p>
+        <p>Inside the TUI, <code>/skill</code> opens the skill browser/manager. <code>/skill &lt;subcommand&gt;</code> runs the same commands from the REPL. Project-scoped skills override global skills with the same name. Type <code>$</code> in prompts to autocomplete installed skills and force one into the model context.</p>
       </section>
 
       <section id="resume" className="docs-section">
