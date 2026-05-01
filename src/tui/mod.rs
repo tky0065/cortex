@@ -2199,17 +2199,15 @@ impl Tui {
                     app.popup = PopupState::None;
                 }
             }
-            KeyCode::Char('p') => {
-                if cur > 0 {
-                    app.popup = PopupState::DiffViewer {
-                        diffs: std::mem::take(match &mut app.popup {
-                            PopupState::DiffViewer { diffs, .. } => diffs,
-                            _ => unreachable!(),
-                        }),
-                        cursor: cur - 1,
-                        scroll_offset: 0,
-                    };
-                }
+            KeyCode::Char('p') if cur > 0 => {
+                app.popup = PopupState::DiffViewer {
+                    diffs: std::mem::take(match &mut app.popup {
+                        PopupState::DiffViewer { diffs, .. } => diffs,
+                        _ => unreachable!(),
+                    }),
+                    cursor: cur - 1,
+                    scroll_offset: 0,
+                };
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if let PopupState::DiffViewer { scroll_offset, .. } = &mut app.popup {
