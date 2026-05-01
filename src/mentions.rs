@@ -301,12 +301,8 @@ fn rel_path(root: &Path, path: &Path) -> Option<String> {
 }
 
 fn should_skip_path(path: &Path) -> bool {
-    path.components().any(|component| {
-        component
-            .as_os_str()
-            .to_str()
-            .is_some_and(|name| should_skip_name(name))
-    })
+    path.components()
+        .any(|component| component.as_os_str().to_str().is_some_and(should_skip_name))
 }
 
 fn should_skip(name: &str, path: &Path) -> bool {

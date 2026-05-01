@@ -179,10 +179,7 @@ impl App {
         }
         .render(frame, layout.agents);
 
-        TasksWidget {
-            tasks: &self.tasks,
-        }
-        .render(frame, layout.tasks);
+        TasksWidget { tasks: &self.tasks }.render(frame, layout.tasks);
 
         LogsWidget {
             entries: &self.logs,

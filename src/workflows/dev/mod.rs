@@ -69,10 +69,10 @@ impl Workflow for DevWorkflow {
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
         drain_and_log_directives(&opts, "before-pm").await;
         let pm_output = agents::pm::run(&brief, &opts).await?;
-        
+
         // Extract specs and tasks from PM output
         let (specs, tasks_content) = parse_pm_output(&pm_output);
-        
+
         // Save specs.md
         let old_specs = fs.read("specs.md").ok();
         fs.write("specs.md", &specs)?;
@@ -367,20 +367,23 @@ fn parse_pm_output(output: &str) -> (String, Option<String>) {
         if parts.len() >= 3 {
             let mut specs = String::new();
             let mut tasks = None;
-            
-            for i in 0..parts.len() {
+
+            for (i, part) in parts.iter().enumerate() {
                 if i % 2 == 1 {
                     // Inside code block
-                    let block = parts[i].trim();
-                    if block.starts_with("markdown") || block.starts_with("- [ ]") || block.contains("TASKS.md") {
+                    let block = part.trim();
+                    if block.starts_with("markdown")
+                        || block.starts_with("- [ ]")
+                        || block.contains("TASKS.md")
+                    {
                         tasks = Some(block.trim_start_matches("markdown").trim().to_string());
                     } else {
                         specs.push_str("```");
-                        specs.push_str(parts[i]);
+                        specs.push_str(part);
                         specs.push_str("```");
                     }
                 } else {
-                    specs.push_str(parts[i]);
+                    specs.push_str(part);
                 }
             }
             return (specs.trim().to_string(), tasks);

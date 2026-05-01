@@ -258,23 +258,18 @@ fn parse_tasks(content: &str) -> Vec<Task> {
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            if line.starts_with("- [ ] ") {
+            if let Some(desc) = line.strip_prefix("- [ ] ") {
                 Some(Task {
-                    description: line[6..].to_string(),
+                    description: desc.to_string(),
                     is_done: false,
                 })
-            } else if line.starts_with("- [x] ") {
-                Some(Task {
-                    description: line[6..].to_string(),
-                    is_done: true,
-                })
-            } else if line.starts_with("- [X] ") {
-                Some(Task {
-                    description: line[6..].to_string(),
-                    is_done: true,
-                })
             } else {
-                None
+                line.strip_prefix("- [x] ")
+                    .or_else(|| line.strip_prefix("- [X] "))
+                    .map(|desc| Task {
+                        description: desc.to_string(),
+                        is_done: true,
+                    })
             }
         })
         .collect()
