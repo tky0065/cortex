@@ -449,16 +449,61 @@ impl InputBar {
         self.palette_idx = 0;
     }
 
+    fn get_wrapped_lines(&self, width: usize) -> (Vec<Line<'_>>, (u16, u16)) {
+        let value = self.input.value();
+        let mut lines = Vec::new();
+        let mut cursor_coords = (0, 0);
+        
+        let mut current_line = String::new();
+        let mut x = 2; // initial "> " prefix
+        let mut y = 0;
+        
+        current_line.push_str("> ");
+        
+        for (i, c) in value.chars().enumerate() {
+            if i == self.input.cursor() {
+                cursor_coords = (x as u16, y as u16);
+            }
+            
+            if c == '\n' {
+                lines.push(Line::from(current_line));
+                current_line = String::from("  ");
+                y += 1;
+                x = 2;
+            } else {
+                current_line.push(c);
+                x += 1;
+                if x >= width.saturating_sub(2) {
+                    lines.push(Line::from(current_line));
+                    current_line = String::from("  ");
+                    y += 1;
+                    x = 2;
+                }
+            }
+        }
+        
+        if value.chars().count() == self.input.cursor() {
+            cursor_coords = (x as u16, y as u16);
+        }
+        
+        lines.push(Line::from(current_line));
+        (lines, cursor_coords)
+    }
+
+    pub fn line_count(&self, width: usize) -> usize {
+        let (lines, _) = self.get_wrapped_lines(width);
+        lines.len()
+    }
+
     // -----------------------------------------------------------------------
     // Render
     // -----------------------------------------------------------------------
 
-    /// Render just the input bar into `area` (3 rows).
+    /// Render just the input bar into `area`.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        let inner_width = area.width.saturating_sub(4) as usize;
-        let scroll = self.input.visual_scroll(inner_width);
-        let widget = Paragraph::new(format!("> {}", self.input.value()))
-            .scroll((0, scroll as u16))
+        let (lines, (cursor_x, cursor_y)) = self.get_wrapped_lines(area.width as usize);
+
+        let widget = Paragraph::new(lines)
             .style(Style::default().fg(THEME.text))
             .block(
                 Block::default()
@@ -468,9 +513,10 @@ impl InputBar {
             );
         frame.render_widget(widget, area);
 
-        let cursor_x = area.x + 1 + 2 + (self.input.cursor() - scroll) as u16;
-        let cursor_y = area.y + 1;
-        frame.set_cursor_position((cursor_x, cursor_y));
+        frame.set_cursor_position((
+            area.x + 1 + cursor_x,
+            area.y + 1 + cursor_y,
+        ));
     }
 
     /// Render the command palette as a floating overlay anchored above `input_area`.

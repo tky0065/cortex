@@ -3,13 +3,21 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use super::{RunOptions, Workflow};
+use super::{RunOptions, Workflow, send_phase_tasks};
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 
 pub mod agents;
 
 pub struct ProspectingWorkflow;
+
+const PROSPECTING_TASKS: &[&str] = &[
+    "Identifier les prospects",
+    "Generer les profils prospects",
+    "Rediger les emails personnalises",
+    "Produire le rapport d'outreach",
+    "Finaliser la campagne dry-run",
+];
 
 #[async_trait]
 impl Workflow for ProspectingWorkflow {
@@ -46,6 +54,7 @@ impl Workflow for ProspectingWorkflow {
             project_dir: output_dir.clone(),
             ..options.clone()
         };
+        send_phase_tasks(&opts, PROSPECTING_TASKS, 0);
 
         // ── Phase 1: Researcher → prospects.md ───────────────────────────
         let enriched_prompt = {
@@ -54,6 +63,7 @@ impl Workflow for ProspectingWorkflow {
         };
         let prospects_raw = agents::researcher::run(&enriched_prompt, &opts).await?;
         fs.write("prospects.md", &prospects_raw)?;
+        send_phase_tasks(&opts, PROSPECTING_TASKS, 1);
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "prospects-identified".into(),
         });
@@ -105,10 +115,12 @@ impl Workflow for ProspectingWorkflow {
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "profiles-emails-ready".into(),
         });
+        send_phase_tasks(&opts, PROSPECTING_TASKS, 3);
 
         // ── Phase 3: Outreach Manager → outreach_report.md ───────────────
         let report = agents::outreach_manager::run(&all_profiles_emails, &opts).await?;
         fs.write("outreach_report.md", &report)?;
+        send_phase_tasks(&opts, PROSPECTING_TASKS, PROSPECTING_TASKS.len());
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "done".into(),
         });

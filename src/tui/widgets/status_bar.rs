@@ -15,6 +15,8 @@ pub struct StatusBarState<'a> {
     pub model: &'a str,
     pub elapsed_secs: u64,
     pub tokens_total: usize,
+    pub cwd: &'a str,
+    pub git_info: Option<&'a str>,
 }
 
 /// A single-line status bar showing provider, model, token count and elapsed time.
@@ -31,29 +33,42 @@ impl<'a> StatusBarWidget<'a> {
         let separator = Span::styled(" │ ", Style::default().fg(THEME.muted));
 
         let mut spans = vec![
+            Span::styled("DIR: ", Style::default().fg(THEME.muted)),
             Span::styled(
-                format!(" CORTEX v{} ", env!("CARGO_PKG_VERSION")),
-                Style::default()
-                    .fg(THEME.secondary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            separator.clone(),
-            Span::styled("PROVIDER: ", Style::default().fg(THEME.muted)),
-            Span::styled(
-                self.state.provider.to_uppercase(),
+                self.state.cwd,
                 Style::default()
                     .fg(THEME.primary)
                     .add_modifier(Modifier::BOLD),
             ),
-            separator.clone(),
-            Span::styled("MODEL: ", Style::default().fg(THEME.muted)),
-            Span::styled(
-                self.state.model.to_uppercase(),
+        ];
+
+        if let Some(git) = self.state.git_info {
+            spans.push(separator.clone());
+            spans.push(Span::styled("GIT: ", Style::default().fg(THEME.muted)));
+            spans.push(Span::styled(
+                git,
                 Style::default()
                     .fg(THEME.accent)
                     .add_modifier(Modifier::BOLD),
-            ),
-        ];
+            ));
+        }
+
+        spans.push(separator.clone());
+        spans.push(Span::styled("PROVIDER: ", Style::default().fg(THEME.muted)));
+        spans.push(Span::styled(
+            self.state.provider.to_uppercase(),
+            Style::default()
+                .fg(THEME.primary)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(separator.clone());
+        spans.push(Span::styled("MODEL: ", Style::default().fg(THEME.muted)));
+        spans.push(Span::styled(
+            self.state.model.to_uppercase(),
+            Style::default()
+                .fg(THEME.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
 
         if tokens > 0 {
             spans.push(separator.clone());
@@ -71,14 +86,6 @@ impl<'a> StatusBarWidget<'a> {
         spans.push(Span::styled(
             format!("{:02}:{:02}", elapsed_mins, elapsed_s),
             Style::default().fg(THEME.text),
-        ));
-
-        spans.push(Span::styled("  ┃  ", Style::default().fg(THEME.muted)));
-        spans.push(Span::styled(
-            "Ctrl+C or /quit to exit",
-            Style::default()
-                .fg(THEME.muted)
-                .add_modifier(Modifier::ITALIC),
         ));
 
         frame.render_widget(

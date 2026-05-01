@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_bus::{AgentBus, AgentStatus};
 use crate::config::Config;
-use crate::tui::events::{TuiEvent, TuiSender};
+use crate::tui::events::{Task, TuiEvent, TuiSender};
 
 pub mod code_review;
 pub mod dev;
@@ -117,6 +117,22 @@ pub fn send_agent_summary(options: &RunOptions, agent: impl Into<String>, output
     });
 }
 
+pub fn build_phase_tasks(descriptions: &[&str], completed_count: usize) -> Vec<Task> {
+    descriptions
+        .iter()
+        .enumerate()
+        .map(|(index, description)| Task {
+            description: (*description).to_string(),
+            is_done: index < completed_count,
+        })
+        .collect()
+}
+
+pub fn send_phase_tasks(options: &RunOptions, descriptions: &[&str], completed_count: usize) {
+    let tasks = build_phase_tasks(descriptions, completed_count);
+    let _ = options.tx.send(TuiEvent::TasksUpdated { tasks });
+}
+
 pub fn summarize_output(output: &str) -> String {
     let mut lines = Vec::new();
 
@@ -174,6 +190,25 @@ mod tests {
         };
         assert!(err.contains("Unknown workflow 'unknown'"));
         assert!(err.contains("Available: dev, marketing, prospecting, code-review"));
+    }
+
+    #[test]
+    fn build_phase_tasks_marks_only_completed_prefix() {
+        let tasks = build_phase_tasks(&["Plan", "Write", "Review"], 2);
+
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].description, "Plan");
+        assert!(tasks[0].is_done);
+        assert!(tasks[1].is_done);
+        assert!(!tasks[2].is_done);
+    }
+
+    #[test]
+    fn build_phase_tasks_caps_completion_at_task_count() {
+        let tasks = build_phase_tasks(&["Plan", "Write"], 10);
+
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().all(|task| task.is_done));
     }
 }
 

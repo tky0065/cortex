@@ -1,13 +1,21 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-use super::{RunOptions, Workflow};
+use super::{RunOptions, Workflow, send_phase_tasks};
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 
 pub mod agents;
 
 pub struct MarketingWorkflow;
+
+const MARKETING_TASKS: &[&str] = &[
+    "Creer la strategie marketing",
+    "Generer les textes marketing",
+    "Definir les metriques de campagne",
+    "Construire le calendrier de publication",
+    "Finaliser la campagne marketing",
+];
 
 #[async_trait]
 impl Workflow for MarketingWorkflow {
@@ -43,10 +51,12 @@ impl Workflow for MarketingWorkflow {
             project_dir: output_dir.clone(),
             ..options.clone()
         };
+        send_phase_tasks(&opts, MARKETING_TASKS, 0);
 
         // ── Phase 1: Strategist → strategy.md ────────────────────────────
         let strategy = agents::strategist::run(&prompt, &opts).await?;
         fs.write("strategy.md", &strategy)?;
+        send_phase_tasks(&opts, MARKETING_TASKS, 1);
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "strategy-ready".into(),
         });
@@ -66,6 +76,7 @@ impl Workflow for MarketingWorkflow {
 
         fs.write("posts.md", &copy)?;
         fs.write("metrics.md", &metrics)?;
+        send_phase_tasks(&opts, MARKETING_TASKS, 3);
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "copy-and-metrics-ready".into(),
         });
@@ -73,6 +84,7 @@ impl Workflow for MarketingWorkflow {
         // ── Phase 3: Social Media Manager → calendar.md ──────────────────
         let calendar = agents::social_media_manager::run(&strategy, &copy, &opts).await?;
         fs.write("calendar.md", &calendar)?;
+        send_phase_tasks(&opts, MARKETING_TASKS, MARKETING_TASKS.len());
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "done".into(),
         });

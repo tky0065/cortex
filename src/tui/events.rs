@@ -107,6 +107,11 @@ pub enum TuiEvent {
     SkillPickerError {
         message: String,
     },
+    /// Emitted periodically to update status bar info (CWD, Git branch).
+    SystemInfoUpdate {
+        cwd: String,
+        git_info: Option<String>,
+    },
     /// Emitted after a file is written by an agent; old_content is None for new files.
     FileWritten {
         agent: String,

@@ -1,13 +1,21 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-use super::{RunOptions, Workflow};
+use super::{RunOptions, Workflow, send_phase_tasks};
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 
 pub mod agents;
 
 pub struct CodeReviewWorkflow;
+
+const CODE_REVIEW_TASKS: &[&str] = &[
+    "Scanner les fichiers source",
+    "Produire les notes de revue generale",
+    "Auditer la securite",
+    "Analyser les performances",
+    "Rediger le rapport final",
+];
 
 #[async_trait]
 impl Workflow for CodeReviewWorkflow {
@@ -40,6 +48,7 @@ impl Workflow for CodeReviewWorkflow {
         std::fs::create_dir_all(&output_dir)
             .with_context(|| format!("Cannot create output dir: {}", output_dir.display()))?;
         let fs = FileSystem::new(&output_dir);
+        send_phase_tasks(&options, CODE_REVIEW_TASKS, 0);
 
         // Collect source files
         let _ = options.tx.send(TuiEvent::TokenChunk {
@@ -47,6 +56,7 @@ impl Workflow for CodeReviewWorkflow {
             chunk: format!("Scanning source files in: {}", target_dir.display()),
         });
         let source_content = collect_source_files(&target_dir);
+        send_phase_tasks(&options, CODE_REVIEW_TASKS, 1);
 
         if source_content.trim().is_empty() {
             let _ = options.tx.send(TuiEvent::TokenChunk {
@@ -59,6 +69,7 @@ impl Workflow for CodeReviewWorkflow {
         // ── Phase 1: Reviewer → review_notes.md ──────────────────────────
         let review_notes = agents::reviewer::run(&source_content, &options).await?;
         fs.write("review_notes.md", &review_notes)?;
+        send_phase_tasks(&options, CODE_REVIEW_TASKS, 2);
         let _ = options.tx.send(TuiEvent::PhaseComplete {
             phase: "review-done".into(),
         });
@@ -76,6 +87,7 @@ impl Workflow for CodeReviewWorkflow {
         );
         let security_report = security_result?;
         let performance_report = performance_result?;
+        send_phase_tasks(&options, CODE_REVIEW_TASKS, 4);
 
         let _ = options.tx.send(TuiEvent::PhaseComplete {
             phase: "audit-done".into(),
@@ -92,6 +104,7 @@ impl Workflow for CodeReviewWorkflow {
         );
         let report = agents::reporter::run(&combined, &options).await?;
         fs.write("code_review_report.md", &report)?;
+        send_phase_tasks(&options, CODE_REVIEW_TASKS, CODE_REVIEW_TASKS.len());
         let _ = options.tx.send(TuiEvent::PhaseComplete {
             phase: "done".into(),
         });

@@ -306,6 +306,15 @@ pub const BUILTIN_PROVIDERS: &[ProviderInfo] = &[
         direct_auth: false,
         description: "local OpenAI-compatible server at 127.0.0.1:1234",
     },
+    ProviderInfo {
+        id: "web_search",
+        name: "Web Search (Brave)",
+        env_var: Some("BRAVE_SEARCH_API_KEY"),
+        kind: ProviderKind::Local,
+        needs_key: true,
+        direct_auth: false,
+        description: "Brave Search API key for web search tool",
+    },
 ];
 
 pub fn builtin(provider: &str) -> Option<&'static ProviderInfo> {

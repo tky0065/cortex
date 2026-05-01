@@ -12,7 +12,7 @@ use crate::agent_bus::{AgentBus, AgentDirective, AgentStatus};
 use crate::config::Config;
 use crate::tools::filesystem::FileSystem;
 use crate::tools::terminal;
-use crate::tui::events::{TuiEvent, TuiSender};
+use crate::tui::events::{Task, TuiEvent, TuiSender};
 
 const MAX_ITERATIONS: usize = 15;
 const EMPTY_FINAL_REPLY: &str = "Je n'ai pas recu de reponse texte du modele. Reessaie avec un autre modele ou reformule la demande.";
@@ -149,6 +149,258 @@ struct ToolResult {
     call: String,
     output: String,
     success: bool,
+}
+
+struct AssistantTaskTracker {
+    enabled: bool,
+    using_file_tasks: bool,
+    completed_default_tasks: usize,
+    custom_tasks: Option<Vec<String>>,
+    completed_custom_tasks: usize,
+}
+
+const ASSISTANT_DEFAULT_TASKS: &[&str] = &[
+    "Comprendre la demande",
+    "Executer les actions necessaires",
+    "Verifier le resultat",
+    "Resumer le resultat",
+];
+
+impl AssistantTaskTracker {
+    fn new(message: &str) -> Self {
+        Self {
+            enabled: should_track_assistant_task(message),
+            using_file_tasks: false,
+            completed_default_tasks: 0,
+            custom_tasks: None,
+            completed_custom_tasks: 0,
+        }
+    }
+
+    fn maybe_publish_initial(&self, tx: &TuiSender) {
+        if self.enabled {
+            publish_default_assistant_tasks(tx, self.completed_default_tasks);
+        }
+    }
+
+    fn ensure_started_for_tools(&mut self, calls: &[ToolCall], tx: &TuiSender) {
+        if self.enabled || !calls_indicate_tracked_work(calls) {
+            return;
+        }
+
+        self.enabled = true;
+        self.completed_default_tasks = 0;
+        publish_default_assistant_tasks(tx, self.completed_default_tasks);
+    }
+
+    fn mark_understood(&mut self, tx: &TuiSender) {
+        self.mark_default_progress(1, tx);
+    }
+
+    fn begin_delegate_task(&mut self, agent: &str, tx: &TuiSender) {
+        if !self.enabled || self.using_file_tasks || self.custom_tasks.is_some() {
+            return;
+        }
+
+        self.custom_tasks = Some(vec![
+            "Comprendre la demande".to_string(),
+            format!("Deleguer la tache a {agent}"),
+            "Integrer le resultat de l'agent".to_string(),
+            "Resumer le resultat".to_string(),
+        ]);
+        self.completed_custom_tasks = 1;
+        self.publish_custom_tasks(tx);
+    }
+
+    fn observe_tool_result(&mut self, call: &ToolCall, result: &ToolResult, tx: &TuiSender) {
+        if !self.enabled || !result.success {
+            return;
+        }
+
+        if let ToolCall::WriteFile { path, content } = call
+            && is_tasks_file(path)
+        {
+            let tasks = parse_checklist_tasks(content);
+            if !tasks.is_empty() {
+                self.using_file_tasks = true;
+                let _ = tx.send(TuiEvent::TasksUpdated { tasks });
+                return;
+            }
+        }
+
+        if self.using_file_tasks {
+            return;
+        }
+
+        if matches!(call, ToolCall::DelegateToAgent { .. }) {
+            self.mark_custom_progress(2, tx);
+            return;
+        }
+
+        if tool_call_is_verification(call) {
+            self.mark_default_progress(3, tx);
+        } else if tool_call_is_action(call) {
+            self.mark_default_progress(2, tx);
+        }
+    }
+
+    fn finish(&mut self, tx: &TuiSender) {
+        if !self.enabled || self.using_file_tasks {
+            return;
+        }
+
+        if self.custom_tasks.is_some() {
+            self.mark_custom_progress(usize::MAX, tx);
+        } else {
+            self.mark_default_progress(ASSISTANT_DEFAULT_TASKS.len(), tx);
+        }
+    }
+
+    fn mark_default_progress(&mut self, completed_count: usize, tx: &TuiSender) {
+        if !self.enabled || self.using_file_tasks || self.custom_tasks.is_some() {
+            return;
+        }
+
+        let capped = completed_count.min(ASSISTANT_DEFAULT_TASKS.len());
+        if capped <= self.completed_default_tasks {
+            return;
+        }
+
+        self.completed_default_tasks = capped;
+        publish_default_assistant_tasks(tx, self.completed_default_tasks);
+    }
+
+    fn mark_custom_progress(&mut self, completed_count: usize, tx: &TuiSender) {
+        if !self.enabled || self.using_file_tasks {
+            return;
+        }
+
+        let Some(tasks) = &self.custom_tasks else {
+            return;
+        };
+        let capped = completed_count.min(tasks.len());
+        if capped <= self.completed_custom_tasks {
+            return;
+        }
+
+        self.completed_custom_tasks = capped;
+        self.publish_custom_tasks(tx);
+    }
+
+    fn publish_custom_tasks(&self, tx: &TuiSender) {
+        let Some(descriptions) = &self.custom_tasks else {
+            return;
+        };
+        let tasks = descriptions
+            .iter()
+            .enumerate()
+            .map(|(index, description)| Task {
+                description: description.clone(),
+                is_done: index < self.completed_custom_tasks,
+            })
+            .collect();
+        let _ = tx.send(TuiEvent::TasksUpdated { tasks });
+    }
+}
+
+fn publish_default_assistant_tasks(tx: &TuiSender, completed_count: usize) {
+    let tasks = crate::workflows::build_phase_tasks(ASSISTANT_DEFAULT_TASKS, completed_count);
+    let _ = tx.send(TuiEvent::TasksUpdated { tasks });
+}
+
+fn should_track_assistant_task(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let action_words = [
+        "implement",
+        "build",
+        "create",
+        "fix",
+        "debug",
+        "refactor",
+        "test",
+        "add",
+        "write",
+        "update",
+        "run",
+        "code",
+        "implemente",
+        "cree",
+        "corrige",
+        "ajoute",
+        "modifie",
+        "ecris",
+        "execute",
+        "teste",
+        "continue",
+    ];
+    let has_action = action_words.iter().any(|word| lower.contains(word));
+    let looks_multi_step = lower.contains(" et ")
+        || lower.contains(" puis ")
+        || lower.contains(" ensuite ")
+        || lower.contains("&&")
+        || lower.lines().count() > 1
+        || lower.len() > 120;
+
+    has_action && looks_multi_step
+}
+
+fn calls_indicate_tracked_work(calls: &[ToolCall]) -> bool {
+    calls.iter().any(tool_call_is_action)
+}
+
+fn tool_call_is_action(call: &ToolCall) -> bool {
+    matches!(
+        call,
+        ToolCall::WriteFile { .. }
+            | ToolCall::RunCommand { .. }
+            | ToolCall::DelegateToAgent { .. }
+            | ToolCall::InjectDirective { .. }
+    )
+}
+
+fn tool_call_is_verification(call: &ToolCall) -> bool {
+    match call {
+        ToolCall::RunCommand { command, args } => {
+            let command = command.as_str();
+            let args = args.to_ascii_lowercase();
+            matches!(command, "cargo" | "go" | "npm" | "pip" | "docker")
+                && (args.contains("test")
+                    || args.contains("check")
+                    || args.contains("clippy")
+                    || args.contains("fmt")
+                    || args.contains("build")
+                    || args.contains("lint"))
+        }
+        _ => false,
+    }
+}
+
+fn is_tasks_file(path: &str) -> bool {
+    path.rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("TASKS.md"))
+}
+
+fn parse_checklist_tasks(content: &str) -> Vec<Task> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if let Some(desc) = line.strip_prefix("- [ ] ") {
+                Some(Task {
+                    description: desc.to_string(),
+                    is_done: false,
+                })
+            } else {
+                line.strip_prefix("- [x] ")
+                    .or_else(|| line.strip_prefix("- [X] "))
+                    .map(|desc| Task {
+                        description: desc.to_string(),
+                        is_done: true,
+                    })
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +885,8 @@ pub async fn run(
     let mut current_message = message.to_string();
     let mut final_reply = String::new();
     let mut retried_empty_final = false;
+    let mut task_tracker = AssistantTaskTracker::new(message);
+    task_tracker.maybe_publish_initial(tx);
 
     for iteration in 0..MAX_ITERATIONS {
         // ── LLM call ──────────────────────────────────────────────────────────
@@ -684,9 +938,13 @@ pub async fn run(
                 break;
             }
             final_reply = visible;
+            task_tracker.finish(tx);
             // No tool calls → task is done
             break;
         }
+
+        task_tracker.ensure_started_for_tools(&calls, tx);
+        task_tracker.mark_understood(tx);
 
         let visible = strip_tool_calls(&reply);
         final_reply = visible;
@@ -694,6 +952,10 @@ pub async fn run(
         // ── Execute tools ─────────────────────────────────────────────────────
         let mut results_block = String::new();
         for call in &calls {
+            if let ToolCall::DelegateToAgent { agent, .. } = call {
+                task_tracker.begin_delegate_task(agent, tx);
+            }
+
             send(
                 tx,
                 TuiEvent::TokenChunk {
@@ -704,6 +966,7 @@ pub async fn run(
 
             let result =
                 execute_tool(call, &sandbox, Arc::clone(&config), agent_bus.clone(), tx).await;
+            task_tracker.observe_tool_result(call, &result, tx);
 
             let status_icon = if result.success { "✓" } else { "✗" };
             send(
@@ -742,6 +1005,8 @@ pub async fn run(
         );
         final_reply = EMPTY_FINAL_REPLY.to_string();
     }
+
+    task_tracker.finish(tx);
 
     Ok(final_reply)
 }
@@ -887,5 +1152,64 @@ Then I will summarize."#;
     #[test]
     fn empty_text_yields_no_calls() {
         assert!(parse_tool_calls("No tools here, just text.").is_empty());
+    }
+
+    #[test]
+    fn assistant_task_tracking_ignores_simple_chat() {
+        assert!(!should_track_assistant_task("c'est quoi rust ?"));
+    }
+
+    #[test]
+    fn assistant_task_tracking_detects_multistep_work() {
+        assert!(should_track_assistant_task(
+            "implemente la feature et ajoute les tests"
+        ));
+    }
+
+    #[test]
+    fn parses_tasks_md_checklist_for_tui() {
+        let tasks = parse_checklist_tasks(
+            r#"
+# Plan
+- [x] Lire le code
+- [ ] Ajouter la feature
+- [X] Tester
+"#,
+        );
+
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].description, "Lire le code");
+        assert!(tasks[0].is_done);
+        assert!(!tasks[1].is_done);
+        assert!(tasks[2].is_done);
+    }
+
+    #[test]
+    fn assistant_delegate_task_publishes_agent_specific_tasks() {
+        let (tx, mut rx) = crate::tui::events::channel();
+        let mut tracker = AssistantTaskTracker::new("implemente la feature et ajoute les tests");
+
+        tracker.maybe_publish_initial(&tx);
+        tracker.begin_delegate_task("developer", &tx);
+
+        let _ = rx.try_recv().expect("initial tasks event");
+        let event = rx.try_recv().expect("delegate tasks event");
+        match event {
+            TuiEvent::TasksUpdated { tasks } => {
+                assert_eq!(tasks.len(), 4);
+                assert_eq!(tasks[1].description, "Deleguer la tache a developer");
+                assert!(tasks[0].is_done);
+                assert!(!tasks[1].is_done);
+            }
+            other => panic!("expected tasks event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tasks_file_detection_accepts_nested_tasks_md() {
+        assert!(is_tasks_file("TASKS.md"));
+        assert!(is_tasks_file("docs/TASKS.md"));
+        assert!(is_tasks_file("docs/tasks.md"));
+        assert!(!is_tasks_file("docs/tasks.txt"));
     }
 }

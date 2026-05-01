@@ -136,6 +136,10 @@ struct App {
     start_time: Option<std::time::Instant>,
     /// Frame counter for animations (incremented every 100ms tick)
     tick_count: u64,
+    /// Current working directory
+    cwd: String,
+    /// Current git branch info
+    git_info: Option<String>,
 }
 
 impl App {
@@ -156,11 +160,30 @@ impl App {
             tokens_total: 0,
             start_time: None,
             tick_count: 0,
+            cwd: std::env::current_dir()
+                .map(|p| {
+                    let s = p.display().to_string();
+                    if let Some(home) = dirs::home_dir() {
+                        let home_s = home.display().to_string();
+                        if s == home_s {
+                            "~".to_string()
+                        } else if let Some(suffix) = s.strip_prefix(&format!("{}/", home_s)) {
+                            format!("~/{}", suffix)
+                        } else {
+                            s
+                        }
+                    } else {
+                        s
+                    }
+                })
+                .unwrap_or_else(|_| ".".to_string()),
+            git_info: None,
         }
     }
 
     fn draw(&self, frame: &mut Frame) {
-        let layout = compute(frame, self.tasks.len());
+        let inner_width = frame.area().width.saturating_sub(4) as usize;
+        let layout = compute(frame, self.tasks.len(), self.input_bar.line_count(inner_width));
 
         let (provider, model) = self
             .config
@@ -199,6 +222,8 @@ impl App {
                 model: &model,
                 elapsed_secs: elapsed,
                 tokens_total: self.tokens_total,
+                cwd: &self.cwd,
+                git_info: self.git_info.as_deref(),
             },
         }
         .render(frame, layout.status);
@@ -622,6 +647,10 @@ impl App {
                     None => self.logs.push(LogEntry::system("log focus cleared")),
                 }
             }
+            TuiEvent::SystemInfoUpdate { cwd, git_info } => {
+                self.cwd = cwd.clone();
+                self.git_info = git_info.clone();
+            }
             TuiEvent::FileWritten {
                 agent,
                 path,
@@ -905,6 +934,47 @@ impl Tui {
             });
         }
 
+        {
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    let cwd = std::env::current_dir()
+                        .map(|p| {
+                            let s = p.display().to_string();
+                            if let Some(home) = dirs::home_dir() {
+                                let home_s = home.display().to_string();
+                                if s == home_s {
+                                    "~".to_string()
+                                } else if let Some(suffix) = s.strip_prefix(&format!("{}/", home_s)) {
+                                    format!("~/{}", suffix)
+                                } else {
+                                    s
+                                }
+                            } else {
+                                s
+                            }
+                        })
+                        .unwrap_or_else(|_| ".".to_string());
+                    
+                    let git_info = std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .output()
+                        .ok()
+                        .and_then(|output| {
+                            if output.status.success() {
+                                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                if s.is_empty() { None } else { Some(s) }
+                            } else {
+                                None
+                            }
+                        });
+
+                    let _ = tx2.send(TuiEvent::SystemInfoUpdate { cwd, git_info });
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            });
+        }
+
         loop {
             self.terminal.draw(|f| app.draw(f))?;
 
@@ -1166,7 +1236,28 @@ impl Tui {
         }
 
         // --- Normal REPL dispatch (palette is closed at this point) ---
-        if key.code == KeyCode::Enter {
+        let is_enter = matches!(key.code, KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r'));
+        let is_ctrl_j = key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL);
+
+        if is_enter || is_ctrl_j {
+            // If any modifier is pressed (Alt/Option, Shift, Control, or Meta on Mac), 
+            // insert a newline instead of dispatching the command.
+            if is_ctrl_j || key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::META)
+            {
+                let mut val = app.input_bar.input.value().to_string();
+                let cursor = app.input_bar.input.cursor();
+                
+                // Convert character cursor position to byte index safely
+                let byte_idx = val.char_indices()
+                    .nth(cursor)
+                    .map(|(idx, _)| idx)
+                    .unwrap_or(val.len());
+                
+                val.insert(byte_idx, '\n');
+                app.input_bar.input = tui_input::Input::new(val).with_cursor(cursor + 1);
+                return false;
+            }
+
             let cmd = app.input_bar.input.value().to_string();
             if !cmd.is_empty() {
                 app.logs.push(LogEntry::system(format!("> {}", cmd)));
@@ -2272,9 +2363,16 @@ impl Drop for Tui {
 fn is_control_agent(agent: &str) -> bool {
     matches!(
         agent,
-        "apikey"
+        "abort"
+            | "agent"
+            | "agents"
+            | "apikey"
             | "auth"
+            | "config"
             | "connect"
+            | "help"
+            | "init"
+            | "logs"
             | "model"
             | "models"
             | "orchestrator"
@@ -2282,7 +2380,9 @@ fn is_control_agent(agent: &str) -> bool {
             | "repl"
             | "resume"
             | "skill"
+            | "status"
             | "update"
+            | "websearch"
     )
 }
 

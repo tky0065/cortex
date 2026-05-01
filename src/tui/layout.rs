@@ -13,14 +13,15 @@ pub struct AppLayout {
     pub status: Rect,
 }
 
-pub fn compute(frame: &Frame, task_count: usize) -> AppLayout {
-    // Vertical split: pipeline (3) | main (fill) | input (3) | status (1)
+pub fn compute(frame: &Frame, task_count: usize, input_lines: usize) -> AppLayout {
+    // Vertical split: pipeline (3) | main (fill) | input (dynamic) | status (1)
+    let input_height = (input_lines as u16 + 2).max(3);
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .split(frame.area());
