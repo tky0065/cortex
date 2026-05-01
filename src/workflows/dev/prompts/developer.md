@@ -24,6 +24,8 @@ Rules:
 7. Write complete implementations — no TODO stubs or placeholder comments
 8. Make the code compile and run correctly
 
+**TASKS RULE:** If a `TASKS.md` file exists in the project context, you SHOULD include an update to it in your output if you have completed one of the tasks. Mark the completed task with `[x]`.
+
 
 ---
 

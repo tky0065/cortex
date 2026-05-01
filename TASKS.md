@@ -176,6 +176,19 @@ Legend: 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Nice to have
 | 60 | 🟠 | `repl.rs` : ajouter le handler `/resume <project-dir>` manquant dans le dispatcher REPL | ✅ Done |
 | 61 | 🟡 | `providers/mod.rs` : ajouter les rôles marketing/prospecting (`strategist`, `copywriter`, `analyst`, `social_media_manager`, `researcher`, `profiler`, `outreach_manager`) dans `model_for_role()` — corriger les agents qui appelaient `model_for_role("developer", ...)` | ✅ Done |
 
+---
+
+## Phase 14 — Task Management & UI Polish
+
+| # | Priorité | Tâche | Statut |
+|---|----------|-------|--------|
+| 62 | 🟠 | `tui/widgets/tasks.rs` : implémenter le widget de gestion des tâches pour visualiser l'état d'avancement des tâches du workflow | ✅ Done |
+| 63 | 🟠 | `tui/layout.rs` : intégrer le widget `Tasks` dans le layout principal (zone de droite) | ✅ Done |
+| 64 | 🟡 | `tui/widgets/agent_panel.rs` : rendre la grille des agents responsive pour s'adapter aux petits terminaux | ✅ Done |
+| 65 | 🟡 | `workflows/mod.rs` : ajouter une méthode pour lister les workflows disponibles avec leurs descriptions | ✅ Done |
+| 66 | 🟡 | `repl.rs` : ajouter la commande `/workflows` pour afficher la liste des workflows | ✅ Done |
+| 67 | 🟢 | Améliorer l'esthétique générale : icônes, alignements et bordures arrondies sur tous les panels | ✅ Done |
+
 ```
 1→2→4          Cargo.toml + main.rs + config.rs (skeleton qui compile)
     ↓
@@ -226,4 +239,10 @@ Legend: 🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Nice to have
 30→31→32       modes interactif/auto + abort + CancellationToken
     ↓
 45→46→47→48    tests sécurité + concurrence + TUI headless
+    ↓
+62→63→67       Task Management Widget + Intégration Layout + UI Polish
+    ↓
+65→66          Workflow Explorer (/workflows)
+    ↓
+64             Responsive Agent Grid
 ```

@@ -68,7 +68,12 @@ impl Workflow for DevWorkflow {
 
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
         drain_and_log_directives(&opts, "before-pm").await;
-        let specs = agents::pm::run(&brief, &opts).await?;
+        let pm_output = agents::pm::run(&brief, &opts).await?;
+        
+        // Extract specs and tasks from PM output
+        let (specs, tasks_content) = parse_pm_output(&pm_output);
+        
+        // Save specs.md
         let old_specs = fs.read("specs.md").ok();
         fs.write("specs.md", &specs)?;
         let _ = opts.tx.send(TuiEvent::FileWritten {
@@ -77,6 +82,19 @@ impl Workflow for DevWorkflow {
             old_content: old_specs,
             new_content: specs.clone(),
         });
+
+        // Save TASKS.md if present
+        if let Some(tasks) = tasks_content {
+            let old_tasks = fs.read("TASKS.md").ok();
+            fs.write("TASKS.md", &tasks)?;
+            let _ = opts.tx.send(TuiEvent::FileWritten {
+                agent: "pm".to_string(),
+                path: "TASKS.md".to_string(),
+                old_content: old_tasks,
+                new_content: tasks,
+            });
+        }
+
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "specs-ready".into(),
         });
@@ -339,6 +357,36 @@ fn extract_files_from_report(report: &str) -> Vec<String> {
         }
     }
     files
+}
+
+/// Parse PM output to separate specs and TASKS.md content.
+fn parse_pm_output(output: &str) -> (String, Option<String>) {
+    if output.contains("TASKS.md") {
+        // Try to find if it's a code block
+        let parts: Vec<&str> = output.split("```").collect();
+        if parts.len() >= 3 {
+            let mut specs = String::new();
+            let mut tasks = None;
+            
+            for i in 0..parts.len() {
+                if i % 2 == 1 {
+                    // Inside code block
+                    let block = parts[i].trim();
+                    if block.starts_with("markdown") || block.starts_with("- [ ]") || block.contains("TASKS.md") {
+                        tasks = Some(block.trim_start_matches("markdown").trim().to_string());
+                    } else {
+                        specs.push_str("```");
+                        specs.push_str(parts[i]);
+                        specs.push_str("```");
+                    }
+                } else {
+                    specs.push_str(parts[i]);
+                }
+            }
+            return (specs.trim().to_string(), tasks);
+        }
+    }
+    (output.to_string(), None)
 }
 
 #[cfg(test)]

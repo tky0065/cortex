@@ -95,6 +95,7 @@ Send an instruction to a specific agent that will be picked up at the next phase
   3. Only then share what you know from training data, and explicitly label it as potentially outdated.\n\
 - For repo-specific questions, read the relevant files first.\n\
 - For file edits or commands, use tools to complete the task.\n\
+- For complex or multi-step tasks, ALWAYS create a `TASKS.md` file in the project root with a checklist (`- [ ] Task description`). Update this file by marking tasks as done (`- [x]`) as you complete them so the user can track progress.\n\
 - Use query_agent_status to check what agents have done before delegating new tasks.\n\
 - Use inject_directive when a workflow is running and you want to steer an agent at the next phase.\n\
 - Use delegate_to_agent for on-demand agent tasks outside of a workflow.\n\
@@ -600,7 +601,7 @@ fn agent_preamble_for_role(role: &str) -> String {
         "qa" => include_str!("workflows/dev/prompts/qa.md").to_string(),
         "devops" => include_str!("workflows/dev/prompts/devops.md").to_string(),
         _ => format!(
-            "You are the '{}' agent. Complete the given task to the best of your ability.",
+            "You are the '{}' agent. Complete the given task to the best of your ability. For complex tasks, ALWAYS create and update a `TASKS.md` file using `- [ ]` checklist format to track your progress.",
             role
         ),
     }
