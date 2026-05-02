@@ -408,17 +408,15 @@ fn render_diff_inline(diff: &FileDiff, width: usize) -> Vec<Line<'static>> {
         ),
     ]));
 
-    let summary = if diff.is_new_file {
-        format!("  └ Added {} lines", diff.added_count)
-    } else if diff.added_count > 0 && diff.removed_count > 0 {
+    let summary = if diff.added_count > 0 && diff.removed_count > 0 && !diff.is_new_file {
         format!(
             "  └ Added {}, removed {}",
             diff.added_count, diff.removed_count
         )
-    } else if diff.added_count > 0 {
-        format!("  └ Added {} lines", diff.added_count)
-    } else {
+    } else if diff.removed_count > 0 && !diff.is_new_file {
         format!("  └ Removed {} lines", diff.removed_count)
+    } else {
+        format!("  └ Added {} lines", diff.added_count)
     };
     lines.push(Line::from(Span::styled(
         summary,
