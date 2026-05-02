@@ -686,8 +686,8 @@ pub async fn dispatch(
                     let tx_clone = tx.clone();
                     let tx_done = tx.clone();
                     let current_mode = state.execution_mode.lock().await.clone();
-                    let mut orch = Orchestrator::new(wf, config_snapshot)
-                        .with_execution_mode(current_mode);
+                    let mut orch =
+                        Orchestrator::new(wf, config_snapshot).with_execution_mode(current_mode);
 
                     // Create session info for tracking
                     let prompt_owned = prompt.to_string();
@@ -1138,7 +1138,10 @@ async fn handle_connect_command(rest: &str, tx: &TuiSender, config: Arc<RwLock<C
                     tx,
                     TuiEvent::TokenChunk {
                         agent: "connect".to_string(),
-                        chunk: format!("  ✓ {} API key saved (tip: use /apikey {} <key> next time)", provider, provider),
+                        chunk: format!(
+                            "  ✓ {} API key saved (tip: use /apikey {} <key> next time)",
+                            provider, provider
+                        ),
                     },
                 );
             }
@@ -1539,7 +1542,8 @@ async fn handle_update_command(rest: &str, tx: &TuiSender) {
 }
 
 async fn handle_skill_command(rest: &str, tx: &TuiSender) {
-    if rest.trim().is_empty() {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() || trimmed == "add" || trimmed == "install" {
         send(tx, TuiEvent::OpenSkillPicker);
         let tx_clone = tx.clone();
         tokio::spawn(async move {
@@ -1805,7 +1809,9 @@ async fn chat_message(
 /// Returns true if the string looks like an API key rather than an auth method ID.
 /// Heuristic: length > 20 and only alphanumeric / dash / underscore characters.
 fn looks_like_api_key(s: &str) -> bool {
-    s.len() > 20 && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    s.len() > 20
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 fn list_output_files(dir: &std::path::Path) -> Vec<String> {

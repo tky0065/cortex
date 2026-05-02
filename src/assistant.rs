@@ -491,11 +491,11 @@ fn parse_tool_calls(text: &str) -> Vec<ToolCall> {
 fn extract_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
-    
+
     let start_idx = text.find(&open)?;
     let after_open = &text[start_idx + open.len()..];
     let end_idx = after_open.find(&close)?;
-    
+
     Some(after_open[..end_idx].trim())
 }
 
@@ -577,48 +577,77 @@ fn parse_json_call(name: &str, content: &str) -> Option<ToolCall> {
     // Attempt JSON parsing first
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
         match name {
-            "write_file" => return Some(ToolCall::WriteFile {
-                path: v["path"].as_str()?.to_string(),
-                content: v["content"].as_str()?.to_string(),
-            }),
-            "read_file" => return Some(ToolCall::ReadFile {
-                path: v["path"].as_str()?.to_string(),
-            }),
-            "list_files" => return Some(ToolCall::ListFiles {
-                path: v["path"].as_str().unwrap_or(".").to_string(),
-            }),
-            "run_command" => return Some(ToolCall::RunCommand {
-                command: v["command"].as_str()?.to_string(),
-                args: v["args"].as_str().unwrap_or("").to_string(),
-            }),
-            "fetch_url" => return Some(ToolCall::FetchUrl {
-                url: v["url"].as_str()?.to_string(),
-            }),
-            "web_search" => return Some(ToolCall::WebSearch {
-                query: v["query"].as_str()?.to_string(),
-            }),
-            "query_agent_status" => return Some(ToolCall::QueryAgentStatus {
-                agent: v["agent"].as_str().map(|s| s.to_string()),
-            }),
-            "delegate_to_agent" => return Some(ToolCall::DelegateToAgent {
-                agent: v["agent"].as_str()?.to_string(),
-                instruction: v["instruction"].as_str()?.to_string(),
-            }),
-            "inject_directive" => return Some(ToolCall::InjectDirective {
-                agent: v["agent"].as_str()?.to_string(),
-                instruction: v["instruction"].as_str()?.to_string(),
-            }),
+            "write_file" => {
+                return Some(ToolCall::WriteFile {
+                    path: v["path"].as_str()?.to_string(),
+                    content: v["content"].as_str()?.to_string(),
+                });
+            }
+            "read_file" => {
+                return Some(ToolCall::ReadFile {
+                    path: v["path"].as_str()?.to_string(),
+                });
+            }
+            "list_files" => {
+                return Some(ToolCall::ListFiles {
+                    path: v["path"].as_str().unwrap_or(".").to_string(),
+                });
+            }
+            "run_command" => {
+                return Some(ToolCall::RunCommand {
+                    command: v["command"].as_str()?.to_string(),
+                    args: v["args"].as_str().unwrap_or("").to_string(),
+                });
+            }
+            "fetch_url" => {
+                return Some(ToolCall::FetchUrl {
+                    url: v["url"].as_str()?.to_string(),
+                });
+            }
+            "web_search" => {
+                return Some(ToolCall::WebSearch {
+                    query: v["query"].as_str()?.to_string(),
+                });
+            }
+            "query_agent_status" => {
+                return Some(ToolCall::QueryAgentStatus {
+                    agent: v["agent"].as_str().map(|s| s.to_string()),
+                });
+            }
+            "delegate_to_agent" => {
+                return Some(ToolCall::DelegateToAgent {
+                    agent: v["agent"].as_str()?.to_string(),
+                    instruction: v["instruction"].as_str()?.to_string(),
+                });
+            }
+            "inject_directive" => {
+                return Some(ToolCall::InjectDirective {
+                    agent: v["agent"].as_str()?.to_string(),
+                    instruction: v["instruction"].as_str()?.to_string(),
+                });
+            }
             _ => {}
         }
     }
 
     // Fallback: If JSON parsing fails, treat content as raw text (especially useful for web_search)
     match name {
-        "web_search" => Some(ToolCall::WebSearch { query: content.to_string() }),
-        "fetch_url" => Some(ToolCall::FetchUrl { url: content.to_string() }),
-        "read_file" => Some(ToolCall::ReadFile { path: content.to_string() }),
-        "list_files" => Some(ToolCall::ListFiles { path: content.to_string() }),
-        "run_command" => Some(ToolCall::RunCommand { command: content.to_string(), args: "".to_string() }),
+        "web_search" => Some(ToolCall::WebSearch {
+            query: content.to_string(),
+        }),
+        "fetch_url" => Some(ToolCall::FetchUrl {
+            url: content.to_string(),
+        }),
+        "read_file" => Some(ToolCall::ReadFile {
+            path: content.to_string(),
+        }),
+        "list_files" => Some(ToolCall::ListFiles {
+            path: content.to_string(),
+        }),
+        "run_command" => Some(ToolCall::RunCommand {
+            command: content.to_string(),
+            args: "".to_string(),
+        }),
         _ => None,
     }
 }
@@ -1016,7 +1045,10 @@ async fn execute_tool(
             let display = format!("web_search({})", query);
             let (brave_enabled, has_key) = {
                 let config = config.read().await;
-                (config.tools.web_search_enabled, config.api_keys.web_search.is_some())
+                (
+                    config.tools.web_search_enabled,
+                    config.api_keys.web_search.is_some(),
+                )
             };
 
             if brave_enabled && has_key {
@@ -1480,12 +1512,9 @@ async fn assistant_preamble(config: &Arc<RwLock<Config>>, prompt: &str) -> Strin
     let cfg = config.read().await;
     let mut preamble = PREAMBLE.to_string();
     if cfg.tools.skills_enabled {
-        let skill_context = crate::skills::context_for_prompt(
-            "cortex",
-            prompt,
-            cfg.tools.max_skill_context_chars,
-        )
-        .unwrap_or_default();
+        let skill_context =
+            crate::skills::context_for_prompt("cortex", prompt, cfg.tools.max_skill_context_chars)
+                .unwrap_or_default();
         if !skill_context.is_empty() {
             preamble.push_str(&skill_context);
         }

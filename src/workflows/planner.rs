@@ -110,9 +110,10 @@ pub async fn run(idea: &str, opts: &RunOptions) -> Result<()> {
             idea, context_block, qa_block
         );
 
-        let refined = crate::providers::complete(model, PREAMBLE, &enriched_prompt, opts, "planner")
-            .await
-            .map_err(|e| anyhow::anyhow!("Planner refinement error: {e}"))?;
+        let refined =
+            crate::providers::complete(model, PREAMBLE, &enriched_prompt, opts, "planner")
+                .await
+                .map_err(|e| anyhow::anyhow!("Planner refinement error: {e}"))?;
 
         extract_plan_section(&refined).unwrap_or(refined)
     };
@@ -211,5 +212,11 @@ fn extract_plan_section(output: &str) -> Option<String> {
         let t = l.trim();
         t.eq_ignore_ascii_case("plan:") || t.starts_with("PLAN:")
     })?;
-    Some(output.lines().skip(plan_start + 1).collect::<Vec<_>>().join("\n"))
+    Some(
+        output
+            .lines()
+            .skip(plan_start + 1)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }

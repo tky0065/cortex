@@ -388,7 +388,11 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
 fn render_diff_inline(diff: &FileDiff, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
-    let verb = if diff.is_new_file { "New file" } else { "Update" };
+    let verb = if diff.is_new_file {
+        "New file"
+    } else {
+        "Update"
+    };
     lines.push(Line::from(vec![
         Span::styled(
             "● ",
@@ -503,10 +507,7 @@ fn render_diff_inline(diff: &FileDiff, width: usize) -> Vec<Line<'static>> {
                 if near_change(i) {
                     prev_ctx_collapsed = false;
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("{:>5} ", line_no),
-                            Style::default().fg(THEME.muted),
-                        ),
+                        Span::styled(format!("{:>5} ", line_no), Style::default().fg(THEME.muted)),
                         Span::styled("  ", Style::default()),
                         Span::styled(
                             truncate_str(text, width.saturating_sub(8)),
@@ -536,10 +537,7 @@ fn render_diff_inline(diff: &FileDiff, width: usize) -> Vec<Line<'static>> {
                     None => {}
                 }
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{:>5} ", line_no),
-                        Style::default().fg(THEME.muted),
-                    ),
+                    Span::styled(format!("{:>5} ", line_no), Style::default().fg(THEME.muted)),
                     Span::styled(
                         "+ ",
                         Style::default()
@@ -566,10 +564,7 @@ fn render_diff_inline(diff: &FileDiff, width: usize) -> Vec<Line<'static>> {
                     None => {}
                 }
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{:>5} ", line_no),
-                        Style::default().fg(THEME.muted),
-                    ),
+                    Span::styled(format!("{:>5} ", line_no), Style::default().fg(THEME.muted)),
                     Span::styled(
                         "- ",
                         Style::default()

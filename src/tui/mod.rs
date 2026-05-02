@@ -705,15 +705,12 @@ impl App {
             }
             TuiEvent::ModeChanged(new_mode) => {
                 self.execution_mode = new_mode.clone();
-                self.logs.push(LogEntry::system(format!(
-                    "mode → {}",
-                    new_mode.label()
-                )));
+                self.logs
+                    .push(LogEntry::system(format!("mode → {}", new_mode.label())));
             }
             TuiEvent::PlanGenerated { path } => {
-                let content = std::fs::read_to_string(path).unwrap_or_else(|_| {
-                    "Could not read PLAN.md".to_string()
-                });
+                let content = std::fs::read_to_string(path)
+                    .unwrap_or_else(|_| "Could not read PLAN.md".to_string());
                 self.logs.push(LogEntry::system(format!(
                     "Plan ready: {}  — reviewing…",
                     path
@@ -1195,6 +1192,21 @@ impl Tui {
                 }
                 KeyCode::Enter => {
                     if let Some(value) = app.input_bar.palette_select(&palette_context) {
+                        let cmd = value.trim_end();
+                        // /skill add and /skill install with no source → open picker immediately.
+                        if matches!(
+                            cmd,
+                            "/skill add" | "/skill install" | "/skills add" | "/skills install"
+                        ) {
+                            app.input_bar.input = tui_input::Input::default();
+                            Self::spawn_dispatch(
+                                cmd.to_string(),
+                                tx.clone(),
+                                Arc::clone(&app.config),
+                                Arc::clone(&app.repl_state),
+                            );
+                            return false;
+                        }
                         if value.ends_with(' ') {
                             return false;
                         }
@@ -1212,10 +1224,8 @@ impl Tui {
                         guard.clone()
                     };
                     app.execution_mode = new_mode.clone();
-                    app.logs.push(LogEntry::system(format!(
-                        "mode → {}",
-                        new_mode.label()
-                    )));
+                    app.logs
+                        .push(LogEntry::system(format!("mode → {}", new_mode.label())));
                     let _ = tx.send(TuiEvent::ModeChanged(new_mode));
                     return false;
                 }
@@ -2476,7 +2486,8 @@ impl Tui {
                     let new_content = edit_input.value().to_string();
                     let path_clone = path.clone();
                     if let Err(e) = std::fs::write(&path_clone, &new_content) {
-                        app.logs.push(LogEntry::error("plan", format!("Could not save: {e}")));
+                        app.logs
+                            .push(LogEntry::error("plan", format!("Could not save: {e}")));
                     } else {
                         app.logs.push(LogEntry::system("Plan saved."));
                     }
@@ -2484,10 +2495,14 @@ impl Tui {
 
                     let pending = app.repl_state.pending_chat_message.lock().await.take();
                     if let Some(original_msg) = pending {
-                        *app.repl_state.execution_mode.lock().await = crate::workflows::ExecutionMode::Normal;
+                        *app.repl_state.execution_mode.lock().await =
+                            crate::workflows::ExecutionMode::Normal;
                         app.execution_mode = crate::workflows::ExecutionMode::Normal;
-                        let _ = tx.send(TuiEvent::ModeChanged(crate::workflows::ExecutionMode::Normal));
-                        app.logs.push(LogEntry::system("Plan approved — executing…"));
+                        let _ = tx.send(TuiEvent::ModeChanged(
+                            crate::workflows::ExecutionMode::Normal,
+                        ));
+                        app.logs
+                            .push(LogEntry::system("Plan approved — executing…"));
                         Tui::spawn_dispatch(
                             original_msg,
                             tx.clone(),
@@ -2526,10 +2541,15 @@ impl Tui {
                 let pending = app.repl_state.pending_chat_message.lock().await.take();
                 if let Some(original_msg) = pending {
                     // Switch to Normal mode so re-dispatch executes without restrictions.
-                    *app.repl_state.execution_mode.lock().await = crate::workflows::ExecutionMode::Normal;
+                    *app.repl_state.execution_mode.lock().await =
+                        crate::workflows::ExecutionMode::Normal;
                     app.execution_mode = crate::workflows::ExecutionMode::Normal;
-                    app.logs.push(LogEntry::system("Plan approved — executing in Normal mode…"));
-                    let _ = tx.send(TuiEvent::ModeChanged(crate::workflows::ExecutionMode::Normal));
+                    app.logs.push(LogEntry::system(
+                        "Plan approved — executing in Normal mode…",
+                    ));
+                    let _ = tx.send(TuiEvent::ModeChanged(
+                        crate::workflows::ExecutionMode::Normal,
+                    ));
                     Tui::spawn_dispatch(
                         original_msg,
                         tx.clone(),
@@ -2538,7 +2558,8 @@ impl Tui {
                     );
                 } else {
                     // Workflow Plan mode: unblock the waiting workflow via resume channel.
-                    app.logs.push(LogEntry::system("Plan approved — executing workflow…"));
+                    app.logs
+                        .push(LogEntry::system("Plan approved — executing workflow…"));
                     let resume_guard = app.repl_state.resume_tx.lock().await;
                     if let Some(rtx) = resume_guard.as_ref() {
                         let _ = rtx.try_send(());
@@ -3208,7 +3229,11 @@ fn draw_plan_review(
     } else {
         format!(" 📋  PLAN REVIEW — {} ", path)
     };
-    let border_color = if editing { THEME.warning } else { THEME.primary };
+    let border_color = if editing {
+        THEME.warning
+    } else {
+        THEME.primary
+    };
 
     let block = Block::default()
         .title(Span::styled(title, THEME.title_style()))
@@ -3262,11 +3287,7 @@ fn draw_plan_review(
         .collect();
 
     let scroll_hint = if all_lines.len() > visible_lines {
-        format!(
-            " [{}/{}]",
-            start + 1,
-            all_lines.len()
-        )
+        format!(" [{}/{}]", start + 1, all_lines.len())
     } else {
         String::new()
     };
@@ -3280,10 +3301,7 @@ fn draw_plan_review(
 
     // Action bar
     let action_text = if editing {
-        format!(
-            " Ctrl+S: Save & Approve   Esc: Cancel edit{}",
-            scroll_hint
-        )
+        format!(" Ctrl+S: Save & Approve   Esc: Cancel edit{}", scroll_hint)
     } else {
         format!(
             " Enter: Approve & Execute   e: Edit   Esc: Abort{}   ↑↓ PageUp/Down: scroll",

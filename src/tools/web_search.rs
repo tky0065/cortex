@@ -43,7 +43,10 @@ pub async fn search_without_key(query: &str) -> String {
         return String::new();
     }
 
-    let mut block = format!("\n\n## Web Search Results (DuckDuckGo Lite)\nQuery: {}\n\n", query);
+    let mut block = format!(
+        "\n\n## Web Search Results (DuckDuckGo Lite)\nQuery: {}\n\n",
+        query
+    );
     for (i, r) in results.iter().take(5).enumerate() {
         block.push_str(&format!(
             "{}. **{}** ({})\n   {}\n\n",
@@ -63,10 +66,10 @@ fn parse_ddg_lite_html(html: &str) -> Vec<SearchResult> {
     // DuckDuckGo Lite result rows are usually within <table> tags.
     // Each result is typically a series of <tr>s.
     // We'll use a simple but robust string-based extraction for titles, links, and snippets.
-    
+
     while let Some(start_idx) = remaining.find("class=\"result-link\"") {
         let after_link_class = &remaining[start_idx..];
-        
+
         // Extract URL
         let url = if let Some(href_start) = after_link_class.find("href=\"") {
             let start = href_start + 6;
@@ -201,7 +204,7 @@ pub async fn fetch_context(query: &str, config: &Config) -> String {
     if !config.tools.web_search_enabled {
         return String::new();
     }
-    
+
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return String::new();

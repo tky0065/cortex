@@ -263,7 +263,10 @@ async fn pause_if_review(phase: &str, opts: &RunOptions) -> Result<()> {
         return Ok(());
     }
     let _ = opts.tx.send(TuiEvent::InteractivePause {
-        message: format!("Ready to start: {}  Press C to continue, A to abort.", phase),
+        message: format!(
+            "Ready to start: {}  Press C to continue, A to abort.",
+            phase
+        ),
     });
     tokio::select! {
         _ = async {

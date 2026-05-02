@@ -1,6 +1,6 @@
 [package]
 name = "cortex"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 rust-version = "1.85"
 description = "Beta agentic CLI that orchestrates AI agents to produce complete software projects."
