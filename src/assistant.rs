@@ -81,7 +81,8 @@ Check the status and output of a specific agent (or all agents) in the current w
 Omit <agent> to query all agents at once.\n\
 \n\
 ### Delegate a task to an agent\n\
-Run a standalone agent with a custom instruction (does not require a running workflow).\n\
+Run a standalone workflow agent with a custom instruction (does not require a running workflow).\n\
+Valid agents: ceo, pm, tech_lead, developer, qa, devops. Do NOT use this for research/Q&A — use web_search for that.\n\
 <tool_call>\n\
 <name>delegate_to_agent</name>\n\
 <agent>ceo</agent>\n\
@@ -106,7 +107,7 @@ Send an instruction to a specific agent that will be picked up at the next phase
 - For complex or multi-step tasks, ALWAYS create a `TASKS.md` file in the project root with a checklist (`- [ ] Task description`). Update this file by marking tasks as done (`- [x]`) as you complete them so the user can track progress.\n\
 - Use query_agent_status to check what agents have done before delegating new tasks.\n\
 - Use inject_directive when a workflow is running and you want to steer an agent at the next phase.\n\
-- Use delegate_to_agent for on-demand agent tasks outside of a workflow.\n\
+- Use delegate_to_agent ONLY for workflow agent tasks (ceo/pm/tech_lead/developer/qa/devops). NEVER use delegate_to_agent for research, Q&A, or lookups — use web_search for those.\n\
 - After tool calls are executed, provide a concise natural-language answer.\n\
 - You can chain multiple tool calls in one response.\n\
 - Paths are relative to the current working directory.\n\
@@ -888,6 +889,21 @@ async fn execute_tool(
         }
         ToolCall::DelegateToAgent { agent, instruction } => {
             let display = format!("delegate_to_agent({}, ...)", agent);
+
+            // Guard: cannot delegate to self.
+            if agent == "assistant" || agent == "cortex" {
+                return ToolResult {
+                    call: display,
+                    output: "error: cannot delegate to yourself. \
+                             For research or lookup questions use web_search. \
+                             For direct GitHub data use run_command with gh. \
+                             delegate_to_agent is only for workflow agents: \
+                             ceo, pm, tech_lead, developer, qa, devops."
+                        .to_string(),
+                    success: false,
+                };
+            }
+
             let cfg = config.read().await;
             let model = match crate::providers::model_for_role(agent, &cfg) {
                 Ok(m) => m.to_string(),
