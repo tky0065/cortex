@@ -10,6 +10,65 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+/// Free web search via DuckDuckGo Lite HTML — no API key required.
+/// Returns a formatted Markdown block suitable for injection into an LLM prompt.
+pub async fn search_without_key(query: &str) -> String {
+    if query.trim().is_empty() {
+        return String::new();
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (compatible; cortex-agent)")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let resp = match client
+        .get("https://lite.duckduckgo.com/lite/")
+        .query(&[("q", query)])
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return String::new(),
+    };
+    let html = match resp.text().await {
+        Ok(t) => t,
+        Err(_) => return String::new(),
+    };
+    // Extract text snippets — strip HTML tags, collapse whitespace.
+    let text = strip_html_tags(&html);
+    if text.trim().is_empty() {
+        return String::new();
+    }
+    // Truncate to ~4000 chars to stay within context budget.
+    let truncated = if text.len() > 4000 {
+        format!("{}…", &text[..4000])
+    } else {
+        text
+    };
+    format!(
+        "\n\n## Web Search Results (DuckDuckGo)\nQuery: {}\n\n{}\n",
+        query, truncated
+    )
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    // Collapse runs of whitespace
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Performs a web search. If `WEB_SEARCH_API_KEY` is unset, returns a
 /// single stub result so the agent can still run in offline mode.
 pub async fn search(query: &str, max_results: usize) -> Result<Vec<SearchResult>> {

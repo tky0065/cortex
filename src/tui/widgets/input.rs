@@ -51,7 +51,7 @@ const MODEL_ROLES: &[(&str, &str)] = &[
     ("developer", "Developer role model"),
     ("qa", "QA role model"),
     ("devops", "DevOps role model"),
-    ("assistant", "REPL assistant model"),
+    ("cortex", "Cortex agent model"),
     ("all", "Set every role model"),
 ];
 
@@ -453,18 +453,18 @@ impl InputBar {
         let value = self.input.value();
         let mut lines = Vec::new();
         let mut cursor_coords = (0, 0);
-        
+
         let mut current_line = String::new();
         let mut x = 2; // initial "> " prefix
         let mut y = 0;
-        
+
         current_line.push_str("> ");
-        
+
         for (i, c) in value.chars().enumerate() {
             if i == self.input.cursor() {
                 cursor_coords = (x as u16, y as u16);
             }
-            
+
             if c == '\n' {
                 lines.push(Line::from(current_line));
                 current_line = String::from("  ");
@@ -481,11 +481,11 @@ impl InputBar {
                 }
             }
         }
-        
+
         if value.chars().count() == self.input.cursor() {
             cursor_coords = (x as u16, y as u16);
         }
-        
+
         lines.push(Line::from(current_line));
         (lines, cursor_coords)
     }
@@ -513,10 +513,7 @@ impl InputBar {
             );
         frame.render_widget(widget, area);
 
-        frame.set_cursor_position((
-            area.x + 1 + cursor_x,
-            area.y + 1 + cursor_y,
-        ));
+        frame.set_cursor_position((area.x + 1 + cursor_x, area.y + 1 + cursor_y));
     }
 
     /// Render the command palette as a floating overlay anchored above `input_area`.

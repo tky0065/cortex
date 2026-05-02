@@ -204,7 +204,7 @@ impl Config {
             "developer" => self.models.developer = model,
             "qa" => self.models.qa = model,
             "devops" => self.models.devops = model,
-            "assistant" => self.models.assistant = model,
+            "assistant" | "cortex" => self.models.assistant = model,
             "all" => {
                 self.models.ceo = model.clone();
                 self.models.pm = model.clone();

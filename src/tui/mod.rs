@@ -530,7 +530,7 @@ impl App {
                     ("developer", dev),
                     ("qa", qa),
                     ("devops", devops),
-                    ("assistant", assistant),
+                    ("cortex", assistant),
                 ];
                 let refs: Vec<(&str, &str)> = roles.iter().map(|(r, m)| (*r, m.as_str())).collect();
                 self.popup = PopupState::ModelPicker {

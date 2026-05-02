@@ -1556,7 +1556,7 @@ async fn chat_message(
     send(
         tx,
         TuiEvent::AgentStarted {
-            agent: "assistant".to_string(),
+            agent: "cortex".to_string(),
         },
     );
 
@@ -1587,21 +1587,21 @@ async fn chat_message(
             send(
                 tx,
                 TuiEvent::AgentReplaceBuffer {
-                    agent: "assistant".to_string(),
+                    agent: "cortex".to_string(),
                     content: crate::assistant::strip_tool_calls_for_display(&reply),
                 },
             );
             send(
                 tx,
                 TuiEvent::AgentSummary {
-                    agent: "assistant".to_string(),
+                    agent: "cortex".to_string(),
                     summary: crate::workflows::summarize_output(&reply),
                 },
             );
             send(
                 tx,
                 TuiEvent::AgentDone {
-                    agent: "assistant".to_string(),
+                    agent: "cortex".to_string(),
                 },
             );
         }
@@ -1609,7 +1609,7 @@ async fn chat_message(
             send(
                 tx,
                 TuiEvent::Error {
-                    agent: "assistant".to_string(),
+                    agent: "cortex".to_string(),
                     message: format!("assistant error: {e}"),
                 },
             );

@@ -19,13 +19,14 @@ const EMPTY_FINAL_REPLY: &str = "Je n'ai pas recu de reponse texte du modele. Re
 
 /// System prompt describing the assistant's capabilities and tool format.
 pub const PREAMBLE: &str = "\
-You are Cortex Assistant, a powerful autonomous AI agent embedded in a software development CLI.\n\
-You can answer questions directly and can use tools when the user's request needs local files, commands, edits, or live web context.\n\
+You are Cortex, a powerful general-purpose AI agent — like GitHub Copilot or Claude.\n\
+You can help with ANYTHING: coding, debugging, research, answering questions about people, projects, news, concepts, writing, analysis, and more.\n\
+You are NOT limited to software development. Treat every question as fair game.\n\
 Do not expose tool XML to the user. Tool calls are private runtime instructions.\n\
 \n\
 ## AVAILABLE TOOLS\n\
 \n\
-Use tools only when needed by emitting XML blocks in your response:\n\
+Use tools by emitting XML blocks in your response:\n\
 \n\
 ### Write a file\n\
 <tool_call>\n\
@@ -48,18 +49,27 @@ file content goes here\n\
 <path>.</path>\n\
 </tool_call>\n\
 \n\
-### Run a command (allowed: cargo, go, npm, pip, git, docker)\n\
+### Run a command (allowed: cargo, go, npm, pip, git, docker, gh, curl, jq, rg)\n\
 <tool_call>\n\
 <name>run_command</name>\n\
 <command>git</command>\n\
 <args>status</args>\n\
 </tool_call>\n\
 \n\
+### Fetch a URL directly\n\
+Use this when the user gives a specific http(s) URL or asks for information from a known page.\n\
+Prefer fetch_url over web_search for direct URLs.\n\
+<tool_call>\n\
+<name>fetch_url</name>\n\
+<url>https://example.com/docs</url>\n\
+</tool_call>\n\
+\n\
 ### Search the web\n\
-Use this for current news, recent versions, pricing, security advisories, or other time-sensitive information.\n\
+Use this for ANY question about a person, developer, GitHub user, organization, project, software tool, current events, news, or any topic you are not 100% certain about.\n\
+When in doubt, ALWAYS search. Do not answer from memory alone for specific people or recent facts.\n\
 <tool_call>\n\
 <name>web_search</name>\n\
-<query>agentic coding tools news</query>\n\
+<query>who is enokdev developer</query>\n\
 </tool_call>\n\
 \n\
 ### Query agent status\n\
@@ -87,12 +97,10 @@ Send an instruction to a specific agent that will be picked up at the next phase
 </tool_call>\n\
 \n\
 ## RULES\n\
-- For casual chat or general non-current knowledge, answer directly without tools.\n\
-- For current news or time-sensitive facts, use web_search first.\n\
-- If web_search fails or returns an error (e.g. disabled or no API key configured):\n\
-  1. Clearly tell the user you cannot access live/current information right now.\n\
-  2. Briefly explain how to enable it: /websearch enable and /apikey web_search <key>.\n\
-  3. Only then share what you know from training data, and explicitly label it as potentially outdated.\n\
+- **ALWAYS call web_search** for any question about a specific person, developer, GitHub user, project, library, organization, event, or any topic you are not 100% certain about. Never answer from memory alone.\n\
+- If the user provides a URL, use fetch_url first and base your answer on the fetched content.\n\
+- For GitHub users, repositories, commits, PRs, or issues: use gh (e.g. `gh api users/enokdev`) or web_search.\n\
+- If web_search returns no results or fails, try: fetch_url with a direct profile URL, gh for GitHub entities, or curl for a direct HTTP endpoint.\n\
 - For repo-specific questions, read the relevant files first.\n\
 - For file edits or commands, use tools to complete the task.\n\
 - For complex or multi-step tasks, ALWAYS create a `TASKS.md` file in the project root with a checklist (`- [ ] Task description`). Update this file by marking tasks as done (`- [x]`) as you complete them so the user can track progress.\n\
@@ -124,6 +132,9 @@ enum ToolCall {
     RunCommand {
         command: String,
         args: String,
+    },
+    FetchUrl {
+        url: String,
     },
     WebSearch {
         query: String,
@@ -322,6 +333,10 @@ fn should_track_assistant_task(message: &str) -> bool {
         "write",
         "update",
         "run",
+        "find",
+        "research",
+        "fetch",
+        "retrieve",
         "code",
         "implemente",
         "cree",
@@ -331,6 +346,10 @@ fn should_track_assistant_task(message: &str) -> bool {
         "ecris",
         "execute",
         "teste",
+        "cherche",
+        "recherche",
+        "retrouve",
+        "recupere",
         "continue",
     ];
     let has_action = action_words.iter().any(|word| lower.contains(word));
@@ -352,6 +371,7 @@ fn tool_call_is_action(call: &ToolCall) -> bool {
     matches!(
         call,
         ToolCall::WriteFile { .. }
+            | ToolCall::FetchUrl { .. }
             | ToolCall::RunCommand { .. }
             | ToolCall::DelegateToAgent { .. }
             | ToolCall::InjectDirective { .. }
@@ -458,6 +478,10 @@ fn parse_single_call(block: &str) -> Option<ToolCall> {
             let args = extract_tag(block, "args").unwrap_or("").to_string();
             Some(ToolCall::RunCommand { command, args })
         }
+        "fetch_url" => {
+            let url = extract_tag(block, "url")?.to_string();
+            Some(ToolCall::FetchUrl { url })
+        }
         "web_search" => {
             let query = extract_tag(block, "query")?.to_string();
             Some(ToolCall::WebSearch { query })
@@ -526,6 +550,140 @@ fn extract_content_tag(block: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+fn validate_fetch_url(url: &str) -> Result<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url)?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed),
+        scheme => {
+            anyhow::bail!("unsupported URL scheme '{scheme}'; only http and https are allowed")
+        }
+    }
+}
+
+async fn fetch_url_content(url: &str) -> ToolResult {
+    let display = format!("fetch_url({url})");
+    let parsed = match validate_fetch_url(url) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            return ToolResult {
+                call: display,
+                output: format!("error: {e}"),
+                success: false,
+            };
+        }
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(format!("cortex/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return ToolResult {
+                call: display,
+                output: format!("error: failed to build HTTP client: {e}"),
+                success: false,
+            };
+        }
+    };
+
+    match client.get(parsed).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let final_url = response.url().to_string();
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+            match response.text().await {
+                Ok(body) => {
+                    let text = normalize_fetched_text(&body, content_type.as_str());
+                    ToolResult {
+                        call: display,
+                        output: format!(
+                            "status: {status}\nurl: {final_url}\ncontent-type: {content_type}\n\n{}",
+                            truncate_chars(&text, 60_000)
+                        ),
+                        success: status.is_success(),
+                    }
+                }
+                Err(e) => ToolResult {
+                    call: display,
+                    output: format!("error: failed to read response body: {e}"),
+                    success: false,
+                },
+            }
+        }
+        Err(e) => ToolResult {
+            call: display,
+            output: format!("error: request failed: {e}"),
+            success: false,
+        },
+    }
+}
+
+fn normalize_fetched_text(body: &str, content_type: &str) -> String {
+    if content_type.contains("html") {
+        strip_html_for_model(body)
+    } else {
+        body.to_string()
+    }
+}
+
+fn strip_html_for_model(html: &str) -> String {
+    let mut output = String::with_capacity(html.len().min(60_000));
+    let mut in_tag = false;
+    let mut last_was_space = false;
+
+    for ch in html.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                if !last_was_space {
+                    output.push(' ');
+                    last_was_space = true;
+                }
+            }
+            '>' => in_tag = false,
+            _ if in_tag => {}
+            _ if ch.is_whitespace() => {
+                if !last_was_space {
+                    output.push(' ');
+                    last_was_space = true;
+                }
+            }
+            _ => {
+                output.push(ch);
+                last_was_space = false;
+            }
+        }
+    }
+
+    decode_basic_html_entities(output.trim())
+}
+
+fn decode_basic_html_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{truncated}\n\n... (truncated)")
+    } else {
+        truncated
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tool executor
 // ---------------------------------------------------------------------------
@@ -544,7 +702,7 @@ async fn execute_tool(
             match sandbox.write(path, content) {
                 Ok(()) => {
                     let _ = tx.send(TuiEvent::FileWritten {
-                        agent: "assistant".to_string(),
+                        agent: "cortex".to_string(),
                         path: path.clone(),
                         old_content,
                         new_content: content.clone(),
@@ -636,34 +794,44 @@ async fn execute_tool(
                 },
             }
         }
+        ToolCall::FetchUrl { url } => fetch_url_content(url).await,
         ToolCall::WebSearch { query } => {
             let display = format!("web_search({})", query);
-            let config = config.read().await;
-            if !config.tools.web_search_enabled {
-                return ToolResult {
-                    call: display,
-                    output: "error: web search is disabled. Enable it with /websearch enable and configure a Brave Search API key with /apikey web_search <key>.".to_string(),
-                    success: false,
-                };
-            }
-            if config.api_keys.web_search.is_none() {
-                return ToolResult {
-                    call: display,
-                    output: "error: web search is enabled but no Brave Search API key is configured. Use /apikey web_search <key>.".to_string(),
-                    success: false,
-                };
-            }
+            let (brave_enabled, has_key) = {
+                let config = config.read().await;
+                (config.tools.web_search_enabled, config.api_keys.web_search.is_some())
+            };
 
-            let context = crate::tools::web_search::fetch_context(query, &config).await;
-            let success = !context.trim().is_empty();
-            ToolResult {
-                call: display,
-                output: if success {
-                    context
-                } else {
-                    "error: web search returned no results.".to_string()
-                },
-                success,
+            if brave_enabled && has_key {
+                // Use Brave Search API when configured.
+                let config_guard = config.read().await;
+                let context = crate::tools::web_search::fetch_context(query, &config_guard).await;
+                let success = !context.trim().is_empty();
+                ToolResult {
+                    call: display,
+                    output: if success {
+                        context
+                    } else {
+                        "error: web search returned no results.".to_string()
+                    },
+                    success,
+                }
+            } else {
+                // Fallback: DuckDuckGo Lite (no API key required).
+                let context = crate::tools::web_search::search_without_key(query).await;
+                let success = !context.trim().is_empty();
+                ToolResult {
+                    call: display,
+                    output: if success {
+                        context
+                    } else {
+                        format!(
+                            "error: web search returned no results for '{}'. Try fetch_url with a direct URL, or gh for GitHub entities.",
+                            query
+                        )
+                    },
+                    success,
+                }
             }
         }
         ToolCall::QueryAgentStatus { agent } => {
@@ -820,6 +988,7 @@ fn describe_tool(call: &ToolCall) -> String {
         ToolCall::RunCommand { command, args } if args.is_empty() => format!("running {}", command),
         ToolCall::RunCommand { command, args } => format!("running {} {}", command, args),
         ToolCall::WebSearch { query } => format!("searching web for {}", query),
+        ToolCall::FetchUrl { url } => format!("fetching URL {}", url),
         ToolCall::QueryAgentStatus { agent: Some(a) } => {
             format!("querying status of agent '{}'", a)
         }
@@ -893,7 +1062,7 @@ pub async fn run(
         send(
             tx,
             TuiEvent::AgentProgress {
-                agent: "assistant".to_string(),
+                agent: "cortex".to_string(),
                 message: if iteration == 0 {
                     "Thinking…".to_string()
                 } else {
@@ -930,7 +1099,7 @@ pub async fn run(
                 send(
                     tx,
                     TuiEvent::TokenChunk {
-                        agent: "assistant".to_string(),
+                        agent: "cortex".to_string(),
                         chunk: EMPTY_FINAL_REPLY.to_string(),
                     },
                 );
@@ -959,7 +1128,7 @@ pub async fn run(
             send(
                 tx,
                 TuiEvent::TokenChunk {
-                    agent: "assistant".to_string(),
+                    agent: "cortex".to_string(),
                     chunk: format!("{}...", describe_tool(call)),
                 },
             );
@@ -972,7 +1141,7 @@ pub async fn run(
             send(
                 tx,
                 TuiEvent::TokenChunk {
-                    agent: "assistant".to_string(),
+                    agent: "cortex".to_string(),
                     chunk: format!("  {} [{}]", status_icon, result.call),
                 },
             );
@@ -999,7 +1168,7 @@ pub async fn run(
         send(
             tx,
             TuiEvent::TokenChunk {
-                agent: "assistant".to_string(),
+                agent: "cortex".to_string(),
                 chunk: EMPTY_FINAL_REPLY.to_string(),
             },
         );
@@ -1113,6 +1282,54 @@ Done."#;
     }
 
     #[test]
+    fn parses_fetch_url_call() {
+        let text = r#"
+<tool_call>
+<name>fetch_url</name>
+<url>https://example.com/docs</url>
+</tool_call>
+"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        if let ToolCall::FetchUrl { url } = &calls[0] {
+            assert_eq!(url, "https://example.com/docs");
+        } else {
+            panic!("Expected FetchUrl");
+        }
+    }
+
+    #[test]
+    fn fetch_url_validation_accepts_http_and_https_only() {
+        assert!(validate_fetch_url("https://example.com").is_ok());
+        assert!(validate_fetch_url("http://example.com").is_ok());
+        assert!(validate_fetch_url("file:///etc/passwd").is_err());
+        assert!(validate_fetch_url("ssh://example.com/repo").is_err());
+    }
+
+    #[test]
+    fn html_fetch_normalization_strips_tags_and_decodes_basic_entities() {
+        let text = normalize_fetched_text(
+            "<html><body><h1>Title &amp; Docs</h1><p>Hello&nbsp;world</p></body></html>",
+            "text/html; charset=utf-8",
+        );
+
+        assert!(text.contains("Title & Docs"));
+        assert!(text.contains("Hello world"));
+        assert!(!text.contains("<h1>"));
+    }
+
+    #[test]
+    fn web_search_no_results_message_names_fallbacks() {
+        // When DDG returns no results, the error message should mention direct fallbacks.
+        let msg = format!(
+            "error: web search returned no results for '{}'. Try fetch_url with a direct URL, or gh for GitHub entities.",
+            "test query"
+        );
+        assert!(msg.contains("fetch_url"));
+        assert!(msg.contains("gh"));
+    }
+
+    #[test]
     fn strips_tool_calls_from_visible_text() {
         let text = r#"I'll inspect that.
 <tool_call><name>read_file</name><path>AGENTS.md</path></tool_call>
@@ -1163,6 +1380,13 @@ Then I will summarize."#;
     fn assistant_task_tracking_detects_multistep_work() {
         assert!(should_track_assistant_task(
             "implemente la feature et ajoute les tests"
+        ));
+    }
+
+    #[test]
+    fn assistant_task_tracking_detects_url_research_work() {
+        assert!(should_track_assistant_task(
+            "retrouve les infos depuis https://example.com et mets-les dans info.md"
         ));
     }
 

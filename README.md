@@ -693,6 +693,8 @@ All agent output flows through `TuiEvent` over an `mpsc::UnboundedSender`:
 #### Assistant and streamed chat
 Free-form REPL messages are routed to the assistant loop. Visible assistant text streams through the TUI while private `<tool_call>` XML is filtered from display, so tool use stays internal and the user sees only natural-language output and command/file operation summaries.
 
+When a prompt includes a direct URL, the assistant can fetch that URL directly without Brave Search. If web search is disabled, it can still use direct fallbacks such as URL fetching, `gh` for GitHub metadata, `git` for local history, and local file search before reporting that live discovery is unavailable.
+
 #### File-as-memory pattern
 Agents never receive the full accumulated transcript. Each downstream agent reads only its required input from disk (`specs.md`, `architecture.md`). This keeps context windows bounded and predictable.
 
@@ -725,7 +727,7 @@ All file I/O is mediated through `FileSystem` (`src/tools/filesystem.rs`).
 The terminal tool (`src/tools/terminal.rs`) validates every command against a hardcoded allowlist before execution:
 
 ```
-cargo  go  npm  pip  git  docker
+cargo  go  npm  pip  git  docker  gh  curl  jq  rg
 ```
 
 LLM output is treated as untrusted input. Any command not on this list is rejected.

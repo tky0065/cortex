@@ -6,8 +6,14 @@ use std::process::Stdio;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
-const ALLOWED_COMMANDS: &[&str] = &["cargo", "go", "npm", "pip", "git", "docker"];
+const ALLOWED_COMMANDS: &[&str] = &[
+    "cargo", "go", "npm", "pip", "git", "docker", "gh", "curl", "jq", "rg",
+];
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+fn is_command_allowed(command: &str) -> bool {
+    ALLOWED_COMMANDS.contains(&command)
+}
 
 #[derive(Debug)]
 pub struct CommandOutput {
@@ -23,7 +29,7 @@ pub async fn run(
     cwd: Option<&Path>,
     timeout_secs: Option<u64>,
 ) -> Result<CommandOutput> {
-    if !ALLOWED_COMMANDS.contains(&command) {
+    if !is_command_allowed(command) {
         bail!(
             "'{}' is not in the command allowlist: {:?}",
             command,
@@ -71,5 +77,15 @@ mod tests {
         let out = run("git", &["--version"], None, None).await.unwrap();
         assert!(out.success);
         assert!(out.stdout.contains("git"));
+    }
+
+    #[tokio::test]
+    async fn research_cli_commands_are_allowlisted() {
+        for command in ["gh", "curl", "jq", "rg"] {
+            assert!(
+                is_command_allowed(command),
+                "{command} should be allowlisted"
+            );
+        }
     }
 }
