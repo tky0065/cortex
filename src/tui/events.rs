@@ -123,6 +123,16 @@ pub enum TuiEvent {
     SetLogFilter {
         agent: Option<String>,
     },
+    /// Emitted after a provider or model change so the status bar never shows UNKNOWN.
+    ProviderChanged {
+        provider: String,
+        model: String,
+    },
+    /// Replaces the agent's stream buffer with a clean final reply (used to fix duplication).
+    AgentReplaceBuffer {
+        agent: String,
+        content: String,
+    },
 }
 
 pub type TuiSender = mpsc::UnboundedSender<TuiEvent>;

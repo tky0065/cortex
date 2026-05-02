@@ -106,6 +106,11 @@ impl ActiveAgent {
         self.status = AgentRunStatus::Error;
         self.current_action = message.to_owned();
     }
+
+    /// Replace stream_buffer with a clean final reply (used to fix content duplication).
+    pub fn replace_buffer(&mut self, content: &str) {
+        self.stream_buffer = content.to_owned();
+    }
 }
 
 /// Renders the agents panel — one block per active agent with a progress gauge.

@@ -140,10 +140,18 @@ struct App {
     cwd: String,
     /// Current git branch info
     git_info: Option<String>,
+    /// Cached provider name (avoids try_read() failures in draw())
+    provider_display: String,
+    /// Cached assistant model string (avoids try_read() failures in draw())
+    model_display: String,
 }
 
 impl App {
     fn new(config: Arc<RwLock<Config>>) -> Self {
+        let (provider_display, model_display) = config
+            .try_read()
+            .map(|c| (c.provider.default.clone(), c.models.assistant.clone()))
+            .unwrap_or_else(|_| ("ollama".to_string(), String::new()));
         Self {
             input_bar: InputBar::new(),
             logs: vec![LogEntry::system("cortex ready — type /help for commands.")],
@@ -178,18 +186,20 @@ impl App {
                 })
                 .unwrap_or_else(|_| ".".to_string()),
             git_info: None,
+            provider_display,
+            model_display,
         }
     }
 
     fn draw(&self, frame: &mut Frame) {
         let inner_width = frame.area().width.saturating_sub(4) as usize;
-        let layout = compute(frame, self.tasks.len(), self.input_bar.line_count(inner_width));
+        let layout = compute(
+            frame,
+            self.tasks.len(),
+            self.input_bar.line_count(inner_width),
+        );
 
-        let (provider, model) = self
-            .config
-            .try_read()
-            .map(|c| (c.provider.default.clone(), c.models.assistant.clone()))
-            .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
+        let (provider, model) = (&self.provider_display, &self.model_display);
 
         PipelineWidget {
             agents: &self.pipeline,
@@ -218,8 +228,8 @@ impl App {
         let elapsed = self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         StatusBarWidget {
             state: &StatusBarState {
-                provider: &provider,
-                model: &model,
+                provider,
+                model,
                 elapsed_secs: elapsed,
                 tokens_total: self.tokens_total,
                 cwd: &self.cwd,
@@ -353,6 +363,10 @@ impl App {
                     self.logs
                         .push(LogEntry::system(format!("{agent}: started")));
                     return;
+                }
+                // Auto-add agent to pipeline if not already listed (e.g. assistant workflow).
+                if !self.pipeline.iter().any(|a| &a.name == agent) {
+                    self.pipeline.push(AgentState::idle(agent));
                 }
                 self.set_pipeline_status(agent, AgentStatus::Running);
                 self.ensure_agent(agent);
@@ -651,6 +665,15 @@ impl App {
                 self.cwd = cwd.clone();
                 self.git_info = git_info.clone();
             }
+            TuiEvent::ProviderChanged { provider, model } => {
+                self.provider_display = provider.clone();
+                self.model_display = model.clone();
+            }
+            TuiEvent::AgentReplaceBuffer { agent, content } => {
+                if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
+                    a.replace_buffer(content);
+                }
+            }
             TuiEvent::FileWritten {
                 agent,
                 path,
@@ -945,7 +968,8 @@ impl Tui {
                                 let home_s = home.display().to_string();
                                 if s == home_s {
                                     "~".to_string()
-                                } else if let Some(suffix) = s.strip_prefix(&format!("{}/", home_s)) {
+                                } else if let Some(suffix) = s.strip_prefix(&format!("{}/", home_s))
+                                {
                                     format!("~/{}", suffix)
                                 } else {
                                     s
@@ -955,7 +979,7 @@ impl Tui {
                             }
                         })
                         .unwrap_or_else(|_| ".".to_string());
-                    
+
                     let git_info = std::process::Command::new("git")
                         .args(["rev-parse", "--abbrev-ref", "HEAD"])
                         .output()
@@ -1236,23 +1260,34 @@ impl Tui {
         }
 
         // --- Normal REPL dispatch (palette is closed at this point) ---
-        let is_enter = matches!(key.code, KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r'));
-        let is_ctrl_j = key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let is_enter = matches!(
+            key.code,
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r')
+        );
+        let is_ctrl_j =
+            key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL);
 
         if is_enter || is_ctrl_j {
-            // If any modifier is pressed (Alt/Option, Shift, Control, or Meta on Mac), 
+            // If any modifier is pressed (Alt/Option, Shift, Control, or Meta on Mac),
             // insert a newline instead of dispatching the command.
-            if is_ctrl_j || key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::META)
+            if is_ctrl_j
+                || key.modifiers.intersects(
+                    KeyModifiers::ALT
+                        | KeyModifiers::SHIFT
+                        | KeyModifiers::CONTROL
+                        | KeyModifiers::META,
+                )
             {
                 let mut val = app.input_bar.input.value().to_string();
                 let cursor = app.input_bar.input.cursor();
-                
+
                 // Convert character cursor position to byte index safely
-                let byte_idx = val.char_indices()
+                let byte_idx = val
+                    .char_indices()
                     .nth(cursor)
                     .map(|(idx, _)| idx)
                     .unwrap_or(val.len());
-                
+
                 val.insert(byte_idx, '\n');
                 app.input_bar.input = tui_input::Input::new(val).with_cursor(cursor + 1);
                 return false;
@@ -1260,7 +1295,14 @@ impl Tui {
 
             let cmd = app.input_bar.input.value().to_string();
             if !cmd.is_empty() {
-                app.logs.push(LogEntry::system(format!("> {}", cmd)));
+                // Mask API key values before logging for security.
+                let log_cmd = if let Some(rest) = cmd.strip_prefix("/apikey ") {
+                    let provider = rest.split_whitespace().next().unwrap_or("");
+                    format!("/apikey {} ***", provider)
+                } else {
+                    cmd.clone()
+                };
+                app.logs.push(LogEntry::system(format!("> {}", log_cmd)));
                 app.input_bar.push_history(cmd.clone());
                 app.input_bar.input = tui_input::Input::default();
                 if Self::is_quit_command(&cmd) {
@@ -1838,23 +1880,33 @@ impl Tui {
 
     async fn save_provider_choice(app: &mut App, tx: &TuiSender, provider: String) {
         let provider = crate::providers::registry::normalize_provider(&provider).to_string();
-        let mut cfg = app.config.write().await;
-        sync_models_for_provider(&mut cfg, &provider);
-        cfg.set_provider(provider.clone());
-        match cfg.save() {
-            Ok(()) => {
-                let _ = tx.send(TuiEvent::TokenChunk {
-                    agent: "provider".to_string(),
-                    chunk: format!("  ✓ provider → {} (saved)", provider),
-                });
+        let (new_provider, new_model) = {
+            let mut cfg = app.config.write().await;
+            sync_models_for_provider(&mut cfg, &provider);
+            cfg.set_provider(provider.clone());
+            let p = cfg.provider.default.clone();
+            let m = cfg.models.assistant.clone();
+            match cfg.save() {
+                Ok(()) => {
+                    let _ = tx.send(TuiEvent::TokenChunk {
+                        agent: "provider".to_string(),
+                        chunk: format!("  ✓ provider → {} (saved)", provider),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(TuiEvent::Error {
+                        agent: "provider".to_string(),
+                        message: format!("failed to save config: {e}"),
+                    });
+                }
             }
-            Err(e) => {
-                let _ = tx.send(TuiEvent::Error {
-                    agent: "provider".to_string(),
-                    message: format!("failed to save config: {e}"),
-                });
-            }
-        }
+            (p, m)
+        };
+        // Update cached display values after write lock is released.
+        let _ = tx.send(TuiEvent::ProviderChanged {
+            provider: new_provider,
+            model: new_model,
+        });
     }
 
     async fn provider_has_credential(config: &Arc<RwLock<Config>>, provider: &str) -> bool {
@@ -2154,31 +2206,42 @@ impl Tui {
                             .unwrap_or_else(|_| "ollama".to_string());
                         let model_str = qualify_model_string(&raw_model, &provider);
                         app.popup = PopupState::None;
-                        let mut cfg = app.config.write().await;
-                        match cfg.set_model(&role, model_str.clone()) {
-                            Ok(()) => match cfg.save() {
-                                Ok(()) => {
-                                    let _ = tx.send(TuiEvent::TokenChunk {
-                                        agent: "model".to_string(),
-                                        chunk: format!("  ✓ {} → {} (saved)", role, model_str),
-                                    });
-                                }
+                        let (new_provider, new_model) = {
+                            let mut cfg = app.config.write().await;
+                            let p = cfg.provider.default.clone();
+                            let saved_model = match cfg.set_model(&role, model_str.clone()) {
+                                Ok(()) => match cfg.save() {
+                                    Ok(()) => {
+                                        let _ = tx.send(TuiEvent::TokenChunk {
+                                            agent: "model".to_string(),
+                                            chunk: format!("  ✓ {} → {} (saved)", role, model_str),
+                                        });
+                                        cfg.models.assistant.clone()
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(TuiEvent::Error {
+                                            agent: "model".to_string(),
+                                            message: format!(
+                                                "saved in memory but failed to persist: {e}"
+                                            ),
+                                        });
+                                        cfg.models.assistant.clone()
+                                    }
+                                },
                                 Err(e) => {
                                     let _ = tx.send(TuiEvent::Error {
                                         agent: "model".to_string(),
-                                        message: format!(
-                                            "saved in memory but failed to persist: {e}"
-                                        ),
+                                        message: e.to_string(),
                                     });
+                                    cfg.models.assistant.clone()
                                 }
-                            },
-                            Err(e) => {
-                                let _ = tx.send(TuiEvent::Error {
-                                    agent: "model".to_string(),
-                                    message: e.to_string(),
-                                });
-                            }
-                        }
+                            };
+                            (p, saved_model)
+                        };
+                        let _ = tx.send(TuiEvent::ProviderChanged {
+                            provider: new_provider,
+                            model: new_model,
+                        });
                     }
                 }
                 _ => {}

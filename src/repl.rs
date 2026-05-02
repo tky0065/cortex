@@ -467,9 +467,13 @@ pub async fn dispatch(
                 }
 
                 let mut cfg = config.write().await;
-                match cfg.set_model(role, model_str.to_string()) {
+                let set_result = cfg.set_model(role, model_str.to_string());
+                let (provider_snap, model_snap) =
+                    (cfg.provider.default.clone(), cfg.models.assistant.clone());
+                match set_result {
                     Ok(()) => {
                         if let Err(e) = cfg.save() {
+                            drop(cfg);
                             send(
                                 tx,
                                 TuiEvent::Error {
@@ -478,6 +482,7 @@ pub async fn dispatch(
                                 },
                             );
                         } else {
+                            drop(cfg);
                             send(
                                 tx,
                                 TuiEvent::TokenChunk {
@@ -485,9 +490,17 @@ pub async fn dispatch(
                                     chunk: format!("  ✓ {} → {} (saved)", role, model_str),
                                 },
                             );
+                            send(
+                                tx,
+                                TuiEvent::ProviderChanged {
+                                    provider: provider_snap,
+                                    model: model_snap,
+                                },
+                            );
                         }
                     }
                     Err(e) => {
+                        drop(cfg);
                         send(
                             tx,
                             TuiEvent::Error {
@@ -523,6 +536,16 @@ pub async fn dispatch(
                                 ),
                             },
                         );
+                        // Update cached display so status bar never shows UNKNOWN.
+                        if let Ok(cfg) = config.try_read() {
+                            send(
+                                tx,
+                                TuiEvent::ProviderChanged {
+                                    provider: cfg.provider.default.clone(),
+                                    model: cfg.models.assistant.clone(),
+                                },
+                            );
+                        }
                     }
                     Err(e) => {
                         send(
@@ -1132,7 +1155,17 @@ async fn handle_connect_command(rest: &str, tx: &TuiSender, config: Arc<RwLock<C
                     agent: "connect".to_string(),
                     chunk: format!("  ✓ {provider} connected with {method_id}{model_suffix}"),
                 },
-            )
+            );
+            // Update cached display so status bar never shows UNKNOWN.
+            if let Ok(cfg) = config.try_read() {
+                send(
+                    tx,
+                    TuiEvent::ProviderChanged {
+                        provider: cfg.provider.default.clone(),
+                        model: cfg.models.assistant.clone(),
+                    },
+                );
+            }
         }
         Err(e) => send(
             tx,
@@ -1549,6 +1582,15 @@ async fn chat_message(
                 hist.push(rig::completion::Message::assistant(&reply));
             }
 
+            // Replace the accumulated stream buffer with the clean final reply so that
+            // multi-iteration tool loops don't display duplicated content.
+            send(
+                tx,
+                TuiEvent::AgentReplaceBuffer {
+                    agent: "assistant".to_string(),
+                    content: crate::assistant::strip_tool_calls_for_display(&reply),
+                },
+            );
             send(
                 tx,
                 TuiEvent::AgentSummary {
