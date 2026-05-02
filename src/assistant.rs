@@ -7,6 +7,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent_bus::{AgentBus, AgentDirective, AgentStatus};
 use crate::config::Config;
@@ -15,14 +16,24 @@ use crate::tools::terminal;
 use crate::tui::events::{Task, TuiEvent, TuiSender};
 
 const MAX_ITERATIONS: usize = 15;
+const MAX_EMPTY_RETRIES: u8 = 2;
 const EMPTY_FINAL_REPLY: &str = "Je n'ai pas recu de reponse texte du modele. Reessaie avec un autre modele ou reformule la demande.";
 
 /// System prompt describing the assistant's capabilities and tool format.
 pub const PREAMBLE: &str = "\
-You are Cortex, a powerful general-purpose AI agent — like GitHub Copilot or Claude.\n\
-You can help with ANYTHING: coding, debugging, research, answering questions about people, projects, news, concepts, writing, analysis, and more.\n\
-You are NOT limited to software development. Treat every question as fair game.\n\
-Do not expose tool XML to the user. Tool calls are private runtime instructions.\n\
+You are Cortex, a powerful general-purpose AI assistant — similar to GitHub Copilot or Claude. \
+Your goal is to assist the user with any task, whether it is coding, research, writing, or general analysis. \
+You are an expert in many domains and can adapt your tone to the user's needs.\n\
+\n\
+## IDENTITY & SCOPE\n\
+- You are NOT just a coding assistant; you are a multi-domain intelligence.\n\
+- You can answer questions about people, news, history, science, and technology.\n\
+- You have access to the web, files, and local system commands.\n\
+\n\
+## TOOL USAGE GUIDELINES\n\
+- **Proactive Research**: For any subject where you lack 100% certainty (specific people, latest news, obscure libraries), ALWAYS use `web_search` or `fetch_url`. Do not hallucinate or rely on outdated training data.\n\
+- **Surgical Actions**: Use `write_file` and `run_command` to perform real-world tasks. Always verify your work.\n\
+- **Transparency**: Do not show raw tool XML to the user. Explain what you are doing in natural language.\n\
 \n\
 ## AVAILABLE TOOLS\n\
 \n\
@@ -58,60 +69,52 @@ file content goes here\n\
 \n\
 ### Fetch a URL directly\n\
 Use this when the user gives a specific http(s) URL or asks for information from a known page.\n\
-Prefer fetch_url over web_search for direct URLs.\n\
 <tool_call>\n\
 <name>fetch_url</name>\n\
 <url>https://example.com/docs</url>\n\
 </tool_call>\n\
 \n\
 ### Search the web\n\
-Use this for ANY question about a person, developer, GitHub user, organization, project, software tool, current events, news, or any topic you are not 100% certain about.\n\
-When in doubt, ALWAYS search. Do not answer from memory alone for specific people or recent facts.\n\
+Use this for ANY topic you are not 100% certain about (people, projects, events, news).\n\
 <tool_call>\n\
 <name>web_search</name>\n\
-<query>who is enokdev developer</query>\n\
+<query>latest news about rust 2024</query>\n\
 </tool_call>\n\
 \n\
 ### Query agent status\n\
-Check the status and output of a specific agent (or all agents) in the current workflow.\n\
+Check the status of workflow agents.\n\
 <tool_call>\n\
 <name>query_agent_status</name>\n\
-<agent>pm</agent>\n\
+<agent>developer</agent>\n\
 </tool_call>\n\
-Omit <agent> to query all agents at once.\n\
 \n\
-### Delegate a task to an agent\n\
-Run a standalone workflow agent with a custom instruction (does not require a running workflow).\n\
-Valid agents: ceo, pm, tech_lead, developer, qa, devops. Do NOT use this for research/Q&A — use web_search for that.\n\
+### Delegate a task\n\
+Run a standalone workflow agent (ceo, pm, tech_lead, developer, qa, devops).\n\
 <tool_call>\n\
 <name>delegate_to_agent</name>\n\
-<agent>ceo</agent>\n\
-<instruction>Write an executive brief for a note-taking app</instruction>\n\
+<agent>developer</agent>\n\
+<instruction>Implement the feature according to the specs</instruction>\n\
 </tool_call>\n\
 \n\
-### Inject a directive into the running workflow\n\
-Send an instruction to a specific agent that will be picked up at the next phase boundary.\n\
+### Inject a directive\n\
+Steer a running agent at the next boundary.\n\
 <tool_call>\n\
 <name>inject_directive</name>\n\
-<agent>developer</agent>\n\
-<instruction>Add unit tests for the authentication module</instruction>\n\
+<agent>qa</agent>\n\
+<instruction>Focus on security edge cases</instruction>\n\
 </tool_call>\n\
 \n\
-## RULES\n\
-- **ALWAYS call web_search** for any question about a specific person, developer, GitHub user, project, library, organization, event, or any topic you are not 100% certain about. Never answer from memory alone.\n\
-- If the user provides a URL, use fetch_url first and base your answer on the fetched content.\n\
-- For GitHub users, repositories, commits, PRs, or issues: use gh (e.g. `gh api users/enokdev`) or web_search.\n\
-- If web_search returns no results or fails, try: fetch_url with a direct profile URL, gh for GitHub entities, or curl for a direct HTTP endpoint.\n\
-- For repo-specific questions, read the relevant files first.\n\
-- For file edits or commands, use tools to complete the task.\n\
-- For complex or multi-step tasks, ALWAYS create a `TASKS.md` file in the project root with a checklist (`- [ ] Task description`). Update this file by marking tasks as done (`- [x]`) as you complete them so the user can track progress.\n\
-- Use query_agent_status to check what agents have done before delegating new tasks.\n\
-- Use inject_directive when a workflow is running and you want to steer an agent at the next phase.\n\
-- Use delegate_to_agent ONLY for workflow agent tasks (ceo/pm/tech_lead/developer/qa/devops). NEVER use delegate_to_agent for research, Q&A, or lookups — use web_search for those.\n\
-- After tool calls are executed, provide a concise natural-language answer.\n\
-- You can chain multiple tool calls in one response.\n\
-- Paths are relative to the current working directory.\n\
-- For `run_command`, `args` is a single space-separated string (e.g. `init --name myproject`).\n\
+## CORE RULES\n\
+1. **Always use web_search** for unknown subjects. Never say 'I don't know' without searching first.\n\
+2. For complex tasks, create and maintain a `TASKS.md` file using `- [ ]` checklist format.\n\
+3. Prefer direct evidence (files, command output, web results) over general knowledge.\n\
+4. Keep your final answers concise and helpful.\n\
+\n\
+## IMPORTANT — Tool calls are OPTIONAL\n\
+- For simple questions (greetings, general knowledge, short explanations), respond directly in plain text. Do NOT emit XML tool blocks.\n\
+- Only use tool calls when you genuinely need to read a file, run a command, or search the web for information you don't already have.\n\
+- A plain text response is always valid. If you are uncertain whether to use a tool, err on the side of answering directly.\n\
+- Web search context may already be provided in the message — use it directly without calling web_search again.\n\
 ";
 
 // ---------------------------------------------------------------------------
@@ -433,6 +436,7 @@ fn parse_tool_calls(text: &str) -> Vec<ToolCall> {
     let mut calls = Vec::new();
     let mut remaining = text;
 
+    // 1. Try standard <tool_call> wrappers first
     while let Some(start) = remaining.find("<tool_call>") {
         let after_open = &remaining[start + "<tool_call>".len()..];
         if let Some(end) = after_open.find("</tool_call>") {
@@ -446,23 +450,87 @@ fn parse_tool_calls(text: &str) -> Vec<ToolCall> {
         }
     }
 
+    // 2. Fallback: Scan for any bare tool tags if no standard wrappers were found
+    if calls.is_empty() {
+        let known_tools = [
+            "web_search",
+            "write_file",
+            "read_file",
+            "list_files",
+            "run_command",
+            "fetch_url",
+            "query_agent_status",
+            "delegate_to_agent",
+            "inject_directive",
+        ];
+
+        for tool in known_tools {
+            let mut search_text = text;
+            while let Some(content) = extract_tag(search_text, tool) {
+                if let Some(call) = parse_json_call(tool, content) {
+                    calls.push(call);
+                }
+                // Move past this tag to find others of the same type if necessary
+                let open = format!("<{}>", tool);
+                let close = format!("</{}>", tool);
+                if let Some(start) = search_text.find(&open) {
+                    let after_open = &search_text[start + open.len()..];
+                    if let Some(end) = after_open.find(&close) {
+                        search_text = &after_open[end + close.len()..];
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     calls
 }
 
 fn extract_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
-    let start = text.find(&open)? + open.len();
-    let end = text[start..].find(&close)?;
-    Some(text[start..start + end].trim())
+    
+    let start_idx = text.find(&open)?;
+    let after_open = &text[start_idx + open.len()..];
+    let end_idx = after_open.find(&close)?;
+    
+    Some(after_open[..end_idx].trim())
 }
 
 fn parse_single_call(block: &str) -> Option<ToolCall> {
-    let name = extract_tag(block, "name")?;
+    // Standard format: <name>tool_name</name> ... args
+    if let Some(name) = extract_tag(block, "name") {
+        return parse_named_call(name, block);
+    }
+
+    // Non-standard fallback: <tool_name>{json}</tool_name>
+    let known_tools = [
+        "web_search",
+        "write_file",
+        "read_file",
+        "list_files",
+        "run_command",
+        "fetch_url",
+        "query_agent_status",
+        "delegate_to_agent",
+        "inject_directive",
+    ];
+
+    for tool in known_tools {
+        if let Some(content) = extract_tag(block, tool) {
+            return parse_json_call(tool, content);
+        }
+    }
+
+    None
+}
+
+fn parse_named_call(name: &str, block: &str) -> Option<ToolCall> {
     match name {
         "write_file" => {
             let path = extract_tag(block, "path")?.to_string();
-            // Content may contain leading/trailing newlines — preserve inner content
             let content = extract_content_tag(block)?;
             Some(ToolCall::WriteFile { path, content })
         }
@@ -505,10 +573,61 @@ fn parse_single_call(block: &str) -> Option<ToolCall> {
     }
 }
 
+fn parse_json_call(name: &str, content: &str) -> Option<ToolCall> {
+    // Attempt JSON parsing first
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
+        match name {
+            "write_file" => return Some(ToolCall::WriteFile {
+                path: v["path"].as_str()?.to_string(),
+                content: v["content"].as_str()?.to_string(),
+            }),
+            "read_file" => return Some(ToolCall::ReadFile {
+                path: v["path"].as_str()?.to_string(),
+            }),
+            "list_files" => return Some(ToolCall::ListFiles {
+                path: v["path"].as_str().unwrap_or(".").to_string(),
+            }),
+            "run_command" => return Some(ToolCall::RunCommand {
+                command: v["command"].as_str()?.to_string(),
+                args: v["args"].as_str().unwrap_or("").to_string(),
+            }),
+            "fetch_url" => return Some(ToolCall::FetchUrl {
+                url: v["url"].as_str()?.to_string(),
+            }),
+            "web_search" => return Some(ToolCall::WebSearch {
+                query: v["query"].as_str()?.to_string(),
+            }),
+            "query_agent_status" => return Some(ToolCall::QueryAgentStatus {
+                agent: v["agent"].as_str().map(|s| s.to_string()),
+            }),
+            "delegate_to_agent" => return Some(ToolCall::DelegateToAgent {
+                agent: v["agent"].as_str()?.to_string(),
+                instruction: v["instruction"].as_str()?.to_string(),
+            }),
+            "inject_directive" => return Some(ToolCall::InjectDirective {
+                agent: v["agent"].as_str()?.to_string(),
+                instruction: v["instruction"].as_str()?.to_string(),
+            }),
+            _ => {}
+        }
+    }
+
+    // Fallback: If JSON parsing fails, treat content as raw text (especially useful for web_search)
+    match name {
+        "web_search" => Some(ToolCall::WebSearch { query: content.to_string() }),
+        "fetch_url" => Some(ToolCall::FetchUrl { url: content.to_string() }),
+        "read_file" => Some(ToolCall::ReadFile { path: content.to_string() }),
+        "list_files" => Some(ToolCall::ListFiles { path: content.to_string() }),
+        "run_command" => Some(ToolCall::RunCommand { command: content.to_string(), args: "".to_string() }),
+        _ => None,
+    }
+}
+
 pub(crate) fn strip_tool_calls_for_display(text: &str) -> String {
     let mut output = String::new();
     let mut remaining = text;
 
+    // 1. Strip standard <tool_call>...</tool_call> blocks (including everything inside)
     while let Some(start) = remaining.find("<tool_call>") {
         output.push_str(&remaining[..start]);
         let after_open = &remaining[start + "<tool_call>".len()..];
@@ -519,9 +638,65 @@ pub(crate) fn strip_tool_calls_for_display(text: &str) -> String {
             break;
         }
     }
-
     output.push_str(remaining);
-    output
+
+    // 2. Strip known tool tags and their content (fallback for non-standard or orphan blocks)
+    let tool_tags = [
+        ("web_search", "</web_search>"),
+        ("write_file", "</write_file>"),
+        ("read_file", "</read_file>"),
+        ("list_files", "</list_files>"),
+        ("run_command", "</run_command>"),
+        ("fetch_url", "</fetch_url>"),
+        ("query_agent_status", "</query_agent_status>"),
+        ("delegate_to_agent", "</delegate_to_agent>"),
+        ("inject_directive", "</inject_directive>"),
+    ];
+
+    let mut current = output;
+    for (open_name, close_tag) in tool_tags {
+        let open_tag = format!("<{}>", open_name);
+        while let Some(start) = current.find(&open_tag) {
+            let mut result = current[..start].to_string();
+            let after_open = &current[start + open_tag.len()..];
+            if let Some(end) = after_open.find(close_tag) {
+                result.push_str(&after_open[end + close_tag.len()..]);
+            } else {
+                // Orphan open tag — strip until end of string
+            }
+            current = result;
+        }
+    }
+
+    // 3. Final cleanup: strip any remaining orphan tags
+    let orphan_tags = [
+        "<tool_call>",
+        "</tool_call>",
+        "<name>",
+        "</name>",
+        "<path>",
+        "</path>",
+        "<content>",
+        "</content>",
+        "<command>",
+        "</command>",
+        "<args>",
+        "</args>",
+        "<url>",
+        "</url>",
+        "<query>",
+        "</query>",
+        "<agent>",
+        "</agent>",
+        "<instruction>",
+        "</instruction>",
+    ];
+
+    for tag in orphan_tags {
+        current = current.replace(tag, "");
+    }
+
+    current
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -891,7 +1066,7 @@ async fn execute_tool(
             let display = format!("delegate_to_agent({}, ...)", agent);
 
             // Guard: cannot delegate to self.
-            if agent == "assistant" || agent == "cortex" {
+            if agent == "cortex" || agent == "assistant" {
                 return ToolResult {
                     call: display,
                     output: "error: cannot delegate to yourself. \
@@ -1060,7 +1235,8 @@ pub async fn run(
     tx: &TuiSender,
     config: Arc<RwLock<Config>>,
     agent_bus: Option<Arc<AgentBus>>,
-) -> Result<String> {
+    cancel: CancellationToken,
+) -> Result<(String, Vec<rig::completion::Message>)> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let sandbox = FileSystem::new(&cwd);
 
@@ -1069,11 +1245,24 @@ pub async fn run(
     let mut conv_history = history;
     let mut current_message = message.to_string();
     let mut final_reply = String::new();
-    let mut retried_empty_final = false;
+    let mut empty_retry_count: u8 = 0;
     let mut task_tracker = AssistantTaskTracker::new(message);
     task_tracker.maybe_publish_initial(tx);
 
     for iteration in 0..MAX_ITERATIONS {
+        // ── Cancellation check ────────────────────────────────────────────────
+        if cancel.is_cancelled() {
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "cortex".to_string(),
+                    chunk: "  Aborted.".to_string(),
+                },
+            );
+            final_reply = "Aborted.".to_string();
+            break;
+        }
+
         // ── LLM call ──────────────────────────────────────────────────────────
         send(
             tx,
@@ -1088,27 +1277,70 @@ pub async fn run(
         );
 
         let config_snapshot = config.read().await.clone();
-        let reply = crate::providers::complete_chat_stream(
+
+        // Auto-inject web search context at the first iteration so even models
+        // that cannot emit tool-call XML benefit from fresh web results.
+        if iteration == 0 {
+            let search_query: String = message.chars().take(200).collect();
+            let web_context =
+                crate::tools::web_search::fetch_context(&search_query, &config_snapshot).await;
+            if !web_context.is_empty() {
+                current_message = format!("{}\n{}", current_message, web_context);
+            }
+        }
+
+        // Use the full preamble on the first pass; fall back to a minimal preamble
+        // on retries so that small models with limited context windows can still
+        // produce a plain-text answer.
+        let preamble = if empty_retry_count == 0 {
+            assistant_preamble(&config, &current_message).await
+        } else {
+            "You are Cortex, a helpful AI assistant. Answer the user's question concisely in plain text. Do not use XML tags or tool calls.".to_string()
+        };
+
+        let llm_fut = crate::providers::complete_chat_stream(
             model,
-            &assistant_preamble(&config, &current_message).await,
+            &preamble,
             conv_history.clone(),
             &current_message,
             &config_snapshot,
             tx,
-            "assistant",
-        )
-        .await?;
+            "cortex",
+        );
+        let reply = tokio::select! {
+            res = llm_fut => res?,
+            () = cancel.cancelled() => {
+                send(tx, TuiEvent::TokenChunk {
+                    agent: "cortex".to_string(),
+                    chunk: "  Aborted.".to_string(),
+                });
+                final_reply = "Aborted.".to_string();
+                break;
+            }
+            () = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+                send(tx, TuiEvent::TokenChunk {
+                    agent: "cortex".to_string(),
+                    chunk: "  Request timed out after 120s. Try a faster model.".to_string(),
+                });
+                final_reply = "Request timed out.".to_string();
+                break;
+            }
+        };
 
         // ── Parse tool calls ─────────────────────────────────────────────────
         let calls = parse_tool_calls(&reply);
         if calls.is_empty() {
             let visible = strip_tool_calls(&reply);
             if visible.trim().is_empty() {
-                if !retried_empty_final {
+                if empty_retry_count < MAX_EMPTY_RETRIES {
                     conv_history.push(rig::completion::Message::user(&current_message));
                     conv_history.push(rig::completion::Message::assistant(&reply));
-                    current_message = empty_final_retry_prompt(message, &current_message);
-                    retried_empty_final = true;
+                    current_message = if empty_retry_count == 0 {
+                        empty_final_retry_prompt(message, &current_message)
+                    } else {
+                        format!("Réponds simplement à : {}", message)
+                    };
+                    empty_retry_count += 1;
                     continue;
                 }
 
@@ -1124,7 +1356,9 @@ pub async fn run(
             }
             final_reply = visible;
             task_tracker.finish(tx);
-            // No tool calls → task is done
+            // Record this turn so the next prompt inherits the full context.
+            conv_history.push(rig::completion::Message::user(message));
+            conv_history.push(rig::completion::Message::assistant(&final_reply));
             break;
         }
 
@@ -1193,7 +1427,7 @@ pub async fn run(
 
     task_tracker.finish(tx);
 
-    Ok(final_reply)
+    Ok((final_reply, conv_history))
 }
 
 fn send(tx: &TuiSender, event: TuiEvent) {
@@ -1205,7 +1439,7 @@ async fn assistant_preamble(config: &Arc<RwLock<Config>>, prompt: &str) -> Strin
     let mut preamble = PREAMBLE.to_string();
     if cfg.tools.skills_enabled {
         let skill_context = crate::skills::context_for_prompt(
-            "assistant",
+            "cortex",
             prompt,
             cfg.tools.max_skill_context_chars,
         )
@@ -1422,6 +1656,50 @@ Then I will summarize."#;
         assert!(tasks[0].is_done);
         assert!(!tasks[1].is_done);
         assert!(tasks[2].is_done);
+    }
+
+    #[test]
+    fn parses_bare_tool_tags_with_raw_text() {
+        let text = r#"Check this: <web_search>enokdev developer</web_search>"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        match &calls[0] {
+            ToolCall::WebSearch { query } => assert_eq!(query, "enokdev developer"),
+            _ => panic!("Expected WebSearch call with raw text"),
+        }
+    }
+
+    #[test]
+    fn parses_bare_tool_tags_without_wrapper() {
+        let text = r#"Certainly! Here is the search: <web_search>{"query":"enokdev"}</web_search>"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        match &calls[0] {
+            ToolCall::WebSearch { query } => assert_eq!(query, "enokdev"),
+            _ => panic!("Expected WebSearch call"),
+        }
+    }
+
+    #[test]
+    fn parses_non_standard_json_xml_calls() {
+        let text = r#"
+<tool_call>
+<web_search>{"query":"enokdev"}</web_search>
+</tool_call>
+"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        match &calls[0] {
+            ToolCall::WebSearch { query } => assert_eq!(query, "enokdev"),
+            _ => panic!("Expected WebSearch call"),
+        }
+    }
+
+    #[test]
+    fn strip_tool_calls_handles_orphan_tags() {
+        let text = "Result: <web_search>{\"query\":\"enokdev\"}</web_search></tool_call>";
+        let visible = strip_tool_calls(text);
+        assert_eq!(visible, "Result:");
     }
 
     #[test]

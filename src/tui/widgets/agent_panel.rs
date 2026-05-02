@@ -58,6 +58,19 @@ impl ActiveAgent {
         self.scroll_offset = 0;
     }
 
+    /// Like `restart()` but keeps previous content with a visual separator so
+    /// the chat history stays visible across prompts (used for the "cortex" assistant).
+    pub fn new_turn(&mut self) {
+        self.status = AgentRunStatus::Running;
+        self.current_action = "Thinking…".to_string();
+        self.summary.clear();
+        self.progress = 0;
+        self.scroll_offset = 0;
+        if !self.stream_buffer.is_empty() {
+            self.stream_buffer.push_str("\n\n---\n\n");
+        }
+    }
+
     pub fn set_summary(&mut self, summary: &str) {
         self.summary = summary.to_owned();
         if self.progress < 95 {

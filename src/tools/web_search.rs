@@ -18,15 +18,15 @@ pub async fn search_without_key(query: &str) -> String {
     }
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("Mozilla/5.0 (compatible; cortex-agent)")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .build()
     {
         Ok(c) => c,
         Err(_) => return String::new(),
     };
     let resp = match client
-        .get("https://lite.duckduckgo.com/lite/")
-        .query(&[("q", query)])
+        .post("https://lite.duckduckgo.com/lite/")
+        .form(&[("q", query)])
         .send()
         .await
     {
@@ -37,25 +37,93 @@ pub async fn search_without_key(query: &str) -> String {
         Ok(t) => t,
         Err(_) => return String::new(),
     };
-    // Extract text snippets — strip HTML tags, collapse whitespace.
-    let text = strip_html_tags(&html);
-    if text.trim().is_empty() {
+
+    let results = parse_ddg_lite_html(&html);
+    if results.is_empty() {
         return String::new();
     }
-    // Truncate to ~4000 chars to stay within context budget.
-    let truncated = if text.len() > 4000 {
-        format!("{}…", &text[..4000])
-    } else {
-        text
-    };
-    format!(
-        "\n\n## Web Search Results (DuckDuckGo)\nQuery: {}\n\n{}\n",
-        query, truncated
-    )
+
+    let mut block = format!("\n\n## Web Search Results (DuckDuckGo Lite)\nQuery: {}\n\n", query);
+    for (i, r) in results.iter().take(5).enumerate() {
+        block.push_str(&format!(
+            "{}. **{}** ({})\n   {}\n\n",
+            i + 1,
+            r.title,
+            r.url,
+            r.snippet
+        ));
+    }
+    block
+}
+
+fn parse_ddg_lite_html(html: &str) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+    let mut remaining = html;
+
+    // DuckDuckGo Lite result rows are usually within <table> tags.
+    // Each result is typically a series of <tr>s.
+    // We'll use a simple but robust string-based extraction for titles, links, and snippets.
+    
+    while let Some(start_idx) = remaining.find("class=\"result-link\"") {
+        let after_link_class = &remaining[start_idx..];
+        
+        // Extract URL
+        let url = if let Some(href_start) = after_link_class.find("href=\"") {
+            let start = href_start + 6;
+            if let Some(href_end) = after_link_class[start..].find("\"") {
+                after_link_class[start..start + href_end].to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Extract Title
+        let title = if let Some(title_start) = after_link_class.find(">") {
+            let start = title_start + 1;
+            if let Some(title_end) = after_link_class[start..].find("</a>") {
+                strip_html_tags(&after_link_class[start..start + title_end])
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Look for the snippet in the following rows
+        let mut snippet = String::new();
+        if let Some(snippet_idx) = after_link_class.find("class=\"result-snippet\"") {
+            let after_snippet_class = &after_link_class[snippet_idx..];
+            if let Some(content_start) = after_snippet_class.find(">") {
+                let start = content_start + 1;
+                if let Some(content_end) = after_snippet_class[start..].find("</td>") {
+                    snippet = strip_html_tags(&after_snippet_class[start..start + content_end]);
+                }
+            }
+        }
+
+        if !title.is_empty() && !url.is_empty() {
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+
+        // Advance past this result
+        if let Some(next_tr) = after_link_class.find("</tr>") {
+            remaining = &after_link_class[next_tr + 5..];
+        } else {
+            break;
+        }
+    }
+
+    results
 }
 
 fn strip_html_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len() / 2);
+    let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
     for ch in html.chars() {
         match ch {
@@ -65,8 +133,15 @@ fn strip_html_tags(html: &str) -> String {
             _ => {}
         }
     }
-    // Collapse runs of whitespace
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    // Collapse runs of whitespace and decode basic entities if needed
+    out.replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Performs a web search. If `WEB_SEARCH_API_KEY` is unset, returns a
@@ -126,13 +201,17 @@ pub async fn fetch_context(query: &str, config: &Config) -> String {
     if !config.tools.web_search_enabled {
         return String::new();
     }
-    if config.api_keys.web_search.is_none() {
-        return String::new();
-    }
+    
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return String::new();
     }
+
+    if config.api_keys.web_search.is_none() {
+        // Fallback to free search (no key required)
+        return search_without_key(trimmed).await;
+    }
+
     match search(trimmed, 5).await {
         Err(_) => String::new(),
         Ok(results) if results.is_empty() => String::new(),

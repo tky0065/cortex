@@ -167,21 +167,28 @@ impl ToolCallStreamFilter {
             ("<output>", "</output>"),
             ("<call>", "</call>"),
             // Bare tool names used by some models as implicit openers.
-            // These often close with </tool_call> or </tool_result>.
-            ("<web_search>", "</tool_call>"),
-            ("<write_file>", "</tool_call>"),
-            ("<read_file>", "</tool_call>"),
-            ("<list_files>", "</tool_call>"),
-            ("<run_command>", "</tool_call>"),
-            ("<query_agent_status>", "</tool_call>"),
-            ("<delegate_to_agent>", "</tool_call>"),
-            ("<inject_directive>", "</tool_call>"),
+            ("<web_search>", "</web_search>"),
+            ("<write_file>", "</write_file>"),
+            ("<read_file>", "</read_file>"),
+            ("<list_files>", "</list_files>"),
+            ("<run_command>", "</run_command>"),
+            ("<query_agent_status>", "</query_agent_status>"),
+            ("<delegate_to_agent>", "</delegate_to_agent>"),
+            ("<inject_directive>", "</inject_directive>"),
         ];
 
         // Generic close tags that should always trigger an exit from "swallow" mode
         // if they appear, even if they don't perfectly match the opener (robustness).
         const GENERIC_CLOSES: &[&str] = &[
             "</tool_call>",
+            "</web_search>",
+            "</write_file>",
+            "</read_file>",
+            "</list_files>",
+            "</run_command>",
+            "</query_agent_status>",
+            "</delegate_to_agent>",
+            "</inject_directive>",
             "</tool_result>",
             "</thought>",
             "</think>",

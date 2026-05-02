@@ -371,7 +371,11 @@ impl App {
                 self.set_pipeline_status(agent, AgentStatus::Running);
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
-                    a.restart();
+                    if agent == "cortex" {
+                        a.new_turn();
+                    } else {
+                        a.restart();
+                    }
                 }
                 self.logs.push(LogEntry::agent(agent, "started"));
             }

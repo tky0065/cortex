@@ -1043,12 +1043,45 @@ async fn handle_connect_command(rest: &str, tx: &TuiSender, config: Arc<RwLock<C
         .get(2..)
         .map(|parts| parts.join(" "))
         .unwrap_or_default();
+
+    // If the second argument looks like an API key (not a known auth method),
+    // treat it as /apikey <provider> <key> to avoid confusing error messages.
+    if crate::auth::method_by_id(provider, method_id).is_none() && looks_like_api_key(method_id) {
+        let mut cfg = config.write().await;
+        match cfg.set_api_key(provider, method_id.to_string()) {
+            Ok(()) => {
+                cfg.apply_api_keys_to_env();
+                let _ = cfg.save();
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "connect".to_string(),
+                        chunk: format!("  ✓ {} API key saved (tip: use /apikey {} <key> next time)", provider, provider),
+                    },
+                );
+            }
+            Err(e) => {
+                send(
+                    tx,
+                    TuiEvent::Error {
+                        agent: "connect".to_string(),
+                        message: format!("{e}  — use /apikey {provider} <key> to set an API key"),
+                    },
+                );
+            }
+        }
+        return;
+    }
+
     let Some(method) = crate::auth::method_by_id(provider, method_id) else {
         send(
             tx,
             TuiEvent::Error {
                 agent: "connect".to_string(),
-                message: format!("unknown auth method '{method_id}' for provider '{provider}'"),
+                message: format!(
+                    "unknown auth method '{method_id}' for provider '{provider}'. \
+                     To set an API key use: /apikey {provider} <key>"
+                ),
             },
         );
         return;
@@ -1560,6 +1593,13 @@ async fn chat_message(
         },
     );
 
+    // Register a cancellation token so /abort can stop the assistant.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let mut guard = state.cancel.lock().await;
+        *guard = Some(cancel.clone());
+    }
+
     let result = {
         let bus = state.agent_bus.read().await.clone();
         crate::assistant::run(
@@ -1569,17 +1609,24 @@ async fn chat_message(
             tx,
             Arc::clone(&config),
             bus,
+            cancel,
         )
         .await
     };
 
+    // Clear the token when done.
+    {
+        let mut guard = state.cancel.lock().await;
+        *guard = None;
+    }
+
     match result {
-        Ok(reply) => {
-            // Persist both turns to history
+        Ok((reply, full_history)) => {
+            // Persist the full conversation history (includes tool calls/results)
+            // so subsequent prompts have complete context.
             {
                 let mut hist = state.chat_history.lock().await;
-                hist.push(rig::completion::Message::user(message));
-                hist.push(rig::completion::Message::assistant(&reply));
+                *hist = full_history;
             }
 
             // Replace the accumulated stream buffer with the clean final reply so that
@@ -1610,13 +1657,19 @@ async fn chat_message(
                 tx,
                 TuiEvent::Error {
                     agent: "cortex".to_string(),
-                    message: format!("assistant error: {e}"),
+                    message: format!("cortex error: {e}"),
                 },
             );
         }
     }
 
     Ok(false)
+}
+
+/// Returns true if the string looks like an API key rather than an auth method ID.
+/// Heuristic: length > 20 and only alphanumeric / dash / underscore characters.
+fn looks_like_api_key(s: &str) -> bool {
+    s.len() > 20 && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 fn list_output_files(dir: &std::path::Path) -> Vec<String> {
