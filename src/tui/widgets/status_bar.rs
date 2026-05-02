@@ -17,6 +17,7 @@ pub struct StatusBarState<'a> {
     pub tokens_total: usize,
     pub cwd: &'a str,
     pub git_info: Option<&'a str>,
+    pub mode: &'a str,
 }
 
 /// A single-line status bar showing provider, model, token count and elapsed time.
@@ -32,7 +33,22 @@ impl<'a> StatusBarWidget<'a> {
 
         let separator = Span::styled(" │ ", Style::default().fg(THEME.muted));
 
+        let mode_color = match self.state.mode {
+            "PLAN" => THEME.warning,
+            "AUTO" => THEME.success,
+            "REVIEW" => Color::Rgb(249, 115, 22), // orange
+            _ => THEME.text,
+        };
+
         let mut spans = vec![
+            Span::styled("MODE: ", Style::default().fg(THEME.muted)),
+            Span::styled(
+                self.state.mode,
+                Style::default()
+                    .fg(mode_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            separator.clone(),
             Span::styled("DIR: ", Style::default().fg(THEME.muted)),
             Span::styled(
                 self.state.cwd,
@@ -86,6 +102,11 @@ impl<'a> StatusBarWidget<'a> {
         spans.push(Span::styled(
             format!("{:02}:{:02}", elapsed_mins, elapsed_s),
             Style::default().fg(THEME.text),
+        ));
+
+        spans.push(Span::styled(
+            "  Shift+Tab: mode",
+            Style::default().fg(THEME.muted),
         ));
 
         frame.render_widget(

@@ -11,7 +11,7 @@ use crate::agent_bus::{AgentBus, AgentDirective};
 use crate::config::Config;
 use crate::orchestrator::Orchestrator;
 use crate::tui::events::{TuiEvent, TuiSender};
-use crate::workflows;
+use crate::workflows::{self, ExecutionMode};
 
 // ASSISTANT_PREAMBLE is the system prompt for the agentic assistant loop.
 // It lives in assistant.rs and is re-exported here for reference in tests / help text.
@@ -67,11 +67,19 @@ pub struct ReplState {
     pub history_dir: PathBuf,
     /// The active AgentBus for the currently running workflow (set by the Orchestrator).
     pub agent_bus: Arc<RwLock<Option<Arc<AgentBus>>>>,
+    /// Current execution mode (Normal/Plan/Auto/Review).
+    pub execution_mode: Arc<Mutex<ExecutionMode>>,
+    /// Original user message pending plan approval (chat mode only).
+    pub pending_chat_message: Arc<Mutex<Option<String>>>,
 }
 
 impl ReplState {
     pub fn new() -> Self {
-        let mut state = Self::default();
+        let mut state = Self {
+            execution_mode: Arc::new(Mutex::new(ExecutionMode::default())),
+            pending_chat_message: Arc::new(Mutex::new(None)),
+            ..Self::default()
+        };
         // Initialize history directory
         if let Some(mut home) = dirs::home_dir() {
             home.push(".cortex");
@@ -152,6 +160,8 @@ pub async fn dispatch(
                 "  /run   <workflow> \"<prompt>\" — alias for /start",
                 "  /resume <project-dir>         — resume an interrupted workflow",
                 "  /init [--force]               — scan this project and generate/update AGENTS.md",
+                "  /mode [normal|plan|auto|review] — show or set execution mode (Shift+Tab to cycle)",
+                "  /approve                      — approve a plan and start execution (Plan mode)",
                 "  /status                       — show current workflow status",
                 "  /abort                        — cancel the running workflow",
                 "  /continue                     — resume an interactive pause",
@@ -560,6 +570,76 @@ pub async fn dispatch(
             }
         }
 
+        "/mode" => {
+            let arg = rest.trim().to_lowercase();
+            if arg.is_empty() {
+                let mode = state.execution_mode.lock().await;
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "mode".to_string(),
+                        chunk: format!(
+                            "  mode: {}  (Shift+Tab to cycle, or /mode normal|plan|auto|review)",
+                            mode.label()
+                        ),
+                    },
+                );
+            } else {
+                let new_mode = match arg.as_str() {
+                    "normal" => Some(ExecutionMode::Normal),
+                    "plan" => Some(ExecutionMode::Plan),
+                    "auto" => Some(ExecutionMode::Auto),
+                    "review" => Some(ExecutionMode::Review),
+                    _ => {
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "mode".to_string(),
+                                message: "usage: /mode [normal|plan|auto|review]".to_string(),
+                            },
+                        );
+                        None
+                    }
+                };
+                if let Some(mode) = new_mode {
+                    let label = mode.label();
+                    *state.execution_mode.lock().await = mode.clone();
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "mode".to_string(),
+                            chunk: format!("  ✓ mode → {}", label),
+                        },
+                    );
+                    send(tx, TuiEvent::ModeChanged(mode));
+                }
+            }
+        }
+
+        // /approve is an alias for /continue — used after Plan mode generates PLAN.md
+        "/approve" => {
+            let resume_guard = state.resume_tx.lock().await;
+            if let Some(tx_resume) = resume_guard.as_ref() {
+                let _ = tx_resume.try_send(());
+                send(tx, TuiEvent::Resume);
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "repl".to_string(),
+                        chunk: "  Plan approved — executing workflow…".to_string(),
+                    },
+                );
+            } else {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "repl".to_string(),
+                        chunk: "  No plan is pending approval.".to_string(),
+                    },
+                );
+            }
+        }
+
         "/start" | "/run" => {
             if rest.is_empty() {
                 send(
@@ -605,7 +685,9 @@ pub async fn dispatch(
                     );
                     let tx_clone = tx.clone();
                     let tx_done = tx.clone();
-                    let mut orch = Orchestrator::new(wf, config_snapshot);
+                    let current_mode = state.execution_mode.lock().await.clone();
+                    let mut orch = Orchestrator::new(wf, config_snapshot)
+                        .with_execution_mode(current_mode);
 
                     // Create session info for tracking
                     let prompt_owned = prompt.to_string();
@@ -1578,9 +1660,25 @@ async fn chat_message(
         return Ok(false);
     }
 
+    let is_plan_mode = *state.execution_mode.lock().await == ExecutionMode::Plan;
+
     let model = {
         let cfg = config.read().await;
         crate::providers::model_for_role("assistant", &cfg)?.to_string()
+    };
+
+    // In Plan mode: inject plan-only instructions so the assistant describes
+    // its approach without writing files or running commands.
+    let effective_message = if is_plan_mode {
+        format!(
+            "[PLAN MODE] You are in plan mode. Analyze the request and describe step-by-step \
+             what you would do — but do NOT write any files, execute commands, or make changes. \
+             Produce a clear implementation plan. End your response with the line: PLAN READY.\n\n\
+             User request: {}",
+            message
+        )
+    } else {
+        message.to_string()
     };
 
     // Snapshot history before the call (avoid holding the lock across await)
@@ -1603,7 +1701,7 @@ async fn chat_message(
     let result = {
         let bus = state.agent_bus.read().await.clone();
         crate::assistant::run(
-            message,
+            &effective_message,
             history_snapshot,
             &model,
             tx,
@@ -1622,35 +1720,73 @@ async fn chat_message(
 
     match result {
         Ok((reply, full_history)) => {
-            // Persist the full conversation history (includes tool calls/results)
-            // so subsequent prompts have complete context.
-            {
-                let mut hist = state.chat_history.lock().await;
-                *hist = full_history;
-            }
+            if is_plan_mode {
+                // Store the original message so Approve can re-run it without restrictions.
+                *state.pending_chat_message.lock().await = Some(message.to_string());
 
-            // Replace the accumulated stream buffer with the clean final reply so that
-            // multi-iteration tool loops don't display duplicated content.
-            send(
-                tx,
-                TuiEvent::AgentReplaceBuffer {
-                    agent: "cortex".to_string(),
-                    content: crate::assistant::strip_tool_calls_for_display(&reply),
-                },
-            );
-            send(
-                tx,
-                TuiEvent::AgentSummary {
-                    agent: "cortex".to_string(),
-                    summary: crate::workflows::summarize_output(&reply),
-                },
-            );
-            send(
-                tx,
-                TuiEvent::AgentDone {
-                    agent: "cortex".to_string(),
-                },
-            );
+                // Write the plan to PLAN.md in the current directory.
+                let plan_path = std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join("PLAN.md");
+                let plan_content = format!(
+                    "# Plan\n\n**Request:** {}\n\n{}\n\n---\n\
+                     *Generated by Cortex — type `/approve` or press Enter in the popup to execute.*\n",
+                    message,
+                    crate::assistant::strip_tool_calls_for_display(&reply)
+                );
+                let _ = std::fs::write(&plan_path, &plan_content);
+
+                send(
+                    tx,
+                    TuiEvent::AgentReplaceBuffer {
+                        agent: "cortex".to_string(),
+                        content: crate::assistant::strip_tool_calls_for_display(&reply),
+                    },
+                );
+                send(
+                    tx,
+                    TuiEvent::AgentDone {
+                        agent: "cortex".to_string(),
+                    },
+                );
+                // Open PlanReview popup.
+                send(
+                    tx,
+                    TuiEvent::PlanGenerated {
+                        path: plan_path.display().to_string(),
+                    },
+                );
+            } else {
+                // Persist the full conversation history (includes tool calls/results)
+                // so subsequent prompts have complete context.
+                {
+                    let mut hist = state.chat_history.lock().await;
+                    *hist = full_history;
+                }
+
+                // Replace the accumulated stream buffer with the clean final reply so that
+                // multi-iteration tool loops don't display duplicated content.
+                send(
+                    tx,
+                    TuiEvent::AgentReplaceBuffer {
+                        agent: "cortex".to_string(),
+                        content: crate::assistant::strip_tool_calls_for_display(&reply),
+                    },
+                );
+                send(
+                    tx,
+                    TuiEvent::AgentSummary {
+                        agent: "cortex".to_string(),
+                        summary: crate::workflows::summarize_output(&reply),
+                    },
+                );
+                send(
+                    tx,
+                    TuiEvent::AgentDone {
+                        agent: "cortex".to_string(),
+                    },
+                );
+            }
         }
         Err(e) => {
             send(

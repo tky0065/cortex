@@ -100,6 +100,17 @@ enum PopupState {
         cursor: usize,
         scroll_offset: usize,
     },
+    /// Shows PLAN.md for review before execution (Plan mode).
+    PlanReview {
+        path: String,
+        /// Current displayed content (updated on save).
+        content: String,
+        scroll_offset: usize,
+        /// When true the user is in inline-edit mode.
+        editing: bool,
+        /// Editable copy of the plan (initialised from content on [e]).
+        edit_input: tui_input::Input,
+    },
 }
 
 struct SkillPickerState {
@@ -144,6 +155,8 @@ struct App {
     provider_display: String,
     /// Cached assistant model string (avoids try_read() failures in draw())
     model_display: String,
+    /// Current execution mode displayed in status bar.
+    execution_mode: crate::workflows::ExecutionMode,
 }
 
 impl App {
@@ -188,6 +201,7 @@ impl App {
             git_info: None,
             provider_display,
             model_display,
+            execution_mode: crate::workflows::ExecutionMode::default(),
         }
     }
 
@@ -234,6 +248,7 @@ impl App {
                 tokens_total: self.tokens_total,
                 cwd: &self.cwd,
                 git_info: self.git_info.as_deref(),
+                mode: self.execution_mode.label(),
             },
         }
         .render(frame, layout.status);
@@ -337,6 +352,15 @@ impl App {
                     }
                     .render(frame, frame.area());
                 }
+            }
+            PopupState::PlanReview {
+                path,
+                content,
+                scroll_offset,
+                editing,
+                edit_input,
+            } => {
+                draw_plan_review(frame, path, content, *scroll_offset, *editing, edit_input);
             }
         }
     }
@@ -677,6 +701,29 @@ impl App {
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
                     a.replace_buffer(content);
                 }
+            }
+            TuiEvent::ModeChanged(new_mode) => {
+                self.execution_mode = new_mode.clone();
+                self.logs.push(LogEntry::system(format!(
+                    "mode → {}",
+                    new_mode.label()
+                )));
+            }
+            TuiEvent::PlanGenerated { path } => {
+                let content = std::fs::read_to_string(path).unwrap_or_else(|_| {
+                    "Could not read PLAN.md".to_string()
+                });
+                self.logs.push(LogEntry::system(format!(
+                    "Plan ready: {}  — reviewing…",
+                    path
+                )));
+                self.popup = PopupState::PlanReview {
+                    path: path.clone(),
+                    content,
+                    scroll_offset: 0,
+                    editing: false,
+                    edit_input: tui_input::Input::default(),
+                };
             }
             TuiEvent::FileWritten {
                 agent,
@@ -1081,6 +1128,9 @@ impl Tui {
                 Self::handle_diff_viewer(app, key);
                 return false;
             }
+            PopupState::PlanReview { .. } => {
+                return Self::handle_plan_review(app, key, tx).await;
+            }
             PopupState::None => {}
         }
 
@@ -1163,6 +1213,21 @@ impl Tui {
             }
         } else {
             match key.code {
+                // Shift+Tab cycles execution mode (like Claude Code).
+                KeyCode::BackTab => {
+                    let new_mode = {
+                        let mut guard = app.repl_state.execution_mode.lock().await;
+                        *guard = guard.cycle();
+                        guard.clone()
+                    };
+                    app.execution_mode = new_mode.clone();
+                    app.logs.push(LogEntry::system(format!(
+                        "mode → {}",
+                        new_mode.label()
+                    )));
+                    let _ = tx.send(TuiEvent::ModeChanged(new_mode));
+                    return false;
+                }
                 KeyCode::Up => {
                     if key.modifiers.contains(KeyModifiers::ALT) {
                         for agent in &mut app.active_agents {
@@ -2417,6 +2482,150 @@ impl Tui {
             _ => {}
         }
     }
+
+    async fn handle_plan_review(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        tx: &TuiSender,
+    ) -> bool {
+        let PopupState::PlanReview {
+            path,
+            content,
+            scroll_offset,
+            editing,
+            edit_input,
+        } = &mut app.popup
+        else {
+            return false;
+        };
+
+        // ── Edit mode ────────────────────────────────────────────────────────
+        if *editing {
+            match key.code {
+                // Ctrl+S → save edits to file, approve workflow.
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let new_content = edit_input.value().to_string();
+                    let path_clone = path.clone();
+                    if let Err(e) = std::fs::write(&path_clone, &new_content) {
+                        app.logs.push(LogEntry::error("plan", format!("Could not save: {e}")));
+                    } else {
+                        app.logs.push(LogEntry::system("Plan saved."));
+                    }
+                    app.popup = PopupState::None;
+
+                    let pending = app.repl_state.pending_chat_message.lock().await.take();
+                    if let Some(original_msg) = pending {
+                        *app.repl_state.execution_mode.lock().await = crate::workflows::ExecutionMode::Normal;
+                        app.execution_mode = crate::workflows::ExecutionMode::Normal;
+                        let _ = tx.send(TuiEvent::ModeChanged(crate::workflows::ExecutionMode::Normal));
+                        app.logs.push(LogEntry::system("Plan approved — executing…"));
+                        Tui::spawn_dispatch(
+                            original_msg,
+                            tx.clone(),
+                            Arc::clone(&app.config),
+                            Arc::clone(&app.repl_state),
+                        );
+                    } else {
+                        let resume_guard = app.repl_state.resume_tx.lock().await;
+                        if let Some(rtx) = resume_guard.as_ref() {
+                            let _ = rtx.try_send(());
+                        }
+                        let _ = tx.send(TuiEvent::Resume);
+                    }
+                }
+                // Esc → cancel edit, return to view mode.
+                KeyCode::Esc => {
+                    *editing = false;
+                }
+                // Delegate all other keys to the input widget.
+                _ => {
+                    use tui_input::backend::crossterm::EventHandler;
+                    edit_input.handle_event(&crossterm::event::Event::Key(*key));
+                }
+            }
+            return false;
+        }
+
+        // ── View mode ────────────────────────────────────────────────────────
+        let line_count = content.lines().count();
+        match key.code {
+            // Enter → approve.
+            KeyCode::Enter => {
+                app.popup = PopupState::None;
+
+                // Check if there's a pending chat message (chat-mode Plan).
+                let pending = app.repl_state.pending_chat_message.lock().await.take();
+                if let Some(original_msg) = pending {
+                    // Switch to Normal mode so re-dispatch executes without restrictions.
+                    *app.repl_state.execution_mode.lock().await = crate::workflows::ExecutionMode::Normal;
+                    app.execution_mode = crate::workflows::ExecutionMode::Normal;
+                    app.logs.push(LogEntry::system("Plan approved — executing in Normal mode…"));
+                    let _ = tx.send(TuiEvent::ModeChanged(crate::workflows::ExecutionMode::Normal));
+                    Tui::spawn_dispatch(
+                        original_msg,
+                        tx.clone(),
+                        Arc::clone(&app.config),
+                        Arc::clone(&app.repl_state),
+                    );
+                } else {
+                    // Workflow Plan mode: unblock the waiting workflow via resume channel.
+                    app.logs.push(LogEntry::system("Plan approved — executing workflow…"));
+                    let resume_guard = app.repl_state.resume_tx.lock().await;
+                    if let Some(rtx) = resume_guard.as_ref() {
+                        let _ = rtx.try_send(());
+                    }
+                    let _ = tx.send(TuiEvent::Resume);
+                }
+            }
+            // e → switch to edit mode, initialise edit_input from current content.
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                let current = content.clone();
+                *editing = true;
+                *edit_input = tui_input::Input::new(current);
+            }
+            // Esc or q → abort.
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.popup = PopupState::None;
+                app.logs.push(LogEntry::system("Plan aborted."));
+                // Cancel the waiting workflow.
+                match crate::repl::dispatch(
+                    "/abort",
+                    tx,
+                    Arc::clone(&app.config),
+                    Arc::clone(&app.repl_state),
+                )
+                .await
+                {
+                    Ok(should_quit) => return should_quit,
+                    Err(e) => {
+                        let _ = tx.send(TuiEvent::Error {
+                            agent: "plan".to_string(),
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            }
+            // Scroll keys.
+            KeyCode::Down | KeyCode::Char('j') => {
+                *scroll_offset = scroll_offset
+                    .saturating_add(1)
+                    .min(line_count.saturating_sub(1));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                *scroll_offset = scroll_offset.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                *scroll_offset = scroll_offset
+                    .saturating_add(20)
+                    .min(line_count.saturating_sub(1));
+            }
+            KeyCode::PageUp => {
+                *scroll_offset = scroll_offset.saturating_sub(20);
+            }
+            _ => {}
+        }
+        false
+    }
 }
 
 impl Drop for Tui {
@@ -2998,6 +3207,129 @@ fn draw_question_overlay(frame: &mut Frame, agent: &str, question: &str, input: 
     frame.render_widget(
         Paragraph::new(" Enter to confirm  •  Esc to skip").style(Style::default().fg(THEME.muted)),
         chunks[4],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Plan Review overlay (full-screen, view + edit modes)
+// ---------------------------------------------------------------------------
+
+fn draw_plan_review(
+    frame: &mut Frame,
+    path: &str,
+    content: &str,
+    scroll_offset: usize,
+    editing: bool,
+    edit_input: &tui_input::Input,
+) {
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+
+    // Split: content area (fill) + action bar (3 rows)
+    let chunks = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([
+            ratatui::layout::Constraint::Min(0),
+            ratatui::layout::Constraint::Length(3),
+        ])
+        .split(area);
+
+    let title = if editing {
+        format!(" ✏  EDITING — {} ", path)
+    } else {
+        format!(" 📋  PLAN REVIEW — {} ", path)
+    };
+    let border_color = if editing { THEME.warning } else { THEME.primary };
+
+    let block = Block::default()
+        .title(Span::styled(title, THEME.title_style()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .style(Style::default().bg(THEME.bg));
+
+    let inner = block.inner(chunks[0]);
+    frame.render_widget(block, chunks[0]);
+
+    // Content: in edit mode show edit_input value, otherwise show content with scroll.
+    let display_text = if editing {
+        edit_input.value().to_string()
+    } else {
+        content.to_string()
+    };
+
+    let visible_lines = inner.height as usize;
+    let all_lines: Vec<&str> = display_text.lines().collect();
+    let start = scroll_offset.min(all_lines.len().saturating_sub(1));
+    let visible: Vec<ratatui::text::Line> = all_lines
+        .iter()
+        .skip(start)
+        .take(visible_lines)
+        .map(|line| {
+            // Colour markdown headings and bold markers.
+            if line.starts_with("## ") || line.starts_with("# ") {
+                ratatui::text::Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default()
+                        .fg(THEME.primary)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ))
+            } else if line.starts_with("- **") || line.starts_with("**") {
+                ratatui::text::Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(THEME.accent),
+                ))
+            } else if line.starts_with("---") {
+                ratatui::text::Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(THEME.muted),
+                ))
+            } else {
+                ratatui::text::Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(THEME.text),
+                ))
+            }
+        })
+        .collect();
+
+    let scroll_hint = if all_lines.len() > visible_lines {
+        format!(
+            " [{}/{}]",
+            start + 1,
+            all_lines.len()
+        )
+    } else {
+        String::new()
+    };
+
+    frame.render_widget(
+        Paragraph::new(visible)
+            .style(Style::default().bg(THEME.bg))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
+
+    // Action bar
+    let action_text = if editing {
+        format!(
+            " Ctrl+S: Save & Approve   Esc: Cancel edit{}",
+            scroll_hint
+        )
+    } else {
+        format!(
+            " Enter: Approve & Execute   e: Edit   Esc: Abort{}   ↑↓ PageUp/Down: scroll",
+            scroll_hint
+        )
+    };
+    let action_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(THEME.muted))
+        .style(Style::default().bg(THEME.bg));
+    let action_inner = action_block.inner(chunks[1]);
+    frame.render_widget(action_block, chunks[1]);
+    frame.render_widget(
+        Paragraph::new(action_text).style(Style::default().fg(THEME.muted)),
+        action_inner,
     );
 }
 

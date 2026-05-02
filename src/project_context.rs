@@ -394,6 +394,7 @@ async fn generate_agents_md(
     let (answer_tx, answer_rx) = tokio::sync::mpsc::channel::<String>(1);
     let options = RunOptions {
         auto: true,
+        execution_mode: crate::workflows::ExecutionMode::Auto,
         config,
         tx,
         project_dir: scan.root.clone(),

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use super::{RunOptions, Workflow, drain_and_log_directives};
+use super::{ExecutionMode, RunOptions, Workflow, drain_and_log_directives};
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 
@@ -42,6 +42,23 @@ impl Workflow for DevWorkflow {
             ..options.clone()
         };
 
+        // ── Plan Mode: run planner only, then wait for /approve ──────────
+        if opts.execution_mode == ExecutionMode::Plan {
+            crate::workflows::planner::run(&prompt, &opts).await?;
+            // Block until the user approves via /continue or /approve.
+            let _ = opts.tx.send(TuiEvent::InteractivePause {
+                message: "Plan ready — type /approve (or /continue) to execute the workflow."
+                    .to_string(),
+            });
+            tokio::select! {
+                _ = async {
+                    let mut rx = opts.resume_rx.lock().await;
+                    rx.recv().await
+                } => {}
+                _ = opts.cancel.cancelled() => return Ok(()),
+            }
+        }
+
         // ── Phase 1: CEO → brief ─────────────────────────────────────────
         // The CEO may output `CLARIFICATION_NEEDED: <question>` when the prompt
         // is genuinely ambiguous. We ask the user once, then re-run CEO with
@@ -67,6 +84,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
+        pause_if_review("PM: specs.md", &opts).await?;
         drain_and_log_directives(&opts, "before-pm").await;
         let pm_output = agents::pm::run(&brief, &opts).await?;
 
@@ -104,6 +122,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 3: Tech Lead → architecture.md ─────────────────────────
+        pause_if_review("Tech Lead: architecture.md", &opts).await?;
         drain_and_log_directives(&opts, "before-tech-lead").await;
         let arch = agents::tech_lead::run(&specs, &opts).await?;
         let old_arch = fs.read("architecture.md").ok();
@@ -123,6 +142,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 4: Developer workers (parallel, semaphore-bounded) ──────
+        pause_if_review("Developer: code generation", &opts).await?;
         drain_and_log_directives(&opts, "before-development").await;
         let files = parse_files_to_create(&arch);
         let sem = Arc::new(Semaphore::new(
@@ -219,6 +239,7 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 6: DevOps ───────────────────────────────────────────────
+        pause_if_review("DevOps: deployment config", &opts).await?;
         drain_and_log_directives(&opts, "before-devops").await;
         agents::devops::run(&arch, &opts, &fs).await?;
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
@@ -235,6 +256,23 @@ impl Workflow for DevWorkflow {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// In Review mode, pause before the named phase and wait for the user to press C (continue).
+async fn pause_if_review(phase: &str, opts: &RunOptions) -> Result<()> {
+    if opts.execution_mode != ExecutionMode::Review {
+        return Ok(());
+    }
+    let _ = opts.tx.send(TuiEvent::InteractivePause {
+        message: format!("Ready to start: {}  Press C to continue, A to abort.", phase),
+    });
+    tokio::select! {
+        _ = async {
+            let mut rx = opts.resume_rx.lock().await;
+            rx.recv().await
+        } => Ok(()),
+        _ = opts.cancel.cancelled() => Ok(()),
+    }
+}
 
 /// Ask the user a question and wait for their text answer.
 ///

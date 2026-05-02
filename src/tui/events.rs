@@ -133,6 +133,12 @@ pub enum TuiEvent {
         agent: String,
         content: String,
     },
+    /// Emitted when the user cycles execution mode (e.g. via Shift+Tab).
+    ModeChanged(crate::workflows::ExecutionMode),
+    /// Emitted by the planner agent once PLAN.md has been written.
+    PlanGenerated {
+        path: String,
+    },
 }
 
 pub type TuiSender = mpsc::UnboundedSender<TuiEvent>;

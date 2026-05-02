@@ -11,7 +11,43 @@ use crate::tui::events::{Task, TuiEvent, TuiSender};
 pub mod code_review;
 pub mod dev;
 pub mod marketing;
+pub mod planner;
 pub mod prospecting;
+
+/// Controls how much autonomy agents have and which pre-execution phases run.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ExecutionMode {
+    /// Pauses at key checkpoints (specs, architecture, first build). Default.
+    #[default]
+    Normal,
+    /// Planner agent scans the project, asks clarifying questions, produces PLAN.md.
+    /// No workflow agents run until the user types /approve.
+    Plan,
+    /// All agents run without any interactive pause.
+    Auto,
+    /// Pauses before every agent phase for manual confirmation.
+    Review,
+}
+
+impl ExecutionMode {
+    pub fn cycle(&self) -> Self {
+        match self {
+            Self::Normal => Self::Plan,
+            Self::Plan => Self::Auto,
+            Self::Auto => Self::Review,
+            Self::Review => Self::Normal,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Plan => "PLAN",
+            Self::Auto => "AUTO",
+            Self::Review => "REVIEW",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkflowInfo {
@@ -53,6 +89,8 @@ pub fn available_workflow_names() -> String {
 #[derive(Clone)]
 pub struct RunOptions {
     pub auto: bool,
+    /// Current execution mode — controls planning phases and pause behaviour.
+    pub execution_mode: ExecutionMode,
     pub config: Arc<Config>,
     pub tx: TuiSender,
     pub project_dir: std::path::PathBuf,

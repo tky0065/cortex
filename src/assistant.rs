@@ -1100,6 +1100,7 @@ async fn execute_tool(
             let (answer_tx, answer_rx) = tokio::sync::mpsc::channel::<String>(1);
             let opts = crate::workflows::RunOptions {
                 auto: true,
+                execution_mode: crate::workflows::ExecutionMode::Auto,
                 config: Arc::new(cfg2.clone()),
                 tx: tx.clone(),
                 project_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),

@@ -57,7 +57,9 @@ const SECTIONS = [
     { id: "cli", label: "One-shot CLI" },
     { id: "project-context", label: "Project context" },
     { id: "skills", label: "Skills" },
+    { id: "execution-modes", label: "Execution modes" },
     { id: "resume", label: "Resuming a run" },
+    { id: "tasks", label: "Task tracking" },
     { id: "web-search", label: "Web search" },
   ]},
   { group: "Workflows", items: [
@@ -139,13 +141,14 @@ function TOC({ active }) {
 function Content() {
   return (
     <main className="docs-content">
-      <span className="docs-eyebrow">Documentation · v0.1.7 beta</span>
+      <span className="docs-eyebrow">Documentation · v0.1.8 beta</span>
       <h1>Cortex</h1>
       <p style={{ fontSize: 18, color: "var(--fg)" }}>Orchestrate specialized AI agents to build and ship your projects from your terminal. Cortex is currently in beta.</p>
 
       <section id="introduction" className="docs-section">
         <h2>Introduction</h2>
         <p><strong>Status:</strong> Cortex is in beta. It is ready for early adopters, while workflows, providers, and generated project structure may still evolve before a stable 1.0 release.</p>
+        <p><strong>0.1.8 beta highlights:</strong> execution modes — cycle NORMAL / PLAN / AUTO / REVIEW with <strong>Shift+Tab</strong>; Plan mode scans the project, asks clarifying questions, and produces a reviewable <code>PLAN.md</code> before any agent runs; full-screen PlanReview popup with inline editing; <code>/mode</code> and <code>/approve</code> REPL commands.</p>
         <p><strong>0.1.7 beta highlights:</strong> task management widget (track progress in real-time), workflow explorer (list all workflows with <code>/workflows</code>), responsive agent grid (UI adapts to small terminals), professional progress indicators.</p>
         <p><strong>0.1.6 beta highlights:</strong> live diff viewer (file writes show added/removed lines in green/red), agent stream buffer cap (50 000 chars, prevents memory growth), refreshed TUI style (rounded borders on all panels, new ◐◓◑◒ spinner, gradient text on streaming content).</p>
         <p>Cortex runs like a REPL by default — type <code>cortex</code> to launch the TUI. Inside, you give it an idea via a slash command and watch six specialized agents take it from brief to deployable repo: <strong>CEO → PM → Tech Lead → Developer ×N → QA → DevOps</strong>.</p>
@@ -291,6 +294,8 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td>/status</td><td>Show whether a workflow is running</td></tr>
             <tr><td>/abort</td><td>Cancel at the next checkpoint</td></tr>
             <tr><td>/continue</td><td>Resume an interactive pause</td></tr>
+            <tr><td>/approve</td><td>Confirm a plan or resume a Review-mode pause (alias for /continue)</td></tr>
+            <tr><td>/mode [name]</td><td>Show or set execution mode: normal, plan, auto, review</td></tr>
             <tr><td>/config</td><td>Display active config values</td></tr>
             <tr><td>/model [&lt;role&gt; &lt;model&gt;]</td><td>Show or change a role's model</td></tr>
             <tr><td>/provider [&lt;name&gt;]</td><td>Show or change the default provider</td></tr>
@@ -315,6 +320,7 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td><strong>Alt + ↑ / ↓</strong></td><td>Scroll active agent content (5 lines)</td></tr>
             <tr><td><strong>PageUp / PageDown</strong></td><td>Fast scroll active agent content (15 lines)</td></tr>
             <tr><td><strong>↑ / ↓</strong></td><td>Cycle through command history</td></tr>
+            <tr><td><strong>Shift + Tab</strong></td><td>Cycle execution mode: NORMAL → PLAN → AUTO → REVIEW</td></tr>
             <tr><td><strong>Tab</strong></td><td>Trigger command palette or autocomplete <code>/</code>, <code>@</code>, and <code>$</code> suggestions</td></tr>
             <tr><td><strong>Ctrl + C</strong></td><td>Abort current action or exit</td></tr>
             <tr><td><strong>Ctrl + Y</strong></td><td>Copy all visible output to clipboard</td></tr>
@@ -371,10 +377,80 @@ cortex skill create <name> --description "When to use this skill" --project`}</c
         <p>Inside the TUI, <code>/skill</code> opens the skill browser/manager. <code>/skill &lt;subcommand&gt;</code> runs the same commands from the REPL. Project-scoped skills override global skills with the same name. Type <code>$</code> in prompts to autocomplete installed skills and force one into the model context.</p>
       </section>
 
+      <section id="execution-modes" className="docs-section">
+        <h2>Execution modes</h2>
+        <p>Press <strong>Shift+Tab</strong> in the TUI to cycle through four execution modes. The active mode is shown in the status bar with a colour-coded badge.</p>
+        <table>
+          <thead><tr><th>Mode</th><th>Badge colour</th><th>Behaviour</th></tr></thead>
+          <tbody>
+            <tr><td><strong>NORMAL</strong></td><td>white</td><td>Pauses after specs.md, architecture.md, and first build for manual review</td></tr>
+            <tr><td><strong>PLAN</strong></td><td>yellow</td><td>Planner runs first — asks clarifying questions, writes PLAN.md, shows review popup. /approve starts the agents</td></tr>
+            <tr><td><strong>AUTO</strong></td><td>green</td><td>No pauses — equivalent to --auto</td></tr>
+            <tr><td><strong>REVIEW</strong></td><td>orange</td><td>Pauses before every agent phase for manual confirmation</td></tr>
+          </tbody>
+        </table>
+        <p>You can also set the mode from the REPL:</p>
+        <pre><code>{`/mode           # show current mode
+/mode plan      # switch to Plan mode
+/mode auto      # switch to Auto mode
+/mode review    # switch to Review mode
+/mode normal    # reset to Normal`}</code></pre>
+
+        <h3>Plan mode flow</h3>
+        <pre><code>{`/start dev "build a todo app"   [mode = PLAN]
+  → Planner scans project files
+  → Asks 2-3 clarifying questions (one at a time)
+  → Writes PLAN.md to the project directory
+  → PlanReview popup opens
+
+Keyboard in PlanReview popup:
+  ↑ / ↓   scroll plan
+  e        toggle inline edit mode
+  Enter    approve → CEO → PM → … → DevOps
+  Esc      abort`}</code></pre>
+
+        <h3>PlanReview popup</h3>
+        <p>A full-screen overlay appears when <code>PLAN.md</code> is generated. It shows the plan with Markdown syntax highlighting and an action bar:</p>
+        <ul>
+          <li><strong>[Enter] Approve</strong> — starts the agent pipeline with the plan as context</li>
+          <li><strong>[e] Edit</strong> — opens an inline editor; <strong>Ctrl+S</strong> saves and approves</li>
+          <li><strong>[Esc] Abort</strong> — cancels without running any agents</li>
+        </ul>
+        <p>In chat (free-form) mode, Plan mode restricts the assistant to planning only — no files are written. The original message is re-dispatched as a normal request once you approve.</p>
+      </section>
+
       <section id="resume" className="docs-section">
         <h2>Resuming a run</h2>
         <CopyLine cmd="cortex resume ./demo" />
         <p>Cortex re-runs the dev workflow with a prompt that asks the agents to continue from existing files. Best used when a run was aborted mid-way.</p>
+      </section>
+
+      <section id="tasks" className="docs-section">
+        <h2>Task tracking</h2>
+        <p>Cortex displays a live <strong>Tasks</strong> panel in the TUI during any active workflow. It shows every phase checkpoint with a running count — e.g. <code>Tasks (3/7)</code> — and marks each item done as the corresponding agent finishes.</p>
+
+        <h3>How tasks are populated</h3>
+        <p>Tasks come from two sources:</p>
+        <ol>
+          <li><strong>Workflow phases</strong> — each built-in workflow emits phase checkpoints automatically. The <code>dev</code> workflow reports: CEO brief → PM specs.md → Tech Lead architecture.md → Developer files → QA loop → DevOps packaging.</li>
+          <li><strong><code>TASKS.md</code> file</strong> — Cortex watches the project directory and reloads any <code>TASKS.md</code> file every 2 seconds. The file uses standard GitHub task-list syntax:</li>
+        </ol>
+        <pre><code>{`- [ ] Design the database schema
+- [x] Write the REST endpoints
+- [ ] Add authentication middleware
+- [ ] Write integration tests`}</code></pre>
+        <p>Agents, the assistant, and <code>PLAN.md</code> approvals can all write <code>TASKS.md</code> — changes appear in the panel immediately.</p>
+
+        <h3>Panel appearance</h3>
+        <table>
+          <thead><tr><th>State</th><th>Display</th></tr></thead>
+          <tbody>
+            <tr><td>Pending</td><td><code>[ ]</code> in accent colour</td></tr>
+            <tr><td>Done</td><td><code>[x]</code> in green, struck-through text</td></tr>
+            <tr><td>Empty</td><td>"No tasks defined yet."</td></tr>
+          </tbody>
+        </table>
+        <p>The panel clears automatically when the workflow finishes.</p>
       </section>
 
       <section id="web-search" className="docs-section">

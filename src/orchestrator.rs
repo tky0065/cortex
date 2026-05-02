@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_bus::AgentBus;
 use crate::config::Config;
 use crate::tui::events::{Task, TuiEvent, TuiSender, channel};
-use crate::workflows::{RunOptions, Workflow};
+use crate::workflows::{ExecutionMode, RunOptions, Workflow};
 
 pub struct Orchestrator {
     workflow: Box<dyn Workflow>,
@@ -22,6 +22,8 @@ pub struct Orchestrator {
     answer_rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<String>>>,
     /// Reference to REPL state for updating session history (set via with_repl_state).
     pub repl_state: Option<Arc<crate::repl::ReplState>>,
+    /// Execution mode controlling planning/pause behaviour.
+    execution_mode: ExecutionMode,
 }
 
 impl Orchestrator {
@@ -38,12 +40,19 @@ impl Orchestrator {
             answer_tx: Arc::new(atx),
             answer_rx: Arc::new(tokio::sync::Mutex::new(arx)),
             repl_state: None,
+            execution_mode: ExecutionMode::default(),
         }
     }
 
     /// Set the REPL state reference for session tracking.
     pub fn with_repl_state(mut self, repl_state: Arc<crate::repl::ReplState>) -> Self {
         self.repl_state = Some(repl_state);
+        self
+    }
+
+    /// Set the execution mode for this run.
+    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.execution_mode = mode;
         self
     }
 
@@ -165,9 +174,11 @@ impl Orchestrator {
                     let _ = real_tx.send(ev);
                 }
             });
+            let is_auto = auto || self.execution_mode == ExecutionMode::Auto;
             // Use the tee sender as the workflow sender.
             let options = RunOptions {
-                auto,
+                auto: is_auto,
+                execution_mode: self.execution_mode.clone(),
                 config: Arc::clone(&self.config),
                 tx: tee_tx.clone(),
                 project_dir: project_dir.clone(),
@@ -192,8 +203,10 @@ impl Orchestrator {
             };
         }
 
+        let is_auto = auto || self.execution_mode == ExecutionMode::Auto;
         let options = RunOptions {
-            auto,
+            auto: is_auto,
+            execution_mode: self.execution_mode.clone(),
             config: Arc::clone(&self.config),
             tx: tx.clone(),
             project_dir,

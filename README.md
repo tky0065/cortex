@@ -6,6 +6,17 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 **Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
+## What's new in 0.1.8 beta
+
+- **Execution Modes** — Cycle through four modes with **Shift+Tab** (just like Claude Code). The active mode is always visible in the status bar with a colour-coded badge.
+  - **NORMAL** (default) — interactive pauses at key checkpoints (specs, architecture, first build).
+  - **PLAN** — the Planner agent scans the project, asks 2–3 clarifying questions, and produces `PLAN.md`. A full-screen review popup then lets you **Approve**, **Edit inline**, or **Abort** before any code is written. Chat also enters plan-only mode — no files are written until you approve.
+  - **AUTO** — all agents run without any interactive pauses (equivalent to `--auto`).
+  - **REVIEW** — pauses before every agent phase for manual confirmation.
+- **PlanReview popup** — full-screen overlay with scrollable PLAN.md preview, Markdown syntax highlighting, inline editor (toggle with `e`), and an action bar (`[Enter] Approve · [e] Edit · [Esc] Abort`).
+- **`/mode` command** — show or change the current execution mode from the REPL (`/mode plan`, `/mode auto`, etc.).
+- **`/approve` command** — alias for `/continue`; confirms the plan or unblocks any Review-mode pause.
+
 ## What's new in 0.1.7 beta
 
 - **Task Management Widget**: A dedicated panel in the TUI now displays the real-time status of all tasks within a workflow, making it easier to track progress at a glance.
@@ -44,21 +55,23 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
    - [One-shot CLI](#52-one-shot-cli)
    - [Initialize project context](#53-initialize-project-context)
    - [Resume an interrupted run](#54-resume-an-interrupted-run)
+   - [Execution modes](#55-execution-modes)
 6. [Project Context](#6-project-context)
-7. [Skills](#7-skills)
-8. [Web Search](#8-web-search)
-9. [Workflows](#9-workflows)
+7. [Task Tracking](#7-task-tracking)
+8. [Skills](#8-skills)
+9. [Web Search](#9-web-search)
+10. [Workflows](#10-workflows)
    - [dev](#91-dev--software-development)
    - [marketing](#92-marketing--content-campaign)
    - [prospecting](#93-prospecting--freelance-outreach)
    - [code-review](#94-code-review--code-audit)
-10. [Providers & Models](#10-providers--models)
-11. [Architecture Internals](#11-architecture-internals)
-12. [Security & Sandboxing](#12-security--sandboxing)
-13. [Verbose Logging](#13-verbose-logging)
-14. [Running Tests](#14-running-tests)
-15. [Release Process](#15-release-process)
-16. [Output Structure](#16-output-structure)
+11. [Providers & Models](#11-providers--models)
+12. [Architecture Internals](#12-architecture-internals)
+13. [Security & Sandboxing](#13-security--sandboxing)
+14. [Verbose Logging](#14-verbose-logging)
+15. [Running Tests](#15-running-tests)
+16. [Release Process](#16-release-process)
+17. [Output Structure](#17-output-structure)
 
 ---
 
@@ -116,7 +129,7 @@ cargo build --release
 Cortex checks for a newer GitHub Release when the TUI starts. If an update exists, it prints a non-blocking log message:
 
 ```text
-Update available: 0.1.5 -> v0.1.7. Run /update to install.
+Update available: 0.1.7 -> v0.1.8. Run /update to install.
 ```
 
 Update from the terminal:
@@ -124,7 +137,7 @@ Update from the terminal:
 ```bash
 cortex update --check
 cortex update
-cortex update --version v0.1.7
+cortex update --version v0.1.8
 ```
 
 Update from the REPL:
@@ -132,7 +145,7 @@ Update from the REPL:
 ```text
 /update check
 /update
-/update v0.1.7
+/update v0.1.8
 ```
 
 The updater downloads the matching GitHub Release archive, verifies `SHA256SUMS`, and replaces the current `cortex` binary. On Windows, restart the terminal after updating.
@@ -289,6 +302,8 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/status` | Show whether a workflow is running |
 | `/abort` | Cancel the running workflow at the next checkpoint |
 | `/continue` | Resume an interactive pause |
+| `/approve` | Confirm a plan or resume a Review-mode pause (alias for `/continue`) |
+| `/mode [<name>]` | Show or set the execution mode (`normal`, `plan`, `auto`, `review`) |
 | `/config` | Display active config values |
 | `/model [<role> <model>]` | Show or change a role's model |
 | `/provider [<name>]` | Show or change the default provider |
@@ -309,6 +324,7 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | **Alt + ↑ / ↓** | Scroll active agent content (5 lines) |
 | **PageUp / PageDown** | Fast scroll active agent content (15 lines) |
 | **↑ / ↓** | Cycle through command history |
+| **Shift + Tab** | Cycle execution mode: NORMAL → PLAN → AUTO → REVIEW |
 | **Tab** | Trigger command palette or autocomplete `/`, `@`, and `$` suggestions |
 | **Ctrl + C** | Abort current action or exit |
 | **Ctrl + Y** | Copy all visible logs and agent output to clipboard |
@@ -376,6 +392,39 @@ cortex resume ./demo
 
 Cortex re-runs the dev workflow with a prompt that asks the agents to continue from the existing files in the directory. Best used when a run was aborted mid-way.
 
+### 5.5 Execution modes
+
+Press **Shift+Tab** in the TUI to cycle the execution mode. The active mode is shown in the status bar at the bottom of the screen.
+
+| Mode | Colour | Behaviour |
+|------|--------|-----------|
+| **NORMAL** | white | Pauses after specs, architecture, and first build for manual review |
+| **PLAN** | yellow | Planner runs first — asks questions, writes `PLAN.md`, shows review popup. `/approve` starts the agents |
+| **AUTO** | green | No pauses — equivalent to `--auto` |
+| **REVIEW** | orange | Pauses before every agent phase for confirmation |
+
+You can also set or inspect the mode from the REPL:
+
+```
+/mode           # show current mode
+/mode plan      # switch to Plan mode
+/mode auto      # switch to Auto mode
+/mode review    # switch to Review mode
+/mode normal    # reset to Normal mode
+```
+
+**Plan mode flow:**
+
+```
+/start dev "build a todo app"    [mode = PLAN]
+  → Planner scans project
+  → Asks 2–3 clarifying questions (one at a time in the TUI)
+  → Writes PLAN.md
+  → PlanReview popup opens (scroll ↑↓, edit e, approve Enter, abort Esc)
+/approve  or  Enter in the popup
+  → CEO → PM → Tech Lead → Developer → QA → DevOps
+```
+
 ---
 
 ## 6. Project Context
@@ -402,7 +451,40 @@ Inside the TUI input bar, type `@` to autocomplete project files and folders. Me
 
 ---
 
-## 7. Skills
+## 7. Task Tracking
+
+Cortex displays a live **Tasks** panel in the TUI that shows the progress of every phase in the current workflow.
+
+### How it works
+
+Tasks come from two sources:
+
+1. **Workflow phases** — each workflow emits phase checkpoints automatically. For example, the `dev` workflow reports: `CEO brief`, `PM specs.md`, `Tech Lead architecture.md`, `Developer files`, `QA loop`, `DevOps packaging`. Each phase is marked done as the corresponding agent finishes.
+
+2. **`TASKS.md` file** — Cortex watches the project directory for a `TASKS.md` file and reloads it every 2 seconds. The file uses GitHub-flavoured Markdown task syntax:
+
+```md
+- [ ] Design the database schema
+- [x] Write the REST endpoints
+- [ ] Add authentication middleware
+- [ ] Write integration tests
+```
+
+Any file matching this format — created by an agent, by you, or by `PLAN.md` approvals — is immediately reflected in the Tasks panel.
+
+### Tasks panel
+
+The panel header shows a running count: **Tasks (3/7)**. Each item shows:
+
+- `[ ]` in accent colour → pending
+- `[x]` in green, struck-through → completed
+
+The panel is visible during any active workflow and clears automatically when the workflow finishes.
+
+---
+
+## 8. Skills
+
 
 Cortex skills are reusable local instructions that can be installed globally or per project and injected into relevant agent prompts.
 
@@ -421,7 +503,7 @@ In free-form prompts and workflow prompts, type `$` to autocomplete installed sk
 
 ---
 
-## 8. Web Search
+## 9. Web Search
 
 When enabled, every agent automatically enriches its prompt with live web search results before calling the LLM. This lets agents use up-to-date information: latest library versions, recent CVEs, current pricing, new best practices, etc.
 
@@ -476,7 +558,7 @@ If web search is enabled but no API key is set (or the key is empty), the agent 
 
 ---
 
-## 9. Workflows
+## 10. Workflows
 
 ### 9.1 `dev` — Software Development
 
@@ -610,7 +692,7 @@ Files larger than 8 KB are automatically truncated to protect context windows.
 
 ---
 
-## 10. Providers & Models
+## 11. Providers & Models
 
 ### Role → Model mapping
 
@@ -646,7 +728,7 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 
 ---
 
-## 11. Architecture Internals
+## 12. Architecture Internals
 
 ```
 main.rs
@@ -674,6 +756,7 @@ Threaded through every workflow and agent. Contains:
 | `cancel` | `CancellationToken` — check `cancel.is_cancelled()` |
 | `resume_tx` / `resume_rx` | mpsc pair for interactive pauses |
 | `auto` | `true` = skip interactive pauses |
+| `execution_mode` | `Normal` / `Plan` / `Auto` / `Review` — controls agent pause strategy |
 | `verbose` | `true` = log to `cortex.log` |
 
 #### TUI event bus (`src/tui/events.rs`)
@@ -688,6 +771,8 @@ All agent output flows through `TuiEvent` over an `mpsc::UnboundedSender`:
 | `PhaseComplete { phase }` | A phase milestone is reached |
 | `InteractivePause { message }` | Workflow is waiting for `/continue` |
 | `Resume` | `/continue` was received |
+| `ModeChanged(mode)` | User cycled execution mode (Shift+Tab or `/mode`) |
+| `PlanGenerated { path }` | Planner wrote `PLAN.md` — triggers the PlanReview popup |
 | `Error { agent, message }` | An error occurred |
 
 #### Assistant and streamed chat
@@ -714,7 +799,7 @@ The REPL's `/continue` sends `()` to `resume_tx`, unblocking the channel receive
 
 ---
 
-## 12. Security & Sandboxing
+## 13. Security & Sandboxing
 
 ### Filesystem sandbox
 All file I/O is mediated through `FileSystem` (`src/tools/filesystem.rs`).
@@ -737,7 +822,7 @@ API keys can be read from environment variables or stored locally in `~/.cortex/
 
 ---
 
-## 13. Verbose Logging
+## 14. Verbose Logging
 
 Add `-v` to any command to write full agent I/O to `cortex.log` in the working directory:
 
@@ -750,7 +835,7 @@ The log file is appended (not overwritten) and each session is marked with a Uni
 
 ---
 
-## 14. Running Tests
+## 15. Running Tests
 
 ```bash
 cargo test                          # all tests
@@ -776,7 +861,7 @@ Test coverage areas:
 
 ---
 
-## 15. Release Process
+## 16. Release Process
 
 Cortex beta releases are published through GitHub Releases.
 
@@ -802,7 +887,7 @@ The `.github/workflows/release.yml` workflow builds macOS, Linux, and Windows bi
 
 ---
 
-## 16. Output Structure
+## 17. Output Structure
 
 The `dev` workflow writes generated project files directly into the directory where
 `cortex` was run. Other workflows keep their generated artifacts under

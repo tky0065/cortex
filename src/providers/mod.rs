@@ -40,6 +40,8 @@ pub fn model_for_role<'a>(role: &str, config: &'a Config) -> Result<&'a str> {
         "researcher" | "profiler" | "outreach_manager" => Ok(&config.models.developer),
         // conversational assistant
         "assistant" => Ok(&config.models.assistant),
+        // planner uses CEO model (strategic analysis)
+        "planner" => Ok(&config.models.ceo),
         other => bail!("Unknown agent role: '{}'", other),
     }
 }
