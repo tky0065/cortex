@@ -694,9 +694,8 @@ fn build_content_lines(text: &str, width: usize) -> Vec<Line<'static>> {
             let content = line.trim_start();
             let wrap_w = width.saturating_sub(leading).max(1);
             let wrapped = wrap_prose(content, wrap_w);
-            for (idx, wl) in wrapped.into_iter().enumerate() {
-                let prefix = if idx == 0 { indent } else { indent };
-                let full = format!("{}{}", prefix, wl);
+            for wl in wrapped {
+                let full = format!("{}{}", indent, wl);
                 let spans = parse_inline_spans(&full, Style::default().fg(THEME.text));
                 lines.push(Line::from(spans));
             }
