@@ -11,12 +11,14 @@ use crate::tui::theme::THEME;
 
 const MAX_DIFF_LINES: usize = 10_000;
 
+#[derive(Debug, Clone)]
 pub enum DiffLine {
     Added { line_no: usize, text: String },
     Removed { line_no: usize, text: String },
     Context { line_no: usize, text: String },
 }
 
+#[derive(Debug, Clone)]
 pub struct FileDiff {
     pub agent: String,
     pub path: String,

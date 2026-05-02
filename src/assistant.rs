@@ -642,6 +642,7 @@ pub(crate) fn strip_tool_calls_for_display(text: &str) -> String {
 
     // 2. Strip known tool tags and their content (fallback for non-standard or orphan blocks)
     let tool_tags = [
+        ("tool_code", "</tool_code>"),
         ("web_search", "</web_search>"),
         ("write_file", "</write_file>"),
         ("read_file", "</read_file>"),
@@ -672,6 +673,8 @@ pub(crate) fn strip_tool_calls_for_display(text: &str) -> String {
     let orphan_tags = [
         "<tool_call>",
         "</tool_call>",
+        "<tool_code>",
+        "</tool_code>",
         "<name>",
         "</name>",
         "<path>",
@@ -841,13 +844,51 @@ fn strip_html_for_model(html: &str) -> String {
     decode_basic_html_entities(output.trim())
 }
 
-fn decode_basic_html_entities(text: &str) -> String {
-    text.replace("&nbsp;", " ")
+pub(crate) fn decode_basic_html_entities(text: &str) -> String {
+    let s = text
+        .replace("&nbsp;", " ")
         .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&#x22;", "\"")
+        .replace("&#x26;", "&")
+        .replace("&#x3C;", "<")
+        .replace("&#x3E;", ">")
+        .replace("&#x2F;", "/");
+    // Decode remaining decimal numeric entities &#NNN;
+    decode_numeric_entities(&s)
+}
+
+fn decode_numeric_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("&#") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find(';') {
+            let code_str = &after[..end];
+            let code: Option<u32> = if let Some(hex) = code_str.strip_prefix('x') {
+                u32::from_str_radix(hex, 16).ok()
+            } else {
+                code_str.parse().ok()
+            };
+            if let Some(c) = code.and_then(char::from_u32) {
+                out.push(c);
+                rest = &after[end + 1..];
+            } else {
+                out.push_str("&#");
+                rest = after;
+            }
+        } else {
+            out.push_str("&#");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {

@@ -699,7 +699,8 @@ impl App {
             }
             TuiEvent::AgentReplaceBuffer { agent, content } => {
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
-                    a.replace_buffer(content);
+                    let clean = crate::assistant::strip_tool_calls_for_display(content);
+                    a.replace_buffer(&clean);
                 }
             }
             TuiEvent::ModeChanged(new_mode) => {
@@ -739,18 +740,8 @@ impl App {
                         path, diff.added_count, diff.removed_count
                     ),
                 ));
-                match &mut self.popup {
-                    PopupState::DiffViewer { diffs, cursor, .. } => {
-                        diffs.push(diff);
-                        *cursor = diffs.len() - 1;
-                    }
-                    _ => {
-                        self.popup = PopupState::DiffViewer {
-                            diffs: vec![diff],
-                            cursor: 0,
-                            scroll_offset: 0,
-                        };
-                    }
+                if let Some(a) = self.active_agents.iter_mut().find(|a| a.name == *agent) {
+                    a.push_diff(diff);
                 }
             }
         }
@@ -1238,14 +1229,8 @@ impl Tui {
                                     app.log_filter.as_deref().unwrap_or_default()
                                 ))
                             {
-                                match agent.status {
-                                    crate::tui::widgets::agent_panel::AgentRunStatus::Running => {
-                                        agent.scroll_offset = agent.scroll_offset.saturating_add(5)
-                                    }
-                                    _ => {
-                                        agent.scroll_offset = agent.scroll_offset.saturating_sub(5)
-                                    }
-                                }
+                                // Always bottom-anchored: Up = increase offset = scroll toward older content
+                                agent.scroll_offset = agent.scroll_offset.saturating_add(5);
                             }
                         }
                     } else {
@@ -1263,14 +1248,8 @@ impl Tui {
                                     app.log_filter.as_deref().unwrap_or_default()
                                 ))
                             {
-                                match agent.status {
-                                    crate::tui::widgets::agent_panel::AgentRunStatus::Running => {
-                                        agent.scroll_offset = agent.scroll_offset.saturating_sub(5)
-                                    }
-                                    _ => {
-                                        agent.scroll_offset = agent.scroll_offset.saturating_add(5)
-                                    }
-                                }
+                                // Down = decrease offset = scroll back toward bottom
+                                agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
                             }
                         }
                     } else {
@@ -1295,12 +1274,7 @@ impl Tui {
                                 app.log_filter.as_deref().unwrap_or_default()
                             ))
                         {
-                            match agent.status {
-                                crate::tui::widgets::agent_panel::AgentRunStatus::Running => {
-                                    agent.scroll_offset = agent.scroll_offset.saturating_add(15)
-                                }
-                                _ => agent.scroll_offset = agent.scroll_offset.saturating_sub(15),
-                            }
+                            agent.scroll_offset = agent.scroll_offset.saturating_add(15);
                         }
                     }
                     return false;
@@ -1314,12 +1288,7 @@ impl Tui {
                                 app.log_filter.as_deref().unwrap_or_default()
                             ))
                         {
-                            match agent.status {
-                                crate::tui::widgets::agent_panel::AgentRunStatus::Running => {
-                                    agent.scroll_offset = agent.scroll_offset.saturating_sub(15)
-                                }
-                                _ => agent.scroll_offset = agent.scroll_offset.saturating_add(15),
-                            }
+                            agent.scroll_offset = agent.scroll_offset.saturating_sub(15);
                         }
                     }
                     return false;

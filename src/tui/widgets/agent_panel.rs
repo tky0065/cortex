@@ -1,10 +1,11 @@
 use crate::tui::theme::THEME;
+use crate::tui::widgets::diff_viewer::{DiffLine, FileDiff};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,8 @@ pub struct ActiveAgent {
     pub progress: u8,
     /// Vertical scroll offset for the content area
     pub scroll_offset: usize,
+    /// Inline file diffs accumulated during this agent's run.
+    pub diffs: Vec<FileDiff>,
 }
 
 impl ActiveAgent {
@@ -41,7 +44,12 @@ impl ActiveAgent {
             status: AgentRunStatus::Running,
             progress: 0,
             scroll_offset: 0,
+            diffs: Vec::new(),
         }
+    }
+
+    pub fn push_diff(&mut self, diff: FileDiff) {
+        self.diffs.push(diff);
     }
 
     pub fn set_progress(&mut self, message: &str) {
@@ -56,6 +64,7 @@ impl ActiveAgent {
         self.stream_buffer.clear();
         self.progress = 0;
         self.scroll_offset = 0;
+        self.diffs.clear();
     }
 
     /// Like `restart()` but keeps previous content with a visual separator so
@@ -267,103 +276,462 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
         return;
     }
 
-    // Split: status line (1) | stream content (fill)
-    let split = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(inner);
-
-    // ── Status line ──────────────────────────────────────────────────────────
-    let spinner_frames = ["◐", "◓", "◑", "◒"];
-    let (status_label, status_color) = match agent.status {
-        AgentRunStatus::Running => {
-            let frame = spinner_frames[(tick_count % spinner_frames.len() as u64) as usize];
-            (format!("{} running", frame), THEME.primary)
-        }
-        AgentRunStatus::Done => ("● done".to_string(), THEME.success),
-        AgentRunStatus::Error => ("✕ error".to_string(), THEME.error),
-    };
-
-    // Build mini progress bar: [███░░] 60%
-    let progress_bar = if agent.progress > 0 && agent.progress < 100 {
-        let width = 10;
-        let filled = (agent.progress as usize * width) / 100;
-        let mut bar = String::from("[");
-        for i in 0..width {
-            if i < filled {
-                bar.push('█');
-            } else {
-                bar.push('░');
-            }
-        }
-        bar.push_str("] ");
-        bar.push_str(&format!("{:>2}% ", agent.progress));
-        bar
+    // Status line shown at the bottom only while Running or Error.
+    // Done agents give the full area to content.
+    let show_status = agent.status != AgentRunStatus::Done;
+    let (content_area, status_area_opt) = if show_status && inner.height >= 3 {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        (split[0], Some(split[1]))
     } else {
-        "".to_string()
+        (inner, None)
     };
 
-    let status_line = Line::from(vec![
-        Span::styled(
-            format!(" {} ", status_label),
-            Style::default()
-                .fg(status_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(progress_bar, Style::default().fg(Color::Indexed(8))),
-        Span::styled(
-            agent.current_action.clone(),
-            Style::default().fg(THEME.text),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(vec![status_line]), split[0]);
+    // ── Status line (bottom) ─────────────────────────────────────────────────
+    if let Some(status_area) = status_area_opt {
+        let spinner_frames = ["◐", "◓", "◑", "◒"];
+        let (status_label, status_color) = match agent.status {
+            AgentRunStatus::Running => {
+                let frame_ch = spinner_frames[(tick_count % spinner_frames.len() as u64) as usize];
+                (format!("{} running", frame_ch), THEME.primary)
+            }
+            AgentRunStatus::Error => ("✕ error".to_string(), THEME.error),
+            AgentRunStatus::Done => unreachable!(),
+        };
 
-    // ── Stream content ───────────────────────────────────────────────────────
-    let content_area = split[1];
+        let progress_bar = if agent.progress > 0 && agent.progress < 100 {
+            let width = 10;
+            let filled = (agent.progress as usize * width) / 100;
+            let mut bar = String::from("[");
+            for i in 0..width {
+                bar.push(if i < filled { '█' } else { '░' });
+            }
+            bar.push_str("] ");
+            bar.push_str(&format!("{:>2}% ", agent.progress));
+            bar
+        } else {
+            String::new()
+        };
+
+        let status_line = Line::from(vec![
+            Span::styled(
+                format!(" {} ", status_label),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(progress_bar, Style::default().fg(Color::Indexed(8))),
+            Span::styled(
+                agent.current_action.clone(),
+                Style::default().fg(THEME.text),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(vec![status_line]), status_area);
+    }
+
+    // ── Stream content + inline diffs ────────────────────────────────────────
     let available_lines = content_area.height as usize;
     let panel_width = content_area.width as usize;
 
-    if !agent.stream_buffer.is_empty() {
-        if agent.status == AgentRunStatus::Done {
-            // Done: render full content as formatted markdown, shown from top + scroll offset.
-            let md_lines = render_markdown_lines(&agent.stream_buffer);
-            frame.render_widget(
-                Paragraph::new(md_lines)
-                    .wrap(Wrap { trim: false })
-                    .scroll((agent.scroll_offset as u16, 0)),
-                content_area,
-            );
-        } else {
-            // Streaming: word-wrap and show the last `available_lines` rows (auto-scroll to bottom),
-            // but allow manual scroll-up by subtracting `scroll_offset`.
-            let wrapped = word_wrap(&agent.stream_buffer, panel_width.max(1));
-            let base_start = wrapped.len().saturating_sub(available_lines);
-            let start = base_start.saturating_sub(agent.scroll_offset);
-            let end = (start + available_lines).min(wrapped.len());
+    // Build all content lines: diffs first (actions), then stream buffer (agent reply).
+    // With bottom-anchored scroll this means: scroll_offset=0 shows the agent's final
+    // message at the bottom, and scrolling up reveals the file diffs above it.
+    let mut all_lines: Vec<Line<'static>> = Vec::new();
 
-            let total = wrapped.len();
-            let visible_lines: Vec<Line> = wrapped[start..end]
-                .iter()
-                .enumerate()
-                .map(|(i, line)| {
-                    let abs = start + i;
-                    // Gradient: older lines slightly dimmer, newest line full brightness
-                    let color = if abs + 1 == total {
-                        THEME.text
-                    } else if abs + 4 >= total {
-                        Color::Rgb(210, 215, 220)
-                    } else {
-                        Color::Rgb(150, 158, 168)
-                    };
-                    Line::from(Span::styled(line.clone(), Style::default().fg(color)))
-                })
-                .collect();
-            frame.render_widget(Paragraph::new(visible_lines), content_area);
-        }
-    } else {
-        // Waiting for first token — show nothing (status line has the heartbeat message)
-        frame.render_widget(Paragraph::new(vec![Line::from("")]), content_area);
+    for diff in &agent.diffs {
+        all_lines.extend(render_diff_inline(diff, panel_width));
+        all_lines.push(Line::from(""));
     }
+
+    if !agent.stream_buffer.is_empty() {
+        let clean_buffer = crate::assistant::strip_tool_calls_for_display(&agent.stream_buffer);
+        let content_lines = build_content_lines(&clean_buffer, panel_width.max(20));
+        if agent.status == AgentRunStatus::Running {
+            // Gradient: dim older lines, full brightness on newest
+            let total = content_lines.len();
+            for (i, line) in content_lines.into_iter().enumerate() {
+                if i + 4 >= total {
+                    all_lines.push(line);
+                } else {
+                    let dimmed: Vec<Span<'static>> = line
+                        .spans
+                        .into_iter()
+                        .map(|s| Span::styled(s.content, s.style.fg(Color::Rgb(130, 140, 150))))
+                        .collect();
+                    all_lines.push(Line::from(dimmed));
+                }
+            }
+        } else {
+            all_lines.extend(content_lines);
+        }
+    }
+
+    if all_lines.is_empty() {
+        frame.render_widget(Paragraph::new(vec![Line::from("")]), content_area);
+    } else {
+        // Always bottom-anchored: most recent content (including diffs) is at the bottom.
+        // scroll_offset counts lines scrolled UP from the bottom; Alt+↑/↓ adjusts it.
+        let total = all_lines.len();
+        let base_start = total.saturating_sub(available_lines);
+        let start = base_start.saturating_sub(agent.scroll_offset);
+        let end = (start + available_lines).min(total);
+        let visible = all_lines[start..end].to_vec();
+        frame.render_widget(Paragraph::new(visible), content_area);
+    }
+}
+
+/// Render a `FileDiff` as compact inline lines for display inside an agent panel.
+///
+/// Shows only context lines within 2 lines of a change; collapses the rest with `···`.
+fn render_diff_inline(diff: &FileDiff, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    let verb = if diff.is_new_file { "New file" } else { "Update" };
+    lines.push(Line::from(vec![
+        Span::styled(
+            "● ",
+            Style::default()
+                .fg(THEME.success)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}({})", verb, diff.path),
+            Style::default()
+                .fg(THEME.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let summary = if diff.is_new_file {
+        format!("  └ Added {} lines", diff.added_count)
+    } else if diff.added_count > 0 && diff.removed_count > 0 {
+        format!(
+            "  └ Added {}, removed {}",
+            diff.added_count, diff.removed_count
+        )
+    } else if diff.added_count > 0 {
+        format!("  └ Added {} lines", diff.added_count)
+    } else {
+        format!("  └ Removed {} lines", diff.removed_count)
+    };
+    lines.push(Line::from(Span::styled(
+        summary,
+        Style::default().fg(THEME.muted),
+    )));
+
+    if diff.too_large {
+        lines.push(Line::from(Span::styled(
+            "  (fichier trop grand — diff non calculé)",
+            Style::default().fg(THEME.muted),
+        )));
+        return lines;
+    }
+
+    if diff.lines.is_empty() {
+        return lines;
+    }
+
+    // Group diff.lines into segments; collapse runs of > HUNK_MAX same-direction changes.
+    const HUNK_MAX: usize = 8; // show at most this many consecutive +/- lines before collapsing
+    const HUNK_HEAD: usize = 3; // lines to show at start of a collapsed hunk
+    const HUNK_TAIL: usize = 2; // lines to show at end of a collapsed hunk
+    const CTX_RADIUS: usize = 2; // context lines to show around changes
+
+    let changed_indices: Vec<usize> = diff
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, dl)| !matches!(dl, DiffLine::Context { .. }))
+        .map(|(i, _)| i)
+        .collect();
+
+    let near_change = |idx: usize| -> bool {
+        changed_indices
+            .iter()
+            .any(|&ci| idx >= ci.saturating_sub(CTX_RADIUS) && idx <= ci + CTX_RADIUS)
+    };
+
+    // Identify contiguous changed runs so we can collapse large ones.
+    // A run is a maximal sequence of consecutive Added/Removed indices.
+    let mut runs: Vec<(usize, usize)> = Vec::new(); // (start_idx, end_idx) inclusive
+    if !changed_indices.is_empty() {
+        let mut run_start = changed_indices[0];
+        let mut run_end = changed_indices[0];
+        for &ci in &changed_indices[1..] {
+            if ci == run_end + 1 {
+                run_end = ci;
+            } else {
+                runs.push((run_start, run_end));
+                run_start = ci;
+                run_end = ci;
+            }
+        }
+        runs.push((run_start, run_end));
+    }
+
+    // Build a set of indices that should be collapsed (hidden) due to large runs
+    let mut collapsed_ranges: Vec<(usize, usize, usize)> = Vec::new(); // (first_hidden, last_hidden, count)
+    for &(rs, re) in &runs {
+        let run_len = re - rs + 1;
+        if run_len > HUNK_MAX {
+            let first_hidden = rs + HUNK_HEAD;
+            let last_hidden = re - HUNK_TAIL;
+            if first_hidden <= last_hidden {
+                collapsed_ranges.push((first_hidden, last_hidden, run_len - HUNK_HEAD - HUNK_TAIL));
+            }
+        }
+    }
+
+    let is_hidden = |idx: usize| -> Option<usize> {
+        for &(fh, lh, count) in &collapsed_ranges {
+            if idx > fh && idx <= lh {
+                return Some(0); // hidden, not the summary line
+            }
+            if idx == fh {
+                return Some(count); // first hidden = show summary here
+            }
+        }
+        None
+    };
+
+    let mut prev_ctx_collapsed = false;
+    for (i, dl) in diff.lines.iter().enumerate() {
+        match dl {
+            DiffLine::Context { line_no, text } => {
+                if near_change(i) {
+                    prev_ctx_collapsed = false;
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{:>5} ", line_no),
+                            Style::default().fg(THEME.muted),
+                        ),
+                        Span::styled("  ", Style::default()),
+                        Span::styled(
+                            truncate_str(text, width.saturating_sub(8)),
+                            Style::default().fg(THEME.muted),
+                        ),
+                    ]));
+                } else if !prev_ctx_collapsed {
+                    prev_ctx_collapsed = true;
+                    lines.push(Line::from(Span::styled(
+                        "       ···",
+                        Style::default().fg(THEME.muted),
+                    )));
+                }
+            }
+            DiffLine::Added { line_no, text } => {
+                prev_ctx_collapsed = false;
+                match is_hidden(i) {
+                    Some(0) => continue, // hidden
+                    Some(count) => {
+                        // Summary line for this collapsed run
+                        lines.push(Line::from(Span::styled(
+                            format!("       ··· +{} lines ···", count),
+                            Style::default().fg(THEME.muted),
+                        )));
+                        continue;
+                    }
+                    None => {}
+                }
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{:>5} ", line_no),
+                        Style::default().fg(THEME.muted),
+                    ),
+                    Span::styled(
+                        "+ ",
+                        Style::default()
+                            .fg(THEME.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        truncate_str(text, width.saturating_sub(8)),
+                        Style::default().fg(THEME.success),
+                    ),
+                ]));
+            }
+            DiffLine::Removed { line_no, text } => {
+                prev_ctx_collapsed = false;
+                match is_hidden(i) {
+                    Some(0) => continue,
+                    Some(count) => {
+                        lines.push(Line::from(Span::styled(
+                            format!("       ··· -{} lines ···", count),
+                            Style::default().fg(THEME.muted),
+                        )));
+                        continue;
+                    }
+                    None => {}
+                }
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{:>5} ", line_no),
+                        Style::default().fg(THEME.muted),
+                    ),
+                    Span::styled(
+                        "- ",
+                        Style::default()
+                            .fg(THEME.error)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        truncate_str(text, width.saturating_sub(8)),
+                        Style::default().fg(THEME.error),
+                    ),
+                ]));
+            }
+        }
+    }
+
+    lines
+}
+
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{}…", t)
+    }
+}
+
+/// Strip residual HTML tags and decode entities from a display string.
+fn clean_html(s: &str) -> String {
+    // Strip <tag> / </tag> patterns
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    crate::assistant::decode_basic_html_entities(&out)
+}
+
+/// Build display lines from stream buffer content.
+///
+/// Handles fenced code blocks (preserves indentation), word-wraps prose,
+/// and applies basic markdown styling. Used for both streaming and Done states.
+fn build_content_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut in_code_block = false;
+
+    for raw in text.split('\n') {
+        // Decode HTML entities and strip residual HTML tags
+        let cleaned = clean_html(raw.trim_end());
+        let line = cleaned.as_str();
+
+        // Fenced code block delimiter
+        if line.starts_with("```") {
+            in_code_block = !in_code_block;
+            // Show the fence line dimmed
+            lines.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(THEME.muted),
+            )));
+            continue;
+        }
+
+        if in_code_block {
+            // Inside code block: preserve indentation, truncate only if truly too long
+            lines.push(Line::from(Span::styled(
+                truncate_str(line, width),
+                Style::default().fg(Color::Rgb(180, 215, 180)),
+            )));
+            continue;
+        }
+
+        if line.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+
+        // Prose: detect block-level markdown, then word-wrap
+        if let Some(rest) = line.strip_prefix("## ") {
+            for wl in wrap_prose(rest, width.saturating_sub(3)) {
+                let spans = parse_inline_spans(
+                    &wl,
+                    Style::default()
+                        .fg(THEME.primary)
+                        .add_modifier(Modifier::BOLD),
+                );
+                lines.push(Line::from(spans));
+            }
+        } else if let Some(rest) = line.strip_prefix("# ") {
+            for wl in wrap_prose(rest, width.saturating_sub(2)) {
+                let spans = parse_inline_spans(
+                    &wl,
+                    Style::default()
+                        .fg(THEME.primary)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                );
+                lines.push(Line::from(spans));
+            }
+        } else if let Some(rest) = line.strip_prefix("- ") {
+            let bullet_w = width.saturating_sub(2);
+            let wrapped = wrap_prose(rest, bullet_w.max(1));
+            for (idx, wl) in wrapped.into_iter().enumerate() {
+                let mut spans: Vec<Span<'static>> = if idx == 0 {
+                    vec![Span::styled("• ", Style::default().fg(THEME.primary))]
+                } else {
+                    vec![Span::raw("  ")]
+                };
+                spans.extend(parse_inline_spans(&wl, Style::default().fg(THEME.text)));
+                lines.push(Line::from(spans));
+            }
+        } else {
+            // Normal prose — word-wrap preserving indentation
+            let leading = line.len() - line.trim_start().len();
+            let indent = &line[..leading];
+            let content = line.trim_start();
+            let wrap_w = width.saturating_sub(leading).max(1);
+            let wrapped = wrap_prose(content, wrap_w);
+            for (idx, wl) in wrapped.into_iter().enumerate() {
+                let prefix = if idx == 0 { indent } else { indent };
+                let full = format!("{}{}", prefix, wl);
+                let spans = parse_inline_spans(&full, Style::default().fg(THEME.text));
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+
+    lines
+}
+
+/// Word-wrap a plain prose string to `width` chars, splitting at whitespace.
+/// Does NOT try to preserve leading indentation (handled by the caller).
+fn wrap_prose(text: &str, width: usize) -> Vec<String> {
+    if width == 0 || text.chars().count() <= width {
+        return vec![text.to_string()];
+    }
+    let mut result = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if line.is_empty() {
+            line.push_str(word);
+        } else if line.len() + 1 + word.len() <= width {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            result.push(line.clone());
+            line = word.to_string();
+        }
+    }
+    if !line.is_empty() {
+        result.push(line);
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
 }
 
 /// Convert a markdown string into styled ratatui `Line`s.
@@ -375,6 +743,7 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
 /// - `*italic*`                   → ITALIC modifier
 /// - `【…】`                       → citation markers dimmed
 /// - plain text                   → default colour
+#[cfg(test)]
 fn render_markdown_lines(text: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
@@ -506,6 +875,7 @@ fn parse_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
 
 /// Simple word-wrapping: splits `text` into lines of at most `width` chars,
 /// breaking at whitespace boundaries where possible.
+#[cfg(test)]
 fn word_wrap(text: &str, width: usize) -> Vec<String> {
     let mut result = Vec::new();
     for paragraph in text.split('\n') {
