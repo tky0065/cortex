@@ -37,8 +37,7 @@ impl Workflow for CodeReviewWorkflow {
         });
 
         // Always scan the current working directory; prompt is a focus hint for agents
-        let target_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let target_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
         let focus_hint = {
             let p = prompt.trim();
