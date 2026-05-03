@@ -30,9 +30,10 @@ impl Workflow for CustomWorkflow {
 
         let project_root = std::env::current_dir().ok();
         let project_root_ref = project_root.as_deref();
+        let original_prompt = prompt.clone();
         let mut pipeline_input = prompt;
 
-        for step in &self.def.agents {
+        for (step_idx, step) in self.def.agents.iter().enumerate() {
             if options.cancel.is_cancelled() {
                 return Ok(());
             }
@@ -47,8 +48,9 @@ impl Workflow for CustomWorkflow {
                     let _ = options.tx.send(TuiEvent::TokenChunk {
                         agent: step.role.clone(),
                         chunk: format!(
-                            "  [hint] no agent file for '{}' — using generic fallback. \
-                             Run /agent create {} to customise it.",
+                            "  [WARNING] No agent file found for '{}'. \
+                             Using generic fallback — output quality will be poor. \
+                             Fix this: /agent create {}",
                             step.agent, step.agent
                         ),
                     });
@@ -73,10 +75,35 @@ impl Workflow for CustomWorkflow {
             });
             send_agent_progress(&options, &step.role, "Running...");
 
+            // After the first agent, include the original user request so every
+            // downstream agent knows the criteria it is working against.
+            let agent_input = if step_idx == 0 {
+                pipeline_input.clone()
+            } else {
+                format!(
+                    "## User request\n{}\n\n## Previous agent output\n{}",
+                    original_prompt, pipeline_input
+                )
+            };
+
+            // When web search is enabled, append a note so the agent knows
+            // to use the injected `## Web Search Results` block.
+            let system_prompt = if options.config.tools.web_search_enabled {
+                format!(
+                    "{}\n\nIMPORTANT: The user message may contain a \
+                     `## Web Search Results` section with live data fetched \
+                     from the web. Use those results as your primary real-world \
+                     data source. Do NOT invent or hallucinate information.",
+                    agent_def.system_prompt
+                )
+            } else {
+                agent_def.system_prompt.clone()
+            };
+
             let response = crate::providers::complete(
                 &agent_def.model,
-                &agent_def.system_prompt,
-                &pipeline_input,
+                &system_prompt,
+                &agent_input,
                 &options,
                 &step.role,
             )
@@ -88,6 +115,23 @@ impl Workflow for CustomWorkflow {
             });
 
             pipeline_input = response;
+        }
+
+        // Write final output to disk so the REPL can count and display it.
+        if let Err(e) = std::fs::create_dir_all(&options.project_dir) {
+            let _ = options.tx.send(TuiEvent::TokenChunk {
+                agent: "orchestrator".into(),
+                chunk: format!("Warning: could not create output dir: {}", e),
+            });
+        } else {
+            let filename = format!("{}_output.md", self.def.name);
+            let output_path = options.project_dir.join(&filename);
+            if let Err(e) = std::fs::write(&output_path, &pipeline_input) {
+                let _ = options.tx.send(TuiEvent::TokenChunk {
+                    agent: "orchestrator".into(),
+                    chunk: format!("Warning: could not write output file: {}", e),
+                });
+            }
         }
 
         let _ = options.tx.send(TuiEvent::TokenChunk {

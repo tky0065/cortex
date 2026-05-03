@@ -1073,6 +1073,11 @@ impl Tui {
                 }
                 _ = tick.tick() => {
                     app.tick_count += 1;
+                    // Reload launcher every 50 ticks (~5 s) when idle so
+                    // manually-added workflow/agent files appear without restart.
+                    if app.tick_count % 50 == 0 && app.pipeline.is_empty() {
+                        app.launcher = LauncherData::load();
+                    }
                 }
             }
         }

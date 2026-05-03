@@ -72,8 +72,33 @@ pub fn parse_agent_def(content: &str) -> Result<CustomAgentDef> {
         tools: Vec<String>,
     }
 
-    let fm: Frontmatter =
-        serde_yaml::from_str(yaml).context("failed to parse agent frontmatter")?;
+    // First try strict parse (tools as YAML list).
+    // If that fails, retry with tools as a plain string and split on commas —
+    // this tolerates AI-generated files that write `tools: Read, Write` instead
+    // of the correct `tools: [Read, Write]`.
+    let fm: Frontmatter = serde_yaml::from_str(yaml).or_else(|_| {
+        #[derive(Deserialize)]
+        struct FallbackFm {
+            name: String,
+            description: String,
+            model: String,
+            #[serde(default)]
+            tools: String,
+        }
+        let fb: FallbackFm =
+            serde_yaml::from_str(yaml).context("failed to parse agent frontmatter")?;
+        Ok::<Frontmatter, anyhow::Error>(Frontmatter {
+            name: fb.name,
+            description: fb.description,
+            model: fb.model,
+            tools: fb
+                .tools
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        })
+    })?;
 
     Ok(CustomAgentDef {
         name: fm.name,

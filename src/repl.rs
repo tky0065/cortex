@@ -1141,6 +1141,8 @@ pub async fn dispatch(
                                         chunk: format!("  Created: {}", path.display()),
                                     },
                                 );
+                                // Generate agent files for every step that lacks one.
+                                generate_workflow_agents(&content, &model, tx).await;
                                 send(tx, TuiEvent::LauncherRefresh);
                             }
                             Err(e) => send(
@@ -2176,6 +2178,64 @@ fn save_workflow_file(name: &str, content: &str) -> anyhow::Result<std::path::Pa
     Ok(path)
 }
 
+/// For each agent referenced in a workflow definition, generate and save an
+/// agent file if one does not already exist. Called after `/workflow create`
+/// succeeds so every new workflow is immediately runnable.
+async fn generate_workflow_agents(workflow_content: &str, model: &str, tx: &TuiSender) {
+    let Ok(def) = crate::custom_defs::parse_workflow_def(workflow_content) else {
+        return;
+    };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let agents_dir = home.join(".cortex").join("agents");
+    let _ = std::fs::create_dir_all(&agents_dir);
+
+    let mut seen = std::collections::HashSet::new();
+    for step in &def.agents {
+        if !seen.insert(step.agent.clone()) {
+            continue;
+        }
+        let agent_path = agents_dir.join(format!("{}.md", step.agent));
+        if agent_path.exists() {
+            continue;
+        }
+        send(
+            tx,
+            TuiEvent::TokenChunk {
+                agent: "workflow".to_string(),
+                chunk: format!("  Generating agent '{}'...", step.agent),
+            },
+        );
+        let role_hint = format!("{} (used in the {} workflow)", step.role, def.name);
+        match ai_generate_agent(&step.agent, Some(&role_hint), model).await {
+            Ok(agent_content) => match std::fs::write(&agent_path, &agent_content) {
+                Ok(()) => send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "workflow".to_string(),
+                        chunk: format!("  Created agent: ~/.cortex/agents/{}.md", step.agent),
+                    },
+                ),
+                Err(e) => send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "workflow".to_string(),
+                        chunk: format!("  Error saving agent '{}': {}", step.agent, e),
+                    },
+                ),
+            },
+            Err(e) => send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "workflow".to_string(),
+                    chunk: format!("  Failed to generate agent '{}': {}", step.agent, e),
+                },
+            ),
+        }
+    }
+}
+
 async fn ai_generate_agent(
     name: &str,
     description: Option<&str>,
@@ -2203,9 +2263,10 @@ STRICT RULES — follow every one:
 
 2. `model` must be exactly: {model}
 
-3. `tools` must be a comma-separated list — pick the relevant subset from:
+3. `tools` MUST be a YAML inline list — pick the relevant subset from:
    Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
-   Choose based on what this agent actually needs to do its job.
+   Example: `tools: [Read, Glob, Grep]`
+   Use an empty list if the agent needs no tools: `tools: []`
 
 4. The body (after the closing ---) MUST contain these labelled sections:
    ## Role
@@ -2244,7 +2305,7 @@ description: >
   </commentary>
   </example>
 model: ollama/qwen2.5-coder:32b
-tools: Read, Glob, Grep, Bash
+tools: [Read, Glob, Grep, Bash]
 ---
 
 ## Role
@@ -2323,6 +2384,9 @@ STRICT RULES:
    - `role`: a human-readable label for what this step does (e.g. "researcher", "analyst", "writer")
    - `agent`: the agent file name to invoke (snake-case, no extension)
    Name agents based on their specialised function.
+   Each agent's system prompt MUST instruct the agent to use the injected
+   `## Web Search Results` section as its primary data source and to NEVER
+   invent or hallucinate information.
 
 3. Body — the workflow narrative MUST cover:
    ## Purpose       (what problem it solves, expected output)

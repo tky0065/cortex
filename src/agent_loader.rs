@@ -85,9 +85,14 @@ impl AgentLoader {
                     continue;
                 }
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(def) = parse_agent_def(&content) {
-                        seen.insert(stem.to_string());
-                        agents.push(def);
+                    match parse_agent_def(&content) {
+                        Ok(def) => {
+                            seen.insert(stem.to_string());
+                            agents.push(def);
+                        }
+                        Err(e) => {
+                            eprintln!("[cortex] skipping agent '{}': {}", path.display(), e);
+                        }
                     }
                 }
             }
