@@ -36,11 +36,20 @@ impl Workflow for CodeReviewWorkflow {
                 .collect(),
         });
 
-        // The prompt is the target directory path (defaults to current dir)
-        let target_dir = if prompt.trim().is_empty() || prompt.trim() == "." {
-            options.project_dir.clone()
-        } else {
-            std::path::PathBuf::from(prompt.trim())
+        // Always scan the current working directory; prompt is a focus hint for agents
+        let target_dir = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+        let focus_hint = {
+            let p = prompt.trim();
+            if p.is_empty() || p == "." {
+                String::new()
+            } else {
+                format!(
+                    "\n\n## Review Focus\n\nThe user specifically asked: {}\nPlease pay particular attention to this aspect in your analysis.\n",
+                    p
+                )
+            }
         };
 
         // Create output directory for reports
@@ -66,8 +75,16 @@ impl Workflow for CodeReviewWorkflow {
             return Ok(());
         }
 
+        // Build full agent input: directory context + optional focus hint + source files
+        let agent_input = format!(
+            "# Project Directory: {}\n{}\n{}",
+            target_dir.display(),
+            focus_hint,
+            source_content
+        );
+
         // ── Phase 1: Reviewer → review_notes.md ──────────────────────────
-        let review_notes = agents::reviewer::run(&source_content, &options).await?;
+        let review_notes = agents::reviewer::run(&agent_input, &options).await?;
         fs.write("review_notes.md", &review_notes)?;
         send_phase_tasks(&options, CODE_REVIEW_TASKS, 2);
         let _ = options.tx.send(TuiEvent::PhaseComplete {
@@ -80,10 +97,10 @@ impl Workflow for CodeReviewWorkflow {
 
         // ── Phase 2: Security ‖ Performance (parallel) ────────────────────
         let opts2 = options.clone();
-        let source_clone = source_content.clone();
+        let agent_input_clone = agent_input.clone();
         let (security_result, performance_result) = tokio::join!(
-            agents::security::run(&source_content, &options),
-            agents::performance::run(&source_clone, &opts2),
+            agents::security::run(&agent_input, &options),
+            agents::performance::run(&agent_input_clone, &opts2),
         );
         let security_report = security_result?;
         let performance_report = performance_result?;
