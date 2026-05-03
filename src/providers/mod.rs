@@ -625,9 +625,14 @@ pub async fn complete(
         format!("{}{}", prompt_with_mentions, web_context)
     };
 
-    let raw =
-        complete_inner(model_str, &enriched_preamble, &enriched_prompt, options, agent_name)
-            .await?;
+    let raw = complete_inner(
+        model_str,
+        &enriched_preamble,
+        &enriched_prompt,
+        options,
+        agent_name,
+    )
+    .await?;
     process_spawn_directives(raw, options, agent_name).await
 }
 

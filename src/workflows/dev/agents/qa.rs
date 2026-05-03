@@ -25,9 +25,15 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         architecture, source_files
     );
 
-    let report = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "qa")
-        .await
-        .map_err(|e| anyhow::anyhow!("QA agent error: {e}"))?;
+    let report = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "qa",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("QA agent error: {e}"))?;
 
     let passed = report.contains("RECOMMENDATION: APPROVE");
     send_agent_summary(options, "qa", &report);

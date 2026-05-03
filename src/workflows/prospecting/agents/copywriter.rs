@@ -26,9 +26,15 @@ pub async fn run(profile: &str, freelancer_context: &str, options: &RunOptions) 
         "Write a personalized outreach email.\n\nFreelancer context:\n{}\n\nProspect profile:\n{}",
         freelancer_context, profile
     );
-    let email = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "copywriter")
-        .await
-        .map_err(|e| anyhow::anyhow!("Copywriter agent error: {e}"))?;
+    let email = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "copywriter",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Copywriter agent error: {e}"))?;
 
     send_agent_summary(options, agent_name.clone(), &email);
     bus_agent_done(options, "copywriter", &email).await;

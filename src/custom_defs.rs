@@ -50,8 +50,8 @@ fn split_frontmatter(content: &str) -> Result<(&str, &str)> {
 
     let (close_pos, body_offset) = match (dash_pos, head_pos) {
         (Some(d), Some(h)) if h < d => (h, 1), // ## comes before --- : use ## as split
-        (Some(d), _) => (d, 4),                 // standard \n--- delimiter
-        (None, Some(h)) => (h, 1),              // no ---, fall back to ##
+        (Some(d), _) => (d, 4),                // standard \n--- delimiter
+        (None, Some(h)) => (h, 1),             // no ---, fall back to ##
         (None, None) => bail!("missing closing '---' frontmatter delimiter"),
     };
 

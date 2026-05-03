@@ -21,9 +21,15 @@ pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
         "Generate a complete specs.md for this project brief:\n\n{}",
         brief
     );
-    let specs = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "pm")
-        .await
-        .map_err(|e| anyhow::anyhow!("PM agent error: {e}"))?;
+    let specs = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "pm",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("PM agent error: {e}"))?;
 
     send_agent_summary(options, "pm", &specs);
     bus_agent_done(options, "pm", &specs).await;

@@ -17,10 +17,15 @@ pub async fn run(source_content: &str, options: &RunOptions) -> Result<String> {
     bus_agent_started(options, "performance").await;
 
     let model = crate::providers::model_for_role("performance", &options.config)?;
-    let response =
-        crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), source_content, options, "performance")
-            .await
-            .map_err(|e| anyhow::anyhow!("Performance agent error: {e}"))?;
+    let response = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        source_content,
+        options,
+        "performance",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Performance agent error: {e}"))?;
 
     send_agent_summary(options, "performance", &response);
     bus_agent_done(options, "performance", &response).await;

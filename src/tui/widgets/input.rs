@@ -37,14 +37,20 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/help", "Show all commands"),
     ("/agents", "List all agent statuses from the bus"),
     ("/agent list", "List all custom agents (~/.cortex/agents/)"),
-    ("/agent create", "Generate a custom agent with AI: /agent create <name> [description]"),
+    (
+        "/agent create",
+        "Generate a custom agent with AI: /agent create <name> [description]",
+    ),
     (
         "/agent",
         "Send a directive to a running agent: /agent <name> \"<msg>\"",
     ),
     ("/workflow", "Manage custom workflows: list or create"),
     ("/workflow list", "List built-in and custom workflows"),
-    ("/workflow create", "Generate a custom workflow with AI: /workflow create <name> [description]"),
+    (
+        "/workflow create",
+        "Generate a custom workflow with AI: /workflow create <name> [description]",
+    ),
     ("/quit", "Exit cortex"),
     ("/exit", "Exit cortex"),
 ];
@@ -1172,7 +1178,10 @@ mod tests {
         let names = values(bar.palette_matches(&ctx));
         // Built-in workflows must be present; custom workflows from ~/.cortex may also appear
         for builtin in &["dev", "marketing", "prospecting", "code-review"] {
-            assert!(names.contains(&builtin.to_string()), "missing builtin workflow: {builtin}");
+            assert!(
+                names.contains(&builtin.to_string()),
+                "missing builtin workflow: {builtin}"
+            );
         }
     }
 

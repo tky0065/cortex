@@ -21,9 +21,15 @@ pub async fn run(criteria: &str, options: &RunOptions) -> Result<String> {
         "Find 10 potential prospects matching these criteria:\n\n{}",
         criteria
     );
-    let prospects = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "researcher")
-        .await
-        .map_err(|e| anyhow::anyhow!("Researcher agent error: {e}"))?;
+    let prospects = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "researcher",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Researcher agent error: {e}"))?;
 
     send_agent_summary(options, "researcher", &prospects);
     bus_agent_done(options, "researcher", &prospects).await;

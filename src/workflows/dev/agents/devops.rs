@@ -24,9 +24,15 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         "Create deployment infrastructure for this project:\n\n{}",
         architecture
     );
-    let output = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "devops")
-        .await
-        .map_err(|e| anyhow::anyhow!("DevOps agent error: {e}"))?;
+    let output = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "devops",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("DevOps agent error: {e}"))?;
 
     send_agent_progress(options, "devops", "Ecriture des fichiers de deploiement");
     parse_and_write_files(&output, fs, &options.tx)?;

@@ -17,9 +17,15 @@ pub async fn run(combined: &str, options: &RunOptions) -> Result<String> {
     bus_agent_started(options, "reporter").await;
 
     let model = crate::providers::model_for_role("reporter", &options.config)?;
-    let response = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), combined, options, "reporter")
-        .await
-        .map_err(|e| anyhow::anyhow!("Reporter agent error: {e}"))?;
+    let response = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        combined,
+        options,
+        "reporter",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Reporter agent error: {e}"))?;
 
     send_agent_summary(options, "reporter", &response);
     bus_agent_done(options, "reporter", &response).await;

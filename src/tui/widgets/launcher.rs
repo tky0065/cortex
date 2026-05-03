@@ -153,7 +153,10 @@ impl LauncherWidget<'_> {
                         .fg(THEME.primary)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("<workflow>  to launch  ·  ", Style::default().fg(THEME.muted)),
+                Span::styled(
+                    "<workflow>  to launch  ·  ",
+                    Style::default().fg(THEME.muted),
+                ),
                 Span::styled(
                     "/workflow create ",
                     Style::default()

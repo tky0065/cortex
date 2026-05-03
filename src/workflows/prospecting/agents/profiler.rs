@@ -19,9 +19,15 @@ pub async fn run(prospect_entry: &str, options: &RunOptions) -> Result<String> {
 
     let model = crate::providers::model_for_role("profiler", &options.config)?;
     let prompt = format!("Profile this prospect:\n\n{}", prospect_entry);
-    let profile = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "profiler")
-        .await
-        .map_err(|e| anyhow::anyhow!("Profiler agent error: {e}"))?;
+    let profile = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "profiler",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Profiler agent error: {e}"))?;
 
     send_agent_summary(options, agent_name.clone(), &profile);
     bus_agent_done(options, "profiler", &profile).await;

@@ -25,10 +25,15 @@ pub async fn run(strategy: &str, copy: &str, options: &RunOptions) -> Result<Str
         "Create a 30-day content calendar.\n\nStrategy:\n{}\n\nCopy:\n{}",
         strategy, copy
     );
-    let calendar =
-        crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "social_media_manager")
-            .await
-            .map_err(|e| anyhow::anyhow!("Social Media Manager agent error: {e}"))?;
+    let calendar = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "social_media_manager",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Social Media Manager agent error: {e}"))?;
 
     send_agent_summary(options, "social_media_manager", &calendar);
     bus_agent_done(options, "social_media_manager", &calendar).await;

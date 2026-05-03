@@ -28,9 +28,15 @@ pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> R
         "Architecture:\n{}\n\nImplement this file: {}\n\nWrite only the complete source code.",
         architecture, file_path
     );
-    let code = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, &agent_name)
-        .await
-        .map_err(|e| anyhow::anyhow!("Developer agent error for '{}': {}", file_path, e))?;
+    let code = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        &agent_name,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Developer agent error for '{}': {}", file_path, e))?;
 
     send_agent_summary(options, agent_name.clone(), &code);
     bus_agent_done(options, &agent_name, &code).await;
@@ -67,9 +73,15 @@ pub async fn fix(
         "Fix the following issues in {}.\n\nCurrent code:\n{}\n\nQA Report:\n{}\n\nWrite the complete fixed source code.",
         file_path, current_code, qa_report
     );
-    let fixed = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, &agent_name)
-        .await
-        .map_err(|e| anyhow::anyhow!("Developer fix error for '{}': {}", file_path, e))?;
+    let fixed = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        &agent_name,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Developer fix error for '{}': {}", file_path, e))?;
 
     let old_code = fs.read(file_path).ok();
     fs.write(file_path, &fixed)?;

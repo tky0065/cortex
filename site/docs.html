@@ -67,6 +67,8 @@ const SECTIONS = [
     { id: "wf-marketing", label: "marketing" },
     { id: "wf-prospecting", label: "prospecting" },
     { id: "wf-code-review", label: "code-review" },
+    { id: "custom-agents", label: "Custom agents" },
+    { id: "custom-workflows", label: "Custom workflows" },
   ]},
   { group: "Reference", items: [
     { id: "providers-ref", label: "Providers" },
@@ -141,16 +143,17 @@ function TOC({ active }) {
 function Content() {
   return (
     <main className="docs-content">
-      <span className="docs-eyebrow">Documentation · v0.1.8 beta</span>
+      <span className="docs-eyebrow">Documentation · v0.2.0</span>
       <h1>Cortex</h1>
       <p style={{ fontSize: 18, color: "var(--fg)" }}>Orchestrate specialized AI agents to build and ship your projects from your terminal. Cortex is currently in beta.</p>
 
       <section id="introduction" className="docs-section">
         <h2>Introduction</h2>
-        <p><strong>Status:</strong> Cortex is in beta. It is ready for early adopters, while workflows, providers, and generated project structure may still evolve before a stable 1.0 release.</p>
-        <p><strong>0.1.8 beta highlights:</strong> execution modes — cycle NORMAL / PLAN / AUTO / REVIEW with <strong>Shift+Tab</strong>; Plan mode scans the project, asks clarifying questions, and produces a reviewable <code>PLAN.md</code> before any agent runs; full-screen PlanReview popup with inline editing; <code>/mode</code> and <code>/approve</code> REPL commands.</p>
-        <p><strong>0.1.7 beta highlights:</strong> task management widget (track progress in real-time), workflow explorer (list all workflows with <code>/workflows</code>), responsive agent grid (UI adapts to small terminals), professional progress indicators.</p>
-        <p><strong>0.1.6 beta highlights:</strong> live diff viewer (file writes show added/removed lines in green/red), agent stream buffer cap (50 000 chars, prevents memory growth), refreshed TUI style (rounded borders on all panels, new ◐◓◑◒ spinner, gradient text on streaming content).</p>
+        <p><strong>Status:</strong> Cortex is ready for early adopters, while workflows, providers, and generated project structure may still evolve before a stable 1.0 release.</p>
+        <p><strong>0.2.0 highlights:</strong> custom agents &amp; workflows — define your own agents with YAML frontmatter Markdown files in <code>.cortex/agents/</code> or <code>~/.cortex/agents/</code>; compose multi-step custom workflows in <code>.cortex/workflows/</code>; generate them instantly with <code>/agent create</code> and <code>/workflow create</code>; fallback handling keeps pipelines running even when an agent file is missing.</p>
+        <p><strong>0.1.8 highlights:</strong> execution modes — cycle NORMAL / PLAN / AUTO / REVIEW with <strong>Shift+Tab</strong>; Plan mode scans the project, asks clarifying questions, and produces a reviewable <code>PLAN.md</code> before any agent runs; full-screen PlanReview popup with inline editing; <code>/mode</code> and <code>/approve</code> REPL commands.</p>
+        <p><strong>0.1.7 highlights:</strong> task management widget (track progress in real-time), workflow explorer (list all workflows with <code>/workflows</code>), responsive agent grid (UI adapts to small terminals), professional progress indicators.</p>
+        <p><strong>0.1.6 highlights:</strong> live diff viewer (file writes show added/removed lines in green/red), agent stream buffer cap (50 000 chars, prevents memory growth), refreshed TUI style (rounded borders on all panels, new ◐◓◑◒ spinner, gradient text on streaming content).</p>
         <p>Cortex runs like a REPL by default — type <code>cortex</code> to launch the TUI. Inside, you give it an idea via a slash command and watch six specialized agents take it from brief to deployable repo: <strong>CEO → PM → Tech Lead → Developer ×N → QA → DevOps</strong>.</p>
         <p>Each agent reads only the files it needs from disk — never the full transcript. This <em>file-as-memory</em> pattern keeps context windows bounded even on multi-hour runs.</p>
       </section>
@@ -290,6 +293,11 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td>/run &lt;workflow&gt; "&lt;prompt&gt;"</td><td>Alias for /start</td></tr>
             <tr><td>/resume &lt;dir&gt;</td><td>Resume an interrupted workflow</td></tr>
             <tr><td>/workflows</td><td>List all available workflows and descriptions</td></tr>
+            <tr><td>/workflow list</td><td>List built-in and custom workflows</td></tr>
+            <tr><td>/workflow create &lt;name&gt; [desc]</td><td>Generate a new custom workflow definition with AI</td></tr>
+            <tr><td>/agent list</td><td>List all custom agents in local and global directories</td></tr>
+            <tr><td>/agent create &lt;name&gt; [desc]</td><td>Generate a new custom agent definition with AI</td></tr>
+            <tr><td>/agent &lt;name&gt; "&lt;directive&gt;"</td><td>Inject a directive to a named running agent</td></tr>
             <tr><td>/init [--force]</td><td>Scan the current project and generate/update AGENTS.md</td></tr>
             <tr><td>/status</td><td>Show whether a workflow is running</td></tr>
             <tr><td>/abort</td><td>Cancel at the next checkpoint</td></tr>
@@ -552,6 +560,65 @@ rate       = "€600/day"`}</code></pre>
         <p>Scanned: <code>.rs .ts .tsx .js .jsx .py .go .java .kt .swift .c .cpp .h</code></p>
         <p>Skipped: <code>target/  node_modules/  .git/  dist/  build/  .next/</code></p>
         <p>Files larger than 8 KB are auto-truncated to protect context windows.</p>
+      </section>
+
+      <section id="custom-agents" className="docs-section">
+        <h2>Custom agents</h2>
+        <p>Define your own agents as Markdown files with YAML frontmatter. Cortex discovers them automatically — no registration needed.</p>
+        <h3>File locations</h3>
+        <ul>
+          <li><code>.cortex/agents/&lt;name&gt;.md</code> — project-local (takes priority)</li>
+          <li><code>~/.cortex/agents/&lt;name&gt;.md</code> — global, shared across projects</li>
+        </ul>
+        <h3>Agent file format</h3>
+        <pre><code>{`---
+name: designer
+description: UI/UX designer specialising in design systems
+model: ollama/qwen2.5-coder:32b
+tools: [filesystem]
+---
+You are a senior UI/UX designer. Your job is to produce clear,
+actionable design specs and component outlines.`}</code></pre>
+        <p>The <code>tools</code> field accepts a YAML list <code>[filesystem, terminal]</code> or a comma-separated string — both are valid.</p>
+        <h3>Generate an agent with AI</h3>
+        <CopyLine cmd='/agent create designer "UI designer focused on design systems"' />
+        <p>Cortex calls the LLM to write the frontmatter and system prompt, then saves the file to <code>~/.cortex/agents/designer.md</code>.</p>
+        <h3>List discovered agents</h3>
+        <CopyLine cmd="/agent list" />
+        <h3>Send a directive to a running agent</h3>
+        <CopyLine cmd='/agent designer "focus on accessibility"' />
+      </section>
+
+      <section id="custom-workflows" className="docs-section">
+        <h2>Custom workflows</h2>
+        <p>Compose multi-step pipelines from any mix of built-in and custom agents. Each step feeds its output as input to the next.</p>
+        <h3>File locations</h3>
+        <ul>
+          <li><code>.cortex/workflows/&lt;name&gt;.md</code> — project-local (takes priority)</li>
+          <li><code>~/.cortex/workflows/&lt;name&gt;.md</code> — global</li>
+        </ul>
+        <h3>Workflow file format</h3>
+        <pre><code>{`---
+name: design-sprint
+description: Rapid design sprint — research, design, prototype spec
+agents:
+  - role: researcher
+    agent: researcher
+  - role: designer
+    agent: designer
+  - role: prototype-writer
+    agent: copywriter
+---
+A three-step design sprint workflow.`}</code></pre>
+        <p>Each entry under <code>agents</code> has a <code>role</code> (display name in the TUI) and an <code>agent</code> (name of the agent file to load). If the agent file is missing, Cortex logs a warning and uses a generic fallback so the pipeline still completes.</p>
+        <h3>Generate a workflow with AI</h3>
+        <CopyLine cmd='/workflow create design-sprint "Rapid design sprint"' />
+        <p>Cortex generates the workflow file <em>and</em> any missing agent skeleton files automatically.</p>
+        <h3>List all workflows</h3>
+        <CopyLine cmd="/workflow list" />
+        <h3>Run a custom workflow</h3>
+        <CopyLine cmd='/start design-sprint "redesign the onboarding flow"' />
+        <p>Output is written to <code>./cortex-output/design-sprint_output.md</code>.</p>
       </section>
 
       <section id="providers-ref" className="docs-section">

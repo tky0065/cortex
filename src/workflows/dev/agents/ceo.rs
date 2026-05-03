@@ -17,9 +17,15 @@ pub async fn run(idea: &str, options: &RunOptions) -> Result<String> {
     bus_agent_started(options, "ceo").await;
 
     let model = crate::providers::model_for_role("ceo", &options.config)?;
-    let response = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), idea, options, "ceo")
-        .await
-        .map_err(|e| anyhow::anyhow!("CEO agent error: {e}"))?;
+    let response = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        idea,
+        options,
+        "ceo",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("CEO agent error: {e}"))?;
 
     send_agent_summary(options, "ceo", &response);
     bus_agent_done(options, "ceo", &response).await;

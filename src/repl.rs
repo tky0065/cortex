@@ -846,14 +846,15 @@ pub async fn dispatch(
             let first_token = rest.split_whitespace().next().unwrap_or("");
             if first_token == "list" {
                 let project_root = std::env::current_dir().ok();
-                let agents =
-                    crate::agent_loader::AgentLoader::list_agents(project_root.as_deref());
+                let agents = crate::agent_loader::AgentLoader::list_agents(project_root.as_deref());
                 if agents.is_empty() {
                     send(
                         tx,
                         TuiEvent::TokenChunk {
                             agent: "agent".to_string(),
-                            chunk: "  No custom agents found in ~/.cortex/agents/ or .cortex/agents/".to_string(),
+                            chunk:
+                                "  No custom agents found in ~/.cortex/agents/ or .cortex/agents/"
+                                    .to_string(),
                         },
                     );
                 } else {
@@ -934,9 +935,7 @@ pub async fn dispatch(
                                 tx,
                                 TuiEvent::TokenChunk {
                                     agent: "agent".to_string(),
-                                    chunk: format!(
-                                        "  Generation failed ({e}), using template..."
-                                    ),
+                                    chunk: format!("  Generation failed ({e}), using template..."),
                                 },
                             );
                             match handle_agent_create(&name, &model) {
@@ -1158,9 +1157,7 @@ pub async fn dispatch(
                                 tx,
                                 TuiEvent::TokenChunk {
                                     agent: "workflow".to_string(),
-                                    chunk: format!(
-                                        "  Generation failed ({e}), using template..."
-                                    ),
+                                    chunk: format!("  Generation failed ({e}), using template..."),
                                 },
                             );
                             match handle_workflow_create(&name) {
@@ -2348,8 +2345,7 @@ Return a structured report:
 NOW generate the complete agent definition for "{name}". Follow the exact same structure and quality level. Output ONLY the raw Markdown starting with ---"#
     );
 
-    let response =
-        crate::providers::complete_chat(model, preamble, vec![], &prompt).await?;
+    let response = crate::providers::complete_chat(model, preamble, vec![], &prompt).await?;
     let cleaned = strip_code_block(&response);
     match find_frontmatter_start(&cleaned) {
         Some(content) => Ok(content.to_string()),
@@ -2439,8 +2435,7 @@ Each agent receives the accumulated context from all prior steps plus its specif
 NOW generate the complete workflow definition for "{name}". Follow the exact same structure and quality. Output ONLY the raw Markdown starting with ---"#
     );
 
-    let response =
-        crate::providers::complete_chat(model, preamble, vec![], &prompt).await?;
+    let response = crate::providers::complete_chat(model, preamble, vec![], &prompt).await?;
     let cleaned = strip_code_block(&response);
     match find_frontmatter_start(&cleaned) {
         Some(content) => Ok(content.to_string()),

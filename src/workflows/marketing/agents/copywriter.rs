@@ -21,9 +21,15 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         "Write marketing copy based on this strategy:\n\n{}",
         strategy
     );
-    let copy = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "copywriter")
-        .await
-        .map_err(|e| anyhow::anyhow!("Copywriter agent error: {e}"))?;
+    let copy = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "copywriter",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Copywriter agent error: {e}"))?;
 
     send_agent_summary(options, "copywriter", &copy);
     bus_agent_done(options, "copywriter", &copy).await;

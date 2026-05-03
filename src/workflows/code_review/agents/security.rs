@@ -17,9 +17,15 @@ pub async fn run(source_content: &str, options: &RunOptions) -> Result<String> {
     bus_agent_started(options, "security").await;
 
     let model = crate::providers::model_for_role("security", &options.config)?;
-    let response = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), source_content, options, "security")
-        .await
-        .map_err(|e| anyhow::anyhow!("Security agent error: {e}"))?;
+    let response = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        source_content,
+        options,
+        "security",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Security agent error: {e}"))?;
 
     send_agent_summary(options, "security", &response);
     bus_agent_done(options, "security", &response).await;

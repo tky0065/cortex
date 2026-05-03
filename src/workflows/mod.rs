@@ -138,19 +138,22 @@ pub fn get_workflow(name: &str) -> Result<Box<dyn Workflow>> {
             ) {
                 Ok(Some(def)) => Ok(Box::new(custom::CustomWorkflow { def })),
                 Ok(None) => {
-                    let custom_names = crate::agent_loader::AgentLoader::list_workflows(
-                        project_root.as_deref(),
-                    )
-                    .into_iter()
-                    .map(|w| w.name)
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                    let custom_names =
+                        crate::agent_loader::AgentLoader::list_workflows(project_root.as_deref())
+                            .into_iter()
+                            .map(|w| w.name)
+                            .collect::<Vec<_>>()
+                            .join(", ");
                     let all_names = if custom_names.is_empty() {
                         available_workflow_names()
                     } else {
                         format!("{}, {}", available_workflow_names(), custom_names)
                     };
-                    anyhow::bail!("Unknown workflow '{}'. Available: {}", custom_name, all_names)
+                    anyhow::bail!(
+                        "Unknown workflow '{}'. Available: {}",
+                        custom_name,
+                        all_names
+                    )
                 }
                 Err(e) => anyhow::bail!("Error loading custom workflow '{}': {}", custom_name, e),
             }

@@ -6,6 +6,18 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 **Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
+## What's new in 0.2.0
+
+- **Custom Agents** — Define your own agents with a Markdown file using YAML frontmatter. Drop them in `.cortex/agents/` (project-local) or `~/.cortex/agents/` (global). Local definitions shadow global ones on name collision.
+- **Custom Workflows** — Compose multi-step workflows from any mix of built-in and custom agents using a simple Markdown + YAML format. Place them in `.cortex/workflows/` or `~/.cortex/workflows/`.
+- **`/agent list`** — Show all discovered custom agents across local and global directories.
+- **`/agent create <name> [desc]`** — Generate a new custom agent definition with AI, ready to edit and run immediately.
+- **`/agent <name> "<directive>"`** — Inject a directive to a named agent while a workflow is running.
+- **`/workflow list`** — List all built-in and custom workflows.
+- **`/workflow create <name> [desc]`** — Generate a new custom workflow definition with AI, including skeleton agent files.
+- **Fallback handling** — If a custom workflow references a missing agent, Cortex logs a clear warning and runs a generic fallback so the pipeline still completes. Fix it with `/agent create <name>`.
+- **YAML frontmatter parser improvements** — Tolerates AI-generated files with `tools: Read, Write` (comma string) instead of `tools: [Read, Write]` (YAML list); also accepts `##` headings as the body separator when the closing `---` is misplaced.
+
 ## What's new in 0.1.8 beta
 
 - **Execution Modes** — Cycle through four modes with **Shift+Tab** (just like Claude Code). The active mode is always visible in the status bar with a colour-coded badge.

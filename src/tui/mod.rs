@@ -35,12 +35,12 @@ use crate::tui::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
         diff_viewer::{DiffViewerWidget, FileDiff},
         input::{InputBar, PaletteContext, ResumeSuggestion, default_provider_suggestions},
+        launcher::{IdlePipelineWidget, LauncherData, LauncherWidget},
         logs::{LogEntry, LogsWidget},
         picker::{
             PickerState, PickerWidget, auth_method_picker, model_picker, provider_picker,
             resume_picker,
         },
-        launcher::{IdlePipelineWidget, LauncherData, LauncherWidget},
         pipeline::{AgentState, AgentStatus, PipelineWidget},
         status_bar::{StatusBarState, StatusBarWidget},
         tasks::TasksWidget,
@@ -220,7 +220,10 @@ impl App {
         let (provider, model) = (&self.provider_display, &self.model_display);
 
         if self.pipeline.is_empty() {
-            IdlePipelineWidget { data: &self.launcher }.render(frame, layout.pipeline);
+            IdlePipelineWidget {
+                data: &self.launcher,
+            }
+            .render(frame, layout.pipeline);
         } else {
             PipelineWidget {
                 agents: &self.pipeline,
@@ -229,7 +232,10 @@ impl App {
         }
 
         if self.active_agents.is_empty() && self.pipeline.is_empty() {
-            LauncherWidget { data: &self.launcher }.render(frame, layout.agents);
+            LauncherWidget {
+                data: &self.launcher,
+            }
+            .render(frame, layout.agents);
         } else {
             AgentPanelWidget {
                 agents: &self.active_agents,

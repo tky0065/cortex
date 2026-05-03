@@ -56,10 +56,12 @@ cargo fmt                      # format
 | Tasks 13, 40 — Groq/Together providers + token progress | 13, 40 | ✅ Done |
 | Tasks 49, 50, 51 — resume + verbose + CI config | 49, 50, 51 | ✅ Done |
 | Web search config + agent injection + REPL commands | — | ✅ Done |
+| Custom agents + custom workflows + AgentLoader | — | ✅ Done |
 
 Files currently implemented:
 - `src/main.rs`, `src/config.rs`, `src/orchestrator.rs`, `src/repl.rs`
-- `src/workflows/{mod,dev/mod,marketing/mod,prospecting/mod}.rs`
+- `src/agent_loader.rs`, `src/custom_defs.rs`
+- `src/workflows/{mod,dev/mod,marketing/mod,prospecting/mod,custom}.rs`
 - `src/workflows/dev/agents/{mod,ceo,pm,tech_lead,developer,qa,devops}.rs`
 - `src/workflows/dev/prompts/{ceo,pm,tech_lead,developer,qa,devops}.md`
 - `src/workflows/marketing/agents/{mod,strategist,copywriter,analyst,social_media_manager}.rs`
@@ -67,10 +69,9 @@ Files currently implemented:
 - `src/workflows/prospecting/agents/{mod,researcher,profiler,copywriter,outreach_manager}.rs`
 - `src/workflows/prospecting/prompts/{researcher,profiler,copywriter,outreach_manager}.md`
 - `src/tui/{mod,layout,events}.rs`
-- `src/tui/widgets/{mod,input,pipeline,agent_panel,logs}.rs`
+- `src/tui/widgets/{mod,input,pipeline,agent_panel,logs,launcher}.rs`
 - `src/tools/{mod,filesystem,terminal}.rs`
 - `src/providers/{mod,ollama}.rs`
-- `src/context/mod.rs`
 - `src/context/mod.rs`
 
 ---

@@ -21,9 +21,15 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         "Define KPIs and A/B tests for this marketing strategy:\n\n{}",
         strategy
     );
-    let metrics = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "analyst")
-        .await
-        .map_err(|e| anyhow::anyhow!("Analyst agent error: {e}"))?;
+    let metrics = crate::providers::complete(
+        model,
+        crate::custom_defs::prompt_body(PREAMBLE_RAW),
+        &prompt,
+        options,
+        "analyst",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Analyst agent error: {e}"))?;
 
     send_agent_summary(options, "analyst", &metrics);
     bus_agent_done(options, "analyst", &metrics).await;
