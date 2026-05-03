@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/researcher.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/researcher.md");
 
 pub async fn run(criteria: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -21,7 +21,7 @@ pub async fn run(criteria: &str, options: &RunOptions) -> Result<String> {
         "Find 10 potential prospects matching these criteria:\n\n{}",
         criteria
     );
-    let prospects = crate::providers::complete(model, PREAMBLE, &prompt, options, "researcher")
+    let prospects = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "researcher")
         .await
         .map_err(|e| anyhow::anyhow!("Researcher agent error: {e}"))?;
 

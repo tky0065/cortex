@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::tui::events::{Task, TuiEvent, TuiSender};
 
 pub mod code_review;
+pub mod custom;
 pub mod dev;
 pub mod marketing;
 pub mod planner;
@@ -129,12 +130,45 @@ pub fn get_workflow(name: &str) -> Result<Box<dyn Workflow>> {
         "marketing" => Ok(Box::new(marketing::MarketingWorkflow)),
         "prospecting" => Ok(Box::new(prospecting::ProspectingWorkflow)),
         "code-review" => Ok(Box::new(code_review::CodeReviewWorkflow)),
-        other => anyhow::bail!(
-            "Unknown workflow '{}'. Available: {}",
-            other,
-            available_workflow_names()
-        ),
+        custom_name => {
+            let project_root = std::env::current_dir().ok();
+            match crate::agent_loader::AgentLoader::load_workflow(
+                custom_name,
+                project_root.as_deref(),
+            ) {
+                Ok(Some(def)) => Ok(Box::new(custom::CustomWorkflow { def })),
+                Ok(None) => {
+                    let custom_names = crate::agent_loader::AgentLoader::list_workflows(
+                        project_root.as_deref(),
+                    )
+                    .into_iter()
+                    .map(|w| w.name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                    let all_names = if custom_names.is_empty() {
+                        available_workflow_names()
+                    } else {
+                        format!("{}, {}", available_workflow_names(), custom_names)
+                    };
+                    anyhow::bail!("Unknown workflow '{}'. Available: {}", custom_name, all_names)
+                }
+                Err(e) => anyhow::bail!("Error loading custom workflow '{}': {}", custom_name, e),
+            }
+        }
     }
+}
+
+/// Built-in workflows plus any custom workflows discovered on disk.
+pub fn available_workflows_dynamic() -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = AVAILABLE_WORKFLOWS
+        .iter()
+        .map(|w| (w.name.to_string(), w.description.to_string()))
+        .collect();
+    let project_root = std::env::current_dir().ok();
+    for def in crate::agent_loader::AgentLoader::list_workflows(project_root.as_deref()) {
+        result.push((def.name, def.description));
+    }
+    result
 }
 
 pub fn send_agent_progress(

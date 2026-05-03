@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/tech_lead.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/tech_lead.md");
 
 pub async fn run(specs: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -21,7 +21,7 @@ pub async fn run(specs: &str, options: &RunOptions) -> Result<String> {
         "Generate a complete architecture.md for these specifications:\n\n{}",
         specs
     );
-    let arch = crate::providers::complete(model, PREAMBLE, &prompt, options, "tech_lead")
+    let arch = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "tech_lead")
         .await
         .map_err(|e| anyhow::anyhow!("Tech Lead agent error: {e}"))?;
 

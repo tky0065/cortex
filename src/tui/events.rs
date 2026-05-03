@@ -139,6 +139,12 @@ pub enum TuiEvent {
     PlanGenerated {
         path: String,
     },
+    /// Pre-fills the command input bar so the user can type arguments.
+    SetInputBar {
+        value: String,
+    },
+    /// Reload the launcher panel (e.g. after creating a new workflow or agent).
+    LauncherRefresh,
 }
 
 pub type TuiSender = mpsc::UnboundedSender<TuiEvent>;

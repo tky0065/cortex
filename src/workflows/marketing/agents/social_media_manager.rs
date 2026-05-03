@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/social_media_manager.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/social_media_manager.md");
 
 pub async fn run(strategy: &str, copy: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -26,7 +26,7 @@ pub async fn run(strategy: &str, copy: &str, options: &RunOptions) -> Result<Str
         strategy, copy
     );
     let calendar =
-        crate::providers::complete(model, PREAMBLE, &prompt, options, "social_media_manager")
+        crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "social_media_manager")
             .await
             .map_err(|e| anyhow::anyhow!("Social Media Manager agent error: {e}"))?;
 

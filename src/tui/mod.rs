@@ -40,6 +40,7 @@ use crate::tui::{
             PickerState, PickerWidget, auth_method_picker, model_picker, provider_picker,
             resume_picker,
         },
+        launcher::{IdlePipelineWidget, LauncherData, LauncherWidget},
         pipeline::{AgentState, AgentStatus, PipelineWidget},
         status_bar::{StatusBarState, StatusBarWidget},
         tasks::TasksWidget,
@@ -157,6 +158,8 @@ struct App {
     model_display: String,
     /// Current execution mode displayed in status bar.
     execution_mode: crate::workflows::ExecutionMode,
+    /// Cached data for the idle launcher panel.
+    launcher: LauncherData,
 }
 
 impl App {
@@ -202,6 +205,7 @@ impl App {
             provider_display,
             model_display,
             execution_mode: crate::workflows::ExecutionMode::default(),
+            launcher: LauncherData::load(),
         }
     }
 
@@ -215,16 +219,25 @@ impl App {
 
         let (provider, model) = (&self.provider_display, &self.model_display);
 
-        PipelineWidget {
-            agents: &self.pipeline,
+        if self.pipeline.is_empty() {
+            IdlePipelineWidget { data: &self.launcher }.render(frame, layout.pipeline);
+        } else {
+            PipelineWidget {
+                agents: &self.pipeline,
+            }
+            .render(frame, layout.pipeline);
         }
-        .render(frame, layout.pipeline);
-        AgentPanelWidget {
-            agents: &self.active_agents,
-            focused_agent: self.log_filter.as_deref(),
-            tick_count: self.tick_count,
+
+        if self.active_agents.is_empty() && self.pipeline.is_empty() {
+            LauncherWidget { data: &self.launcher }.render(frame, layout.agents);
+        } else {
+            AgentPanelWidget {
+                agents: &self.active_agents,
+                focused_agent: self.log_filter.as_deref(),
+                tick_count: self.tick_count,
+            }
+            .render(frame, layout.agents);
         }
-        .render(frame, layout.agents);
 
         TasksWidget { tasks: &self.tasks }.render(frame, layout.tasks);
 
@@ -507,6 +520,7 @@ impl App {
                 files,
                 git_hash,
             } => {
+                self.launcher = LauncherData::load();
                 self.logs.push(LogEntry::system(format!(
                     "workflow complete — output: {} ({} files){}",
                     output_dir,
@@ -516,6 +530,9 @@ impl App {
                         .map(|h| format!(", git: {}", h))
                         .unwrap_or_default(),
                 )));
+            }
+            TuiEvent::LauncherRefresh => {
+                self.launcher = LauncherData::load();
             }
             TuiEvent::OpenProviderPicker => {
                 let (current, custom_providers) = self
@@ -722,6 +739,9 @@ impl App {
                     editing: false,
                     edit_input: tui_input::Input::default(),
                 };
+            }
+            TuiEvent::SetInputBar { value } => {
+                self.input_bar.input = tui_input::Input::new(value.clone());
             }
             TuiEvent::FileWritten {
                 agent,
@@ -2649,6 +2669,7 @@ fn is_control_agent(agent: &str) -> bool {
             | "status"
             | "update"
             | "websearch"
+            | "workflow"
     )
 }
 

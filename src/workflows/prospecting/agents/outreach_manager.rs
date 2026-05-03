@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/outreach_manager.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/outreach_manager.md");
 
 pub async fn run(profiles_and_emails: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -25,7 +25,7 @@ pub async fn run(profiles_and_emails: &str, options: &RunOptions) -> Result<Stri
         "Organize this outreach campaign and produce a report:\n\n{}",
         profiles_and_emails
     );
-    let report = crate::providers::complete(model, PREAMBLE, &prompt, options, "outreach_manager")
+    let report = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "outreach_manager")
         .await
         .map_err(|e| anyhow::anyhow!("Outreach Manager agent error: {e}"))?;
 

@@ -1,7 +1,9 @@
 mod agent_bus;
+mod agent_loader;
 mod assistant;
 mod auth;
 mod config;
+mod custom_defs;
 mod context;
 mod mentions;
 mod orchestrator;

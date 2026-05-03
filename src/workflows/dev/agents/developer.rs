@@ -8,7 +8,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/developer.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/developer.md");
 
 /// Implement a single source file given the architecture context.
 pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> Result<String> {
@@ -28,7 +28,7 @@ pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> R
         "Architecture:\n{}\n\nImplement this file: {}\n\nWrite only the complete source code.",
         architecture, file_path
     );
-    let code = crate::providers::complete(model, PREAMBLE, &prompt, options, &agent_name)
+    let code = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, &agent_name)
         .await
         .map_err(|e| anyhow::anyhow!("Developer agent error for '{}': {}", file_path, e))?;
 
@@ -67,7 +67,7 @@ pub async fn fix(
         "Fix the following issues in {}.\n\nCurrent code:\n{}\n\nQA Report:\n{}\n\nWrite the complete fixed source code.",
         file_path, current_code, qa_report
     );
-    let fixed = crate::providers::complete(model, PREAMBLE, &prompt, options, &agent_name)
+    let fixed = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, &agent_name)
         .await
         .map_err(|e| anyhow::anyhow!("Developer fix error for '{}': {}", file_path, e))?;
 

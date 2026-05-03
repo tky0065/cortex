@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/copywriter.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/copywriter.md");
 
 pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -21,7 +21,7 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         "Write marketing copy based on this strategy:\n\n{}",
         strategy
     );
-    let copy = crate::providers::complete(model, PREAMBLE, &prompt, options, "copywriter")
+    let copy = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "copywriter")
         .await
         .map_err(|e| anyhow::anyhow!("Copywriter agent error: {e}"))?;
 

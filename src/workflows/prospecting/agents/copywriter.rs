@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/copywriter.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/copywriter.md");
 
 pub async fn run(profile: &str, freelancer_context: &str, options: &RunOptions) -> Result<String> {
     let agent_name = "copywriter".to_string();
@@ -26,7 +26,7 @@ pub async fn run(profile: &str, freelancer_context: &str, options: &RunOptions) 
         "Write a personalized outreach email.\n\nFreelancer context:\n{}\n\nProspect profile:\n{}",
         freelancer_context, profile
     );
-    let email = crate::providers::complete(model, PREAMBLE, &prompt, options, "copywriter")
+    let email = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "copywriter")
         .await
         .map_err(|e| anyhow::anyhow!("Copywriter agent error: {e}"))?;
 

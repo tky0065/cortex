@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/pm.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/pm.md");
 
 pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
     let _ = options
@@ -21,7 +21,7 @@ pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
         "Generate a complete specs.md for this project brief:\n\n{}",
         brief
     );
-    let specs = crate::providers::complete(model, PREAMBLE, &prompt, options, "pm")
+    let specs = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "pm")
         .await
         .map_err(|e| anyhow::anyhow!("PM agent error: {e}"))?;
 

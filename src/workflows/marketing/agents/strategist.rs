@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/strategist.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/strategist.md");
 
 pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -22,7 +22,7 @@ pub async fn run(brief: &str, options: &RunOptions) -> Result<String> {
 
     let model = crate::providers::model_for_role("strategist", &options.config)?;
     let prompt = format!("Create a complete marketing strategy for:\n\n{}", brief);
-    let strategy = crate::providers::complete(model, PREAMBLE, &prompt, options, "strategist")
+    let strategy = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "strategist")
         .await
         .map_err(|e| anyhow::anyhow!("Strategist agent error: {e}"))?;
 

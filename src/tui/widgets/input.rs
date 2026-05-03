@@ -36,10 +36,15 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/logs", "Toggle log panel"),
     ("/help", "Show all commands"),
     ("/agents", "List all agent statuses from the bus"),
+    ("/agent list", "List all custom agents (~/.cortex/agents/)"),
+    ("/agent create", "Generate a custom agent with AI: /agent create <name> [description]"),
     (
         "/agent",
         "Send a directive to a running agent: /agent <name> \"<msg>\"",
     ),
+    ("/workflow", "Manage custom workflows: list or create"),
+    ("/workflow list", "List built-in and custom workflows"),
+    ("/workflow create", "Generate a custom workflow with AI: /workflow create <name> [description]"),
     ("/quit", "Exit cortex"),
     ("/exit", "Exit cortex"),
 ];
@@ -168,7 +173,14 @@ impl InputBar {
         let v = self.input.value();
         self.mention_replacement(context).is_some()
             || self.argument_replacement(context).is_some()
-            || (v.starts_with('/') && !v.contains(' '))
+            || (v.starts_with('/') && {
+                // Keep the palette open while the user is typing a known command
+                // (including commands that contain spaces, like "/agent list").
+                !v.contains(' ')
+                    || COMMANDS
+                        .iter()
+                        .any(|(cmd, _)| cmd.starts_with(v.trim_end()))
+            })
     }
 
     /// Commands or arguments that match what the user has typed so far.
@@ -613,6 +625,9 @@ const REQUIRES_ARGS: &[&str] = &[
     "/model",
     "/provider",
     "/connect",
+    "/agent",
+    "/agent create",
+    "/workflow create",
 ];
 
 struct ArgumentPalette {
@@ -731,9 +746,9 @@ fn skip_whitespace(value: &str, mut pos: usize) -> usize {
 
 fn argument_matches(parsed: &ParsedCommand<'_>, context: &PaletteContext) -> Vec<PaletteItem> {
     let candidates = match (parsed.command, parsed.current.index) {
-        ("/start" | "/run", 0) => workflows::available_workflows()
-            .iter()
-            .map(|workflow| PaletteItem::new(workflow.name, workflow.description))
+        ("/start" | "/run", 0) => workflows::available_workflows_dynamic()
+            .into_iter()
+            .map(|(name, desc)| PaletteItem::new(name, desc))
             .collect(),
         ("/websearch", 0) => static_items(WEBSEARCH_ACTIONS),
         ("/update", 0) => static_items(UPDATE_ACTIONS),
@@ -774,11 +789,20 @@ fn argument_matches(parsed: &ParsedCommand<'_>, context: &PaletteContext) -> Vec
                     .map(|agent| PaletteItem::new(agent, "Active agent")),
             )
             .collect(),
-        ("/agent", 0) => context
-            .agents
-            .iter()
-            .map(|agent| PaletteItem::new(agent, "Active agent"))
-            .collect(),
+        ("/agent", 0) => {
+            let project_root = std::env::current_dir().ok();
+            let mut items: Vec<PaletteItem> = context
+                .agents
+                .iter()
+                .map(|agent| PaletteItem::new(agent, "Active agent"))
+                .collect();
+            for a in crate::agent_loader::AgentLoader::list_agents(project_root.as_deref()) {
+                if !context.agents.contains(&a.name) {
+                    items.push(PaletteItem::new(a.name, a.description));
+                }
+            }
+            items
+        }
         ("/resume", 0) => context
             .resume_sessions
             .iter()
@@ -1146,10 +1170,10 @@ mod tests {
         assert!(bar.palette_open(&ctx));
 
         let names = values(bar.palette_matches(&ctx));
-        assert_eq!(
-            names,
-            vec!["dev", "marketing", "prospecting", "code-review"]
-        );
+        // Built-in workflows must be present; custom workflows from ~/.cortex may also appear
+        for builtin in &["dev", "marketing", "prospecting", "code-review"] {
+            assert!(names.contains(&builtin.to_string()), "missing builtin workflow: {builtin}");
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/analyst.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/analyst.md");
 
 pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -21,7 +21,7 @@ pub async fn run(strategy: &str, options: &RunOptions) -> Result<String> {
         "Define KPIs and A/B tests for this marketing strategy:\n\n{}",
         strategy
     );
-    let metrics = crate::providers::complete(model, PREAMBLE, &prompt, options, "analyst")
+    let metrics = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "analyst")
         .await
         .map_err(|e| anyhow::anyhow!("Analyst agent error: {e}"))?;
 

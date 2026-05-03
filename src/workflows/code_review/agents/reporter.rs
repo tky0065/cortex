@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/reporter.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/reporter.md");
 
 pub async fn run(combined: &str, options: &RunOptions) -> Result<String> {
     let _ = options.tx.send(TuiEvent::AgentStarted {
@@ -17,7 +17,7 @@ pub async fn run(combined: &str, options: &RunOptions) -> Result<String> {
     bus_agent_started(options, "reporter").await;
 
     let model = crate::providers::model_for_role("reporter", &options.config)?;
-    let response = crate::providers::complete(model, PREAMBLE, combined, options, "reporter")
+    let response = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), combined, options, "reporter")
         .await
         .map_err(|e| anyhow::anyhow!("Reporter agent error: {e}"))?;
 

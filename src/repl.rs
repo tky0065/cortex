@@ -166,7 +166,11 @@ pub async fn dispatch(
                 "  /abort                        — cancel the running workflow",
                 "  /continue                     — resume an interactive pause",
                 "  /agents                       — show status of all agents in the current workflow",
-                "  /agent <name> \"<directive>\"  — inject a directive to a specific agent",
+                "  /agent list                          — list all custom agents (~/.cortex/agents/)",
+                "  /agent create <name> [desc]          — generate a custom agent with Cortex AI",
+                "  /agent <name> \"<directive>\"         — inject a directive to a running agent",
+                "  /workflow list                       — list built-in and custom workflows",
+                "  /workflow create <name> [desc]       — generate a custom workflow with Cortex AI",
                 "  /config                       — print active configuration",
                 "  /model [<role> <model>]       — show or change a role's model",
                 "  /provider [<name>]            — show or change the default provider",
@@ -837,13 +841,132 @@ pub async fn dispatch(
         }
 
         "/agent" => {
-            // Syntax: /agent <name> "<directive>"  OR  /agent <name> <directive>
-            if rest.is_empty() {
+            // Subcommands: list, create <name>
+            // Fallthrough: /agent <name> "<directive>"
+            let first_token = rest.split_whitespace().next().unwrap_or("");
+            if first_token == "list" {
+                let project_root = std::env::current_dir().ok();
+                let agents =
+                    crate::agent_loader::AgentLoader::list_agents(project_root.as_deref());
+                if agents.is_empty() {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "agent".to_string(),
+                            chunk: "  No custom agents found in ~/.cortex/agents/ or .cortex/agents/".to_string(),
+                        },
+                    );
+                } else {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "agent".to_string(),
+                            chunk: format!("  {} custom agent(s):", agents.len()),
+                        },
+                    );
+                    for def in agents {
+                        send(
+                            tx,
+                            TuiEvent::TokenChunk {
+                                agent: "agent".to_string(),
+                                chunk: format!(
+                                    "    {:<20} {} (model: {})",
+                                    def.name, def.description, def.model
+                                ),
+                            },
+                        );
+                    }
+                }
+            } else if first_token == "create" {
+                // Syntax: /agent create <name> [optional description]
+                let tokens: Vec<&str> = rest.splitn(3, char::is_whitespace).collect();
+                let name = tokens.get(1).map(|s| s.trim()).unwrap_or("").to_string();
+                let description = tokens
+                    .get(2)
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty());
+
+                if name.is_empty() {
+                    send(
+                        tx,
+                        TuiEvent::SetInputBar {
+                            value: "/agent create ".to_string(),
+                        },
+                    );
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "agent".to_string(),
+                            chunk: "  Type agent name after /agent create".to_string(),
+                        },
+                    );
+                } else {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "agent".to_string(),
+                            chunk: format!("  Generating '{name}' agent with Cortex AI..."),
+                        },
+                    );
+                    let model = config.read().await.models.assistant.clone();
+                    match ai_generate_agent(&name, description.as_deref(), &model).await {
+                        Ok(content) => match save_agent_file(&name, &content) {
+                            Ok(path) => {
+                                send(
+                                    tx,
+                                    TuiEvent::TokenChunk {
+                                        agent: "agent".to_string(),
+                                        chunk: format!("  Created: {}", path.display()),
+                                    },
+                                );
+                                send(tx, TuiEvent::LauncherRefresh);
+                            }
+                            Err(e) => send(
+                                tx,
+                                TuiEvent::TokenChunk {
+                                    agent: "agent".to_string(),
+                                    chunk: format!("  Error saving file: {e}"),
+                                },
+                            ),
+                        },
+                        Err(e) => {
+                            send(
+                                tx,
+                                TuiEvent::TokenChunk {
+                                    agent: "agent".to_string(),
+                                    chunk: format!(
+                                        "  Generation failed ({e}), using template..."
+                                    ),
+                                },
+                            );
+                            match handle_agent_create(&name, &model) {
+                                Ok(path) => {
+                                    send(
+                                        tx,
+                                        TuiEvent::TokenChunk {
+                                            agent: "agent".to_string(),
+                                            chunk: format!("  Created: {}", path.display()),
+                                        },
+                                    );
+                                    send(tx, TuiEvent::LauncherRefresh);
+                                }
+                                Err(e2) => send(
+                                    tx,
+                                    TuiEvent::TokenChunk {
+                                        agent: "agent".to_string(),
+                                        chunk: format!("  Error: {e2}"),
+                                    },
+                                ),
+                            }
+                        }
+                    }
+                }
+            } else if rest.is_empty() {
                 send(
                     tx,
                     TuiEvent::TokenChunk {
                         agent: "agent".to_string(),
-                        chunk: "  Usage: /agent <name> \"<directive>\"".to_string(),
+                        chunk: "  Usage: /agent list | /agent create <name> | /agent <name> \"<directive>\"".to_string(),
                     },
                 );
             } else {
@@ -861,12 +984,61 @@ pub async fn dispatch(
                 if instruction.is_empty() {
                     send(
                         tx,
+                        TuiEvent::SetInputBar {
+                            value: format!("/agent {} \"", agent_name),
+                        },
+                    );
+                    send(
+                        tx,
                         TuiEvent::TokenChunk {
                             agent: "agent".to_string(),
-                            chunk: "  Usage: /agent <name> \"<directive>\"".to_string(),
+                            chunk: format!("  Type prompt after /agent {agent_name} \""),
                         },
                     );
                 } else {
+                    // If no workflow is running and a custom agent def exists → run standalone.
+                    let no_workflow = state.cancel.lock().await.is_none();
+                    if no_workflow {
+                        let project_root = std::env::current_dir().ok();
+                        if let Ok(Some(def)) = crate::agent_loader::AgentLoader::load_agent(
+                            &agent_name,
+                            project_root.as_deref(),
+                        ) {
+                            let tx2 = tx.clone();
+                            let prompt_text = instruction.clone();
+                            tokio::spawn(async move {
+                                let _ = tx2.send(TuiEvent::AgentStarted {
+                                    agent: def.name.clone(),
+                                });
+                                match crate::providers::complete_chat(
+                                    &def.model,
+                                    &def.system_prompt,
+                                    vec![],
+                                    &prompt_text,
+                                )
+                                .await
+                                {
+                                    Ok(response) => {
+                                        let _ = tx2.send(TuiEvent::TokenChunk {
+                                            agent: def.name.clone(),
+                                            chunk: response,
+                                        });
+                                        let _ = tx2.send(TuiEvent::AgentDone {
+                                            agent: def.name.clone(),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        let _ = tx2.send(TuiEvent::Error {
+                                            agent: def.name.clone(),
+                                            message: e.to_string(),
+                                        });
+                                    }
+                                }
+                            });
+                            return Ok(false);
+                        }
+                    }
+                    // Workflow is running → send directive to the agent bus.
                     let bus_guard = state.agent_bus.read().await;
                     if let Some(bus) = bus_guard.as_ref() {
                         match bus.send_directive(AgentDirective {
@@ -896,11 +1068,130 @@ pub async fn dispatch(
                             tx,
                             TuiEvent::TokenChunk {
                                 agent: "agent".to_string(),
-                                chunk: "  No workflow is currently running.".to_string(),
+                                chunk: format!(
+                                    "  Agent '{}' not found. Use /agent create {0} to create it.",
+                                    agent_name
+                                ),
                             },
                         );
                     }
                 }
+            }
+        }
+
+        "/workflow" => {
+            let first_token = rest.split_whitespace().next().unwrap_or("");
+            if first_token == "list" {
+                let workflows = crate::workflows::available_workflows_dynamic();
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "workflow".to_string(),
+                        chunk: format!("  {} workflow(s):", workflows.len()),
+                    },
+                );
+                for (name, desc) in workflows {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "workflow".to_string(),
+                            chunk: format!("    {:<20} {}", name, desc),
+                        },
+                    );
+                }
+            } else if first_token == "create" {
+                // Syntax: /workflow create <name> [optional description]
+                let tokens: Vec<&str> = rest.splitn(3, char::is_whitespace).collect();
+                let name = tokens.get(1).map(|s| s.trim()).unwrap_or("").to_string();
+                let description = tokens
+                    .get(2)
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty());
+
+                if name.is_empty() {
+                    send(
+                        tx,
+                        TuiEvent::SetInputBar {
+                            value: "/workflow create ".to_string(),
+                        },
+                    );
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "workflow".to_string(),
+                            chunk: "  Type workflow name after /workflow create".to_string(),
+                        },
+                    );
+                } else {
+                    send(
+                        tx,
+                        TuiEvent::TokenChunk {
+                            agent: "workflow".to_string(),
+                            chunk: format!("  Generating '{name}' workflow with Cortex AI..."),
+                        },
+                    );
+                    let model = config.read().await.models.assistant.clone();
+                    match ai_generate_workflow(&name, description.as_deref(), &model).await {
+                        Ok(content) => match save_workflow_file(&name, &content) {
+                            Ok(path) => {
+                                send(
+                                    tx,
+                                    TuiEvent::TokenChunk {
+                                        agent: "workflow".to_string(),
+                                        chunk: format!("  Created: {}", path.display()),
+                                    },
+                                );
+                                send(tx, TuiEvent::LauncherRefresh);
+                            }
+                            Err(e) => send(
+                                tx,
+                                TuiEvent::TokenChunk {
+                                    agent: "workflow".to_string(),
+                                    chunk: format!("  Error saving file: {e}"),
+                                },
+                            ),
+                        },
+                        Err(e) => {
+                            send(
+                                tx,
+                                TuiEvent::TokenChunk {
+                                    agent: "workflow".to_string(),
+                                    chunk: format!(
+                                        "  Generation failed ({e}), using template..."
+                                    ),
+                                },
+                            );
+                            match handle_workflow_create(&name) {
+                                Ok(path) => {
+                                    send(
+                                        tx,
+                                        TuiEvent::TokenChunk {
+                                            agent: "workflow".to_string(),
+                                            chunk: format!("  Created: {}", path.display()),
+                                        },
+                                    );
+                                    send(tx, TuiEvent::LauncherRefresh);
+                                }
+                                Err(e2) => send(
+                                    tx,
+                                    TuiEvent::TokenChunk {
+                                        agent: "workflow".to_string(),
+                                        chunk: format!("  Error: {e2}"),
+                                    },
+                                ),
+                            }
+                        }
+                    }
+                }
+            } else {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "workflow".to_string(),
+                        chunk: "  Usage: /workflow list | /workflow create <name> [description]"
+                            .to_string(),
+                    },
+                );
             }
         }
 
@@ -1825,4 +2116,304 @@ fn list_output_files(dir: &std::path::Path) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+/// Remove a ``` ... ``` code-block wrapper if the LLM added one around the .md content.
+fn strip_code_block(s: &str) -> String {
+    let s = s.trim();
+    let after_fence = match s.strip_prefix("```") {
+        Some(rest) => rest,
+        None => return s.to_string(),
+    };
+    // skip optional language tag (markdown, md, yaml, …)
+    let after_lang = after_fence.trim_start_matches(|c: char| c.is_alphanumeric() || c == '-');
+    // strip trailing ```
+    after_lang
+        .trim_start_matches('\n')
+        .trim_end()
+        .strip_suffix("```")
+        .map(|inner| inner.trim().to_string())
+        .unwrap_or_else(|| s.to_string())
+}
+
+/// Finds the first standalone `---` line and returns everything from there.
+/// Handles local models that prepend conversational text before the YAML frontmatter.
+fn find_frontmatter_start(s: &str) -> Option<&str> {
+    if s.trim_start().starts_with("---") {
+        return Some(s.trim_start());
+    }
+    if let Some(pos) = s.find("\n---") {
+        return Some(&s[pos + 1..]);
+    }
+    None
+}
+
+fn save_agent_file(name: &str, content: &str) -> anyhow::Result<std::path::PathBuf> {
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?
+        .join(".cortex")
+        .join("agents");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.md", name));
+    if path.exists() {
+        anyhow::bail!("agent '{}' already exists at {}", name, path.display());
+    }
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+fn save_workflow_file(name: &str, content: &str) -> anyhow::Result<std::path::PathBuf> {
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?
+        .join(".cortex")
+        .join("workflows");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.md", name));
+    if path.exists() {
+        anyhow::bail!("workflow '{}' already exists at {}", name, path.display());
+    }
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+async fn ai_generate_agent(
+    name: &str,
+    description: Option<&str>,
+    model: &str,
+) -> anyhow::Result<String> {
+    let desc_ctx = description
+        .map(|d| format!("\nAgent purpose provided by the user: {}", d))
+        .unwrap_or_default();
+
+    let preamble = "You are an expert Cortex agent definition generator. \
+        You produce richly detailed, production-ready agent .md files that serve as \
+        comprehensive system prompts for specialized AI agents. \
+        Output ONLY the raw Markdown+YAML content starting with --- \
+        (no code fences, no explanations, no extra text before or after).";
+
+    let prompt = format!(
+        r#"Generate a complete, production-quality Cortex agent definition for an agent named "{name}".{desc_ctx}
+
+STRICT RULES — follow every one:
+
+1. `description` MUST use a YAML block scalar (`description: >`) containing:
+   - One opening sentence explaining what this agent does and when to use it
+   - 2 to 3 `<example>` blocks, each with: a "Context:" paragraph, a `user:` line, an `assistant:` line, and a `<commentary>` block explaining why this agent is the right choice for this situation
+   Escape any special YAML characters inside the block.
+
+2. `model` must be exactly: {model}
+
+3. `tools` must be a comma-separated list — pick the relevant subset from:
+   Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
+   Choose based on what this agent actually needs to do its job.
+
+4. The body (after the closing ---) MUST contain these labelled sections:
+   ## Role
+   ## Focus Areas  (bullet list of key capabilities)
+   ## Approach     (numbered step-by-step methodology)
+   ## Output Format
+   ## Constraints  (what the agent must never do or assume)
+   Minimum 400 words of actionable, expert guidance. No generic filler.
+
+QUALITY REFERENCE — this is a real example for a DIFFERENT agent (code-reviewer).
+Do NOT copy it. Use it only to understand the expected structure and depth:
+
+---
+name: code-reviewer
+description: >
+  Use this agent when you need a deep, systematic code review that catches logic
+  bugs, security vulnerabilities, and architectural issues — not just style problems.
+
+  <example>
+  Context: A developer submitted a PR adding JWT authentication middleware to a Node.js API.
+  user: "Review this middleware for correctness and security issues."
+  assistant: "I'll audit the JWT validation logic for algorithm confusion attacks, verify expiry and signature checks, review error handling to avoid leaking internals, and check that secrets come from environment variables only."
+  <commentary>
+  Security-sensitive code requires reviewing trust boundaries and failure modes that
+  a style linter will never catch. This agent reasons about attack vectors, not formatting.
+  </commentary>
+  </example>
+
+  <example>
+  Context: A refactor touched 20 files and the developer wants a second pair of eyes.
+  user: "Does this refactor introduce regressions or break any invariants?"
+  assistant: "I'll trace the call graph before and after, identify changed public contracts, check for silent behaviour changes in edge cases, and flag any assumptions that are now violated."
+  <commentary>
+  Large refactors need cross-file analysis to catch emergent breakage. Use this agent
+  when correctness and backward compatibility matter across a wide surface area.
+  </commentary>
+  </example>
+model: ollama/qwen2.5-coder:32b
+tools: Read, Glob, Grep, Bash
+---
+
+## Role
+
+You are a senior software engineer specialising in adversarial code review...
+
+## Focus Areas
+
+- Security: injection, authentication bypass, secrets in code, unsafe deserialization
+- Correctness: off-by-one errors, race conditions, null/undefined handling, error propagation
+- Architecture: coupling, cohesion, violation of SOLID principles, circular dependencies
+- Performance: N+1 queries, blocking I/O in hot paths, memory leaks
+- Testability: side-effect isolation, dependency injection, mockability
+
+## Approach
+
+1. Read the diff or file list to understand the change surface
+2. Map data flow from inputs to outputs, noting trust boundaries
+3. Check each changed function for correctness, edge cases, and error handling
+4. Audit security-sensitive paths (auth, crypto, file I/O, external calls)
+5. Assess architectural impact on the rest of the codebase
+6. Write findings grouped by severity: Critical / High / Medium / Low / Suggestion
+
+## Output Format
+
+Return a structured report:
+**Summary** — one-paragraph verdict
+**Critical** — must fix before merge (numbered list)
+**High** — should fix soon (numbered list)
+**Medium / Low** — improvements worth tracking
+**Suggestions** — optional polish
+
+## Constraints
+
+- Never approve code with unhandled secrets or hardcoded credentials
+- Do not rewrite code unless explicitly asked — report issues only
+- Base findings on the actual code, not assumptions about intent
+---
+
+NOW generate the complete agent definition for "{name}". Follow the exact same structure and quality level. Output ONLY the raw Markdown starting with ---"#
+    );
+
+    let response =
+        crate::providers::complete_chat(model, preamble, vec![], &prompt).await?;
+    let cleaned = strip_code_block(&response);
+    match find_frontmatter_start(&cleaned) {
+        Some(content) => Ok(content.to_string()),
+        None => anyhow::bail!("generated content is missing YAML frontmatter"),
+    }
+}
+
+async fn ai_generate_workflow(
+    name: &str,
+    description: Option<&str>,
+    model: &str,
+) -> anyhow::Result<String> {
+    let desc_ctx = description
+        .map(|d| format!("\nWorkflow purpose provided by the user: {}", d))
+        .unwrap_or_default();
+
+    let preamble = "You are an expert Cortex workflow definition generator. \
+        Workflows chain specialised agents sequentially — each agent's output becomes \
+        the next agent's input. You design coherent multi-agent pipelines. \
+        Output ONLY the raw Markdown+YAML starting with --- \
+        (no code fences, no explanations, no text before or after).";
+
+    let prompt = format!(
+        r#"Generate a complete, production-quality Cortex workflow definition named "{name}".{desc_ctx}
+
+STRICT RULES:
+
+1. `description` — 2 to 3 sentences explaining: what problem this workflow solves,
+   when to use it, and what the final output looks like.
+
+2. `agents` — 3 to 5 steps. Each step needs:
+   - `role`: a human-readable label for what this step does (e.g. "researcher", "analyst", "writer")
+   - `agent`: the agent file name to invoke (snake-case, no extension)
+   Name agents based on their specialised function.
+
+3. Body — the workflow narrative MUST cover:
+   ## Purpose       (what problem it solves, expected output)
+   ## Agent Pipeline (describe each step's input, task, and output in order)
+   ## Data Flow     (what information passes between agents and how it accumulates)
+   ## When to Use   (2-3 use cases with concrete examples)
+   Minimum 200 words of specific, actionable content.
+
+QUALITY REFERENCE — a real example for a DIFFERENT workflow (content-production).
+Do NOT copy it. Use it only to understand the structure:
+
+---
+name: content-production
+description: >
+  End-to-end content creation pipeline that takes a topic or brief and produces
+  a polished, SEO-optimised article ready for publication. Use this workflow when
+  you need research-backed, well-structured long-form content with quality review.
+agents:
+  - role: researcher
+    agent: researcher
+  - role: outline-writer
+    agent: content-strategist
+  - role: copywriter
+    agent: copywriter
+  - role: editor
+    agent: editor
+---
+
+## Purpose
+
+Produces publication-ready long-form content from a brief...
+
+## Agent Pipeline
+
+1. **researcher** — searches for primary sources, statistics, and expert quotes...
+2. **content-strategist** — structures an outline from the research...
+3. **copywriter** — writes the full article following the outline...
+4. **editor** — reviews for clarity, tone, SEO, and factual accuracy...
+
+## Data Flow
+
+Each agent receives the accumulated context from all prior steps plus its specific input...
+
+## When to Use
+
+- Blog posts and technical articles that require research and multiple review passes
+- Marketing copy that needs fact-checking before publication
+---
+
+NOW generate the complete workflow definition for "{name}". Follow the exact same structure and quality. Output ONLY the raw Markdown starting with ---"#
+    );
+
+    let response =
+        crate::providers::complete_chat(model, preamble, vec![], &prompt).await?;
+    let cleaned = strip_code_block(&response);
+    match find_frontmatter_start(&cleaned) {
+        Some(content) => Ok(content.to_string()),
+        None => anyhow::bail!("generated content is missing YAML frontmatter"),
+    }
+}
+
+fn handle_agent_create(name: &str, model: &str) -> anyhow::Result<std::path::PathBuf> {
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?
+        .join(".cortex")
+        .join("agents");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.md", name));
+    if path.exists() {
+        anyhow::bail!("agent '{}' already exists at {}", name, path.display());
+    }
+    let template = format!(
+        "---\nname: {name}\ndescription: Describe what this agent does\nmodel: {model}\ntools: []\n---\n# {name} Agent\n\nYou are an expert ...\n"
+    );
+    std::fs::write(&path, template)?;
+    Ok(path)
+}
+
+fn handle_workflow_create(name: &str) -> anyhow::Result<std::path::PathBuf> {
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?
+        .join(".cortex")
+        .join("workflows");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.md", name));
+    if path.exists() {
+        anyhow::bail!("workflow '{}' already exists at {}", name, path.display());
+    }
+    let template = format!(
+        "---\nname: {name}\ndescription: Describe what this workflow does\nagents:\n  - role: step1\n    agent: your-agent-name\n---\n# {name} Workflow\n\nDescribe this workflow here.\n"
+    );
+    std::fs::write(&path, template)?;
+    Ok(path)
 }

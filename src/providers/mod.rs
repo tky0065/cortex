@@ -625,6 +625,22 @@ pub async fn complete(
         format!("{}{}", prompt_with_mentions, web_context)
     };
 
+    let raw =
+        complete_inner(model_str, &enriched_preamble, &enriched_prompt, options, agent_name)
+            .await?;
+    process_spawn_directives(raw, options, agent_name).await
+}
+
+async fn complete_inner(
+    model_str: &str,
+    preamble: &str,
+    prompt: &str,
+    options: &crate::workflows::RunOptions,
+    agent_name: &str,
+) -> Result<String> {
+    let enriched_preamble = preamble.to_string();
+    let enriched_prompt = prompt.to_string();
+
     let (provider, model) = parse_model(model_str);
     let provider = if provider.is_empty() {
         registry::normalize_provider(&options.config.provider.default)
@@ -836,6 +852,97 @@ fn should_inject_project_context(agent_name: &str) -> bool {
     agent_name != "init"
 }
 
+/// Scan `response` for `<spawn_agent>` XML tags. For each one found, load the
+/// named agent, run it via `complete_inner`, and replace the tag with its output.
+/// Depth is capped at `MAX_SPAWN_DEPTH` to prevent infinite recursion.
+async fn process_spawn_directives(
+    response: String,
+    options: &crate::workflows::RunOptions,
+    parent_agent: &str,
+) -> Result<String> {
+    process_spawn_directives_depth(response, options, parent_agent, 0).await
+}
+
+const MAX_SPAWN_DEPTH: u8 = 3;
+
+fn process_spawn_directives_depth<'a>(
+    response: String,
+    options: &'a crate::workflows::RunOptions,
+    _parent_agent: &'a str,
+    depth: u8,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
+    Box::pin(async move {
+        if depth >= MAX_SPAWN_DEPTH || !response.contains("<spawn_agent>") {
+            return Ok(response);
+        }
+
+        let project_root = std::env::current_dir().ok();
+        let mut result = response;
+
+        while let Some(start) = result.find("<spawn_agent>") {
+            let end = match result[start..].find("</spawn_agent>") {
+                Some(rel) => start + rel + "</spawn_agent>".len(),
+                None => break,
+            };
+
+            let tag_body =
+                result[start + "<spawn_agent>".len()..end - "</spawn_agent>".len()].to_string();
+            let agent_name = extract_xml_text(&tag_body, "name");
+            let task = extract_xml_text(&tag_body, "task");
+
+            let replacement = match (agent_name, task) {
+                (Some(name), Some(task_text)) => {
+                    match crate::agent_loader::AgentLoader::load_agent(
+                        &name,
+                        project_root.as_deref(),
+                    ) {
+                        Ok(Some(def)) => {
+                            let _ = options.tx.send(crate::tui::events::TuiEvent::AgentStarted {
+                                agent: name.clone(),
+                            });
+                            match complete_inner(
+                                &def.model,
+                                &def.system_prompt,
+                                &task_text,
+                                options,
+                                &name,
+                            )
+                            .await
+                            {
+                                Ok(sub) => {
+                                    let _ =
+                                        options.tx.send(crate::tui::events::TuiEvent::AgentDone {
+                                            agent: name.clone(),
+                                        });
+                                    process_spawn_directives_depth(sub, options, &name, depth + 1)
+                                        .await
+                                        .unwrap_or_else(|e| format!("<!-- spawn error: {e} -->"))
+                                }
+                                Err(e) => format!("<!-- spawn '{}' failed: {} -->", name, e),
+                            }
+                        }
+                        Ok(None) => format!("<!-- spawn error: agent '{}' not found -->", name),
+                        Err(e) => format!("<!-- spawn error loading '{}': {} -->", name, e),
+                    }
+                }
+                _ => "<!-- spawn error: missing <name> or <task> -->".to_string(),
+            };
+
+            result.replace_range(start..end, &replacement);
+        }
+
+        Ok(result)
+    })
+}
+
+fn extract_xml_text(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)?;
+    Some(xml[start..start + end].trim().to_string())
+}
+
 /// Multi-turn chat completion (used by conversational assistant).
 pub async fn complete_chat(
     model_str: &str,
@@ -844,8 +951,12 @@ pub async fn complete_chat(
     prompt: &str,
 ) -> Result<String> {
     let (provider, model) = parse_model(model_str);
+    let default_provider;
     let provider = if provider.is_empty() {
-        "ollama"
+        default_provider = Config::load()
+            .map(|c| registry::normalize_provider(&c.provider.default).to_string())
+            .unwrap_or_else(|_| "ollama".to_string());
+        default_provider.as_str()
     } else {
         provider
     };
@@ -911,13 +1022,94 @@ pub async fn complete_chat(
             let turns = custom_http::message_turns_from_history(&history, prompt);
             bedrock::complete(model, preamble, &turns).await
         }
-        _ => {
-            let client = ollama::client()?;
+        "openai" => {
+            let config = Config::load()?;
+            let key = configured_or_env_key(&config, provider)?;
+            let client = rig::providers::openai::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("OpenAI client init failed: {e}"))?
+                .completions_api();
             let agent = client.agent(model).preamble(preamble).build();
             agent
                 .chat(user_msg, history)
                 .await
-                .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
+                .map_err(|e| anyhow::anyhow!("OpenAI chat error: {e}"))
+        }
+        "anthropic" => {
+            let config = Config::load()?;
+            let key = configured_or_env_key(&config, provider)?;
+            let client = rig::providers::anthropic::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Anthropic client init failed: {e}"))?;
+            let agent = client.agent(model).preamble(preamble).build();
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Anthropic chat error: {e}"))
+        }
+        "mistral" => {
+            let config = Config::load()?;
+            let key = configured_or_env_key(&config, provider)?;
+            let client = rig::providers::mistral::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Mistral client init failed: {e}"))?;
+            let agent = client.agent(model).preamble(preamble).build();
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Mistral chat error: {e}"))
+        }
+        "lmstudio" => {
+            let base_url = std::env::var("LMSTUDIO_BASE_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:1234/v1".to_string());
+            let client = rig::providers::openai::Client::builder()
+                .api_key("lm-studio")
+                .base_url(base_url)
+                .build()
+                .map_err(|e| anyhow::anyhow!("LM Studio client init failed: {e}"))?
+                .completions_api();
+            let agent = client.agent(model).preamble(preamble).build();
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| lmstudio_connection_hint(anyhow::anyhow!("{e}")))
+        }
+        openai_compat if openai_compatible_base_url(openai_compat).is_some() => {
+            let (name, base_url) = openai_compatible_base_url(openai_compat)
+                .expect("checked openai-compatible provider");
+            let config = Config::load()?;
+            let key = configured_or_env_key(&config, openai_compat)?;
+            let client = rig::providers::openai::Client::builder()
+                .api_key(key)
+                .base_url(base_url)
+                .build()
+                .map_err(|e| anyhow::anyhow!("{name} client init failed: {e}"))?
+                .completions_api();
+            let agent = client.agent(model).preamble(preamble).build();
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("{name} chat error: {e}"))
+        }
+        custom => {
+            let config = Config::load()?;
+            if let Some(custom_provider) = config.custom_providers.get(custom) {
+                let client = rig::providers::openai::Client::builder()
+                    .api_key(custom_key(&config, custom))
+                    .base_url(&custom_provider.base_url)
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("Custom provider '{custom}' init failed: {e}"))?
+                    .completions_api();
+                let agent = client.agent(model).preamble(preamble).build();
+                agent
+                    .chat(user_msg, history)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Custom provider chat error: {e}"))
+            } else {
+                let client = ollama::client()?;
+                let agent = client.agent(model).preamble(preamble).build();
+                agent
+                    .chat(user_msg, history)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
+            }
         }
     }
 }

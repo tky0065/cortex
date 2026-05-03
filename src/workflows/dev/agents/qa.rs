@@ -8,7 +8,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/qa.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/qa.md");
 
 /// Run QA review on the project. Returns the QA report string.
 pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> Result<String> {
@@ -25,7 +25,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
         architecture, source_files
     );
 
-    let report = crate::providers::complete(model, PREAMBLE, &prompt, options, "qa")
+    let report = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "qa")
         .await
         .map_err(|e| anyhow::anyhow!("QA agent error: {e}"))?;
 

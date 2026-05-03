@@ -7,7 +7,7 @@ use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
 };
 
-const PREAMBLE: &str = include_str!("../prompts/profiler.md");
+const PREAMBLE_RAW: &str = include_str!("../prompts/profiler.md");
 
 pub async fn run(prospect_entry: &str, options: &RunOptions) -> Result<String> {
     let agent_name = "profiler".to_string();
@@ -19,7 +19,7 @@ pub async fn run(prospect_entry: &str, options: &RunOptions) -> Result<String> {
 
     let model = crate::providers::model_for_role("profiler", &options.config)?;
     let prompt = format!("Profile this prospect:\n\n{}", prospect_entry);
-    let profile = crate::providers::complete(model, PREAMBLE, &prompt, options, "profiler")
+    let profile = crate::providers::complete(model, crate::custom_defs::prompt_body(PREAMBLE_RAW), &prompt, options, "profiler")
         .await
         .map_err(|e| anyhow::anyhow!("Profiler agent error: {e}"))?;
 
