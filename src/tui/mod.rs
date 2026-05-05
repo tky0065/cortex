@@ -52,7 +52,10 @@ use crate::tui::{
 // ---------------------------------------------------------------------------
 
 enum ClipboardPaste {
-    Image { path: std::path::PathBuf, filename: String },
+    Image {
+        path: std::path::PathBuf,
+        filename: String,
+    },
     Text(String),
     Empty,
     Error(String),
@@ -415,7 +418,10 @@ impl App {
             } => {
                 draw_plan_review(frame, path, content, *scroll_offset, *editing, edit_input);
             }
-            PopupState::InterruptMenu { message, has_resume } => {
+            PopupState::InterruptMenu {
+                message,
+                has_resume,
+            } => {
                 draw_interrupt_menu(frame, message, *has_resume);
             }
         }
@@ -1502,8 +1508,8 @@ impl Tui {
                         .map(|(idx, _)| idx)
                         .unwrap_or(val.len());
                     val.insert_str(byte_idx, &text);
-                    app.input_bar.input = tui_input::Input::new(val)
-                        .with_cursor(cursor + text.chars().count());
+                    app.input_bar.input =
+                        tui_input::Input::new(val).with_cursor(cursor + text.chars().count());
                 }
                 ClipboardPaste::Empty => {}
                 ClipboardPaste::Error(e) => {
@@ -1591,7 +1597,10 @@ impl Tui {
                 .iter()
                 .any(|s| matches!(s.status, crate::repl::SessionStatus::Interrupted));
 
-            app.popup = PopupState::InterruptMenu { message, has_resume };
+            app.popup = PopupState::InterruptMenu {
+                message,
+                has_resume,
+            };
             app.logs.push(LogEntry::system("⏸ interrupted (ESC ESC)"));
             let _ = tx.send(TuiEvent::WorkflowInterrupted {
                 message: "interrupted via ESC ESC".to_string(),
@@ -1602,7 +1611,11 @@ impl Tui {
         }
     }
 
-    async fn handle_interrupt_menu(app: &mut App, key: &crossterm::event::KeyEvent, tx: &TuiSender) -> bool {
+    async fn handle_interrupt_menu(
+        app: &mut App,
+        key: &crossterm::event::KeyEvent,
+        tx: &TuiSender,
+    ) -> bool {
         match key.code {
             // Dismiss the popup — user can keep chatting
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
@@ -1654,11 +1667,8 @@ impl Tui {
                     let encode_result = (|| -> anyhow::Result<()> {
                         let file = std::fs::File::create(&path)?;
                         let buf = std::io::BufWriter::new(file);
-                        let mut encoder = png::Encoder::new(
-                            buf,
-                            img.width as u32,
-                            img.height as u32,
-                        );
+                        let mut encoder =
+                            png::Encoder::new(buf, img.width as u32, img.height as u32);
                         encoder.set_color(png::ColorType::Rgba);
                         encoder.set_depth(png::BitDepth::Eight);
                         let mut writer = encoder.write_header()?;
@@ -3737,10 +3747,7 @@ fn draw_interrupt_menu(frame: &mut Frame, message: &str, has_resume: bool) {
     } else {
         ""
     };
-    let actions = format!(
-        "\n  [Enter] Dismiss   {}[Esc] Dismiss",
-        resume_line
-    );
+    let actions = format!("\n  [Enter] Dismiss   {}[Esc] Dismiss", resume_line);
     let body = format!("\n  ⏸  {}\n{}", message.replace('\n', "\n  "), actions);
 
     let block = Block::default()
