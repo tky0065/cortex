@@ -585,10 +585,18 @@ pub async fn complete(
     agent_name: &str,
 ) -> Result<String> {
     let mention_context = crate::mentions::resolve_prompt_mentions(prompt);
-    let prompt_with_mentions = if mention_context.is_empty() {
-        prompt.to_string()
-    } else {
-        format!("{prompt}{mention_context}")
+    let paste_context = crate::mentions::resolve_paste_images(prompt);
+    let prompt_with_mentions = {
+        let base = if mention_context.is_empty() {
+            prompt.to_string()
+        } else {
+            format!("{prompt}{mention_context}")
+        };
+        if paste_context.is_empty() {
+            base
+        } else {
+            format!("{base}{paste_context}")
+        }
     };
     let skill_context = if options.config.tools.skills_enabled {
         crate::skills::context_for_prompt(
@@ -1161,10 +1169,18 @@ pub async fn complete_chat_stream(
     agent_name: &str,
 ) -> Result<String> {
     let mention_context = crate::mentions::resolve_prompt_mentions(prompt);
-    let prompt_with_mentions = if mention_context.is_empty() {
-        prompt.to_string()
-    } else {
-        format!("{prompt}{mention_context}")
+    let paste_context = crate::mentions::resolve_paste_images(prompt);
+    let prompt_with_mentions = {
+        let base = if mention_context.is_empty() {
+            prompt.to_string()
+        } else {
+            format!("{prompt}{mention_context}")
+        };
+        if paste_context.is_empty() {
+            base
+        } else {
+            format!("{base}{paste_context}")
+        }
     };
     let (provider, model) = parse_model(model_str);
     let provider = if provider.is_empty() {

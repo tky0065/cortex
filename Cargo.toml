@@ -38,3 +38,5 @@ aws-config = { version = "1.5", features = ["behavior-version-latest"] }
 aws-sdk-bedrockruntime = "1.130"
 aws-smithy-types = "1.2"
 similar = "2"
+png = "0.17"
+base64 = "0.22"

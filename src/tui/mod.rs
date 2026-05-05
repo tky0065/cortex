@@ -48,6 +48,17 @@ use crate::tui::{
 };
 
 // ---------------------------------------------------------------------------
+// Clipboard paste result
+// ---------------------------------------------------------------------------
+
+enum ClipboardPaste {
+    Image { path: std::path::PathBuf, filename: String },
+    Text(String),
+    Empty,
+    Error(String),
+}
+
+// ---------------------------------------------------------------------------
 // Popup state machine
 // ---------------------------------------------------------------------------
 
@@ -1432,6 +1443,47 @@ impl Tui {
             return false;
         }
 
+        // Ctrl+V — paste text or image from the system clipboard
+        if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            match Self::clipboard_paste() {
+                ClipboardPaste::Image { path, filename } => {
+                    let cursor = app.input_bar.input.cursor();
+                    let mut val = app.input_bar.input.value().to_string();
+                    let token = format!("@paste:{}", filename);
+                    let byte_idx = val
+                        .char_indices()
+                        .nth(cursor)
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(val.len());
+                    val.insert_str(byte_idx, &token);
+                    app.input_bar.input =
+                        tui_input::Input::new(val).with_cursor(cursor + token.chars().count());
+                    app.logs.push(LogEntry::system(format!(
+                        "📎 Image pasted → {}",
+                        path.display()
+                    )));
+                }
+                ClipboardPaste::Text(text) => {
+                    let cursor = app.input_bar.input.cursor();
+                    let mut val = app.input_bar.input.value().to_string();
+                    let byte_idx = val
+                        .char_indices()
+                        .nth(cursor)
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(val.len());
+                    val.insert_str(byte_idx, &text);
+                    app.input_bar.input = tui_input::Input::new(val)
+                        .with_cursor(cursor + text.chars().count());
+                }
+                ClipboardPaste::Empty => {}
+                ClipboardPaste::Error(e) => {
+                    app.logs
+                        .push(LogEntry::system(format!("clipboard error: {}", e)));
+                }
+            }
+            return false;
+        }
+
         app.input_bar.input.handle_event(event);
         false
     }
@@ -1463,6 +1515,71 @@ impl Tui {
 
     fn is_quit_command(cmd: &str) -> bool {
         matches!(cmd.split_whitespace().next(), Some("/quit" | "/exit"))
+    }
+
+    // -------------------------------------------------------------------------
+    // Clipboard paste helper
+    // -------------------------------------------------------------------------
+
+    fn clipboard_paste() -> ClipboardPaste {
+        // Run clipboard access in a dedicated OS thread.  On macOS, arboard
+        // requires NSPasteboard to be accessed from a thread that has an
+        // autorelease pool; spawning an OS thread satisfies that requirement.
+        std::thread::spawn(|| {
+            let mut cb = match arboard::Clipboard::new() {
+                Ok(cb) => cb,
+                Err(e) => return ClipboardPaste::Error(e.to_string()),
+            };
+
+            // Try image first.
+            match cb.get_image() {
+                Ok(img) => {
+                    // Encode RGBA pixels as PNG and save to ~/.cortex/temp/.
+                    let temp_dir = match dirs::home_dir() {
+                        Some(h) => h.join(".cortex").join("temp"),
+                        None => return ClipboardPaste::Error("cannot resolve home dir".into()),
+                    };
+                    if let Err(e) = std::fs::create_dir_all(&temp_dir) {
+                        return ClipboardPaste::Error(format!("create temp dir: {e}"));
+                    }
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0);
+                    let filename = format!("paste_{ts}.png");
+                    let path = temp_dir.join(&filename);
+
+                    // Encode with the `png` crate.
+                    let encode_result = (|| -> anyhow::Result<()> {
+                        let file = std::fs::File::create(&path)?;
+                        let buf = std::io::BufWriter::new(file);
+                        let mut encoder = png::Encoder::new(
+                            buf,
+                            img.width as u32,
+                            img.height as u32,
+                        );
+                        encoder.set_color(png::ColorType::Rgba);
+                        encoder.set_depth(png::BitDepth::Eight);
+                        let mut writer = encoder.write_header()?;
+                        writer.write_image_data(&img.bytes)?;
+                        Ok(())
+                    })();
+
+                    match encode_result {
+                        Ok(()) => ClipboardPaste::Image { path, filename },
+                        Err(e) => ClipboardPaste::Error(format!("encode PNG: {e}")),
+                    }
+                }
+                // No image — try plain text.
+                Err(_) => match cb.get_text() {
+                    Ok(text) if !text.is_empty() => ClipboardPaste::Text(text),
+                    Ok(_) => ClipboardPaste::Empty,
+                    Err(e) => ClipboardPaste::Error(e.to_string()),
+                },
+            }
+        })
+        .join()
+        .unwrap_or(ClipboardPaste::Empty)
     }
 
     // -------------------------------------------------------------------------

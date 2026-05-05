@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -66,6 +67,66 @@ pub fn resolve_prompt_mentions(prompt: &str) -> String {
     } else {
         output
     }
+}
+
+/// Resolves `@paste:{filename}` tokens inserted by the clipboard-paste feature.
+///
+/// Each token is expanded into a Markdown block containing the PNG as a base64
+/// data-URL, so vision-capable LLMs receive the image alongside the prompt text.
+/// Tokens that refer to missing or unreadable files are silently skipped.
+pub fn resolve_paste_images(prompt: &str) -> String {
+    let filenames = extract_paste_tokens(prompt);
+    if filenames.is_empty() {
+        return String::new();
+    }
+    let temp_dir = match dirs::home_dir() {
+        Some(h) => h.join(".cortex").join("temp"),
+        None => return String::new(),
+    };
+    let mut output = String::from("\n\n## Pasted Images\n");
+    for filename in filenames {
+        let path = temp_dir.join(&filename);
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_ascii_lowercase();
+        let mime = match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            _ => "image/png",
+        };
+        output.push_str(&format!(
+            "\n![pasted image](data:{};base64,{})\n",
+            mime, b64
+        ));
+    }
+    if output.trim() == "## Pasted Images" {
+        String::new()
+    } else {
+        output
+    }
+}
+
+fn extract_paste_tokens(prompt: &str) -> Vec<String> {
+    let mut tokens = BTreeSet::new();
+    for token in prompt.split_whitespace() {
+        let token = token.trim_matches(|ch: char| {
+            matches!(ch, ',' | '.' | ':' | ';' | ')' | ']' | '}' | '"' | '\'')
+        });
+        if let Some(filename) = token.strip_prefix("@paste:") {
+            if !filename.is_empty() && !filename.contains('/') && !filename.contains("..") {
+                tokens.insert(filename.to_string());
+            }
+        }
+    }
+    tokens.into_iter().collect()
 }
 
 fn collect_path_suggestions(
