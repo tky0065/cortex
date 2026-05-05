@@ -4,13 +4,25 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use super::{ExecutionMode, RunOptions, Workflow, drain_and_log_directives};
+use super::{
+    ExecutionMode, RunOptions, Workflow, drain_and_log_directives, request_agent_review,
+    send_phase_tasks, send_tool_action,
+};
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 
 pub mod agents;
 
 pub struct DevWorkflow;
+
+const DEV_TASKS: &[&str] = &[
+    "CEO: Brief du projet",
+    "PM: Specifications",
+    "Tech Lead: Architecture",
+    "Developer: Generation du code",
+    "QA: Tests et validation",
+    "DevOps: Deploiement",
+];
 
 #[async_trait]
 impl Workflow for DevWorkflow {
@@ -41,6 +53,7 @@ impl Workflow for DevWorkflow {
             project_dir: project_dir.clone(),
             ..options.clone()
         };
+        send_phase_tasks(&opts, DEV_TASKS, 0);
 
         // ── Plan Mode: run planner only, then wait for /approve ──────────
         if opts.execution_mode == ExecutionMode::Plan {
@@ -78,6 +91,24 @@ impl Workflow for DevWorkflow {
             }
         };
 
+        // Inter-agent review: CEO output
+        let brief = {
+            let mut current = brief;
+            loop {
+                if opts.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                match request_agent_review("CEO", &current, &opts).await? {
+                    None => break current,
+                    Some(feedback) => {
+                        let enriched = format!("{}\n\n## User feedback\n{}", prompt, feedback);
+                        current = agents::ceo::run(&enriched, &opts).await?;
+                    }
+                }
+            }
+        };
+        send_phase_tasks(&opts, DEV_TASKS, 1);
+
         // Early exit if cancelled
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -89,9 +120,10 @@ impl Workflow for DevWorkflow {
         let pm_output = agents::pm::run(&brief, &opts).await?;
 
         // Extract specs and tasks from PM output
-        let (specs, tasks_content) = parse_pm_output(&pm_output);
+        let (mut specs, tasks_content) = parse_pm_output(&pm_output);
 
         // Save specs.md
+        send_tool_action(&opts, "pm", "write_file", "specs.md");
         let old_specs = fs.read("specs.md").ok();
         fs.write("specs.md", &specs)?;
         let _ = opts.tx.send(TuiEvent::FileWritten {
@@ -117,6 +149,32 @@ impl Workflow for DevWorkflow {
             phase: "specs-ready".into(),
         });
 
+        // Inter-agent review: PM output
+        let mut pm_input = brief.clone();
+        loop {
+            if opts.cancel.is_cancelled() {
+                return Ok(());
+            }
+            match request_agent_review("PM", &specs, &opts).await? {
+                None => break,
+                Some(feedback) => {
+                    pm_input = format!("{}\n\n## User feedback\n{}", pm_input, feedback);
+                    let new_pm = agents::pm::run(&pm_input, &opts).await?;
+                    let (new_specs, _) = parse_pm_output(&new_pm);
+                    fs.write("specs.md", &new_specs)?;
+                    let _ = opts.tx.send(TuiEvent::FileWritten {
+                        agent: "pm".to_string(),
+                        path: "specs.md".to_string(),
+                        old_content: Some(specs.clone()),
+                        new_content: new_specs.clone(),
+                    });
+                    specs = new_specs;
+                }
+            }
+        }
+
+        send_phase_tasks(&opts, DEV_TASKS, 2);
+
         if opts.cancel.is_cancelled() {
             return Ok(());
         }
@@ -124,7 +182,8 @@ impl Workflow for DevWorkflow {
         // ── Phase 3: Tech Lead → architecture.md ─────────────────────────
         pause_if_review("Tech Lead: architecture.md", &opts).await?;
         drain_and_log_directives(&opts, "before-tech-lead").await;
-        let arch = agents::tech_lead::run(&specs, &opts).await?;
+        let mut arch = agents::tech_lead::run(&specs, &opts).await?;
+        send_tool_action(&opts, "tech_lead", "write_file", "architecture.md");
         let old_arch = fs.read("architecture.md").ok();
         fs.write("architecture.md", &arch)?;
         let _ = opts.tx.send(TuiEvent::FileWritten {
@@ -136,6 +195,31 @@ impl Workflow for DevWorkflow {
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "architecture-ready".into(),
         });
+
+        // Inter-agent review: Tech Lead output
+        let mut tl_input = specs.clone();
+        loop {
+            if opts.cancel.is_cancelled() {
+                return Ok(());
+            }
+            match request_agent_review("Tech Lead", &arch, &opts).await? {
+                None => break,
+                Some(feedback) => {
+                    tl_input = format!("{}\n\n## User feedback\n{}", tl_input, feedback);
+                    let new_arch = agents::tech_lead::run(&tl_input, &opts).await?;
+                    fs.write("architecture.md", &new_arch)?;
+                    let _ = opts.tx.send(TuiEvent::FileWritten {
+                        agent: "tech_lead".to_string(),
+                        path: "architecture.md".to_string(),
+                        old_content: Some(arch.clone()),
+                        new_content: new_arch.clone(),
+                    });
+                    arch = new_arch;
+                }
+            }
+        }
+
+        send_phase_tasks(&opts, DEV_TASKS, 3);
 
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -168,8 +252,10 @@ impl Workflow for DevWorkflow {
                     return Ok::<(), anyhow::Error>(());
                 }
                 let local_fs = FileSystem::new(&project_dir_clone);
+                let agent_label = format!("developer:{}", file_path);
                 let code = agents::developer::run(&file_path, &arch_clone, &opts_clone).await?;
                 let old_code = local_fs.read(&file_path).ok();
+                send_tool_action(&opts_clone, &agent_label, "write_file", &file_path);
                 local_fs.write(&file_path, &code)?;
                 let _ = opts_clone.tx.send(TuiEvent::FileWritten {
                     agent: "developer".to_string(),
@@ -190,6 +276,35 @@ impl Workflow for DevWorkflow {
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "development-done".into(),
         });
+
+        // Inter-agent review: Developer phase (summary of files written)
+        let dev_summary = format!(
+            "Developer has written all files listed in architecture.md.\nProject directory: {}",
+            project_dir.display()
+        );
+        loop {
+            if opts.cancel.is_cancelled() {
+                return Ok(());
+            }
+            match request_agent_review("Developer", &dev_summary, &opts).await? {
+                None => break,
+                Some(feedback) => {
+                    let _ = opts.tx.send(TuiEvent::TokenChunk {
+                        agent: "orchestrator".into(),
+                        chunk: format!("Developer feedback noted: {}", feedback),
+                    });
+                    // Re-run developer for any file mentioned in feedback
+                    for file_path in extract_files_from_report(&feedback) {
+                        if let Ok(current) = fs.read(&file_path) {
+                            agents::developer::fix(&file_path, &current, &feedback, &opts, &fs)
+                                .await?;
+                        }
+                    }
+                }
+            }
+        }
+
+        send_phase_tasks(&opts, DEV_TASKS, 4);
 
         if opts.cancel.is_cancelled() {
             return Ok(());
@@ -234,6 +349,8 @@ impl Workflow for DevWorkflow {
             }
         }
 
+        send_phase_tasks(&opts, DEV_TASKS, 5);
+
         if opts.cancel.is_cancelled() {
             return Ok(());
         }
@@ -242,6 +359,26 @@ impl Workflow for DevWorkflow {
         pause_if_review("DevOps: deployment config", &opts).await?;
         drain_and_log_directives(&opts, "before-devops").await;
         agents::devops::run(&arch, &opts, &fs).await?;
+
+        // Inter-agent review: DevOps output
+        loop {
+            if opts.cancel.is_cancelled() {
+                return Ok(());
+            }
+            let devops_summary = format!(
+                "DevOps has generated deployment config (Dockerfile, docker-compose, git commit).\nProject: {}",
+                project_dir.display()
+            );
+            match request_agent_review("DevOps", &devops_summary, &opts).await? {
+                None => break,
+                Some(feedback) => {
+                    let feedback_input = format!("{}\n\n## User feedback\n{}", arch, feedback);
+                    agents::devops::run(&feedback_input, &opts, &fs).await?;
+                }
+            }
+        }
+
+        send_phase_tasks(&opts, DEV_TASKS, DEV_TASKS.len());
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "done".into(),
         });

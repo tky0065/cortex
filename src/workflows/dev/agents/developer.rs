@@ -6,6 +6,7 @@ use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
+    send_tool_action,
 };
 
 const PREAMBLE_RAW: &str = include_str!("../prompts/developer.md");
@@ -23,6 +24,7 @@ pub async fn run(file_path: &str, architecture: &str, options: &RunOptions) -> R
     );
     bus_agent_started(options, &agent_name).await;
 
+    send_tool_action(options, &agent_name, "read_file", "architecture.md");
     let model = crate::providers::model_for_role("developer", &options.config)?;
     let prompt = format!(
         "Architecture:\n{}\n\nImplement this file: {}\n\nWrite only the complete source code.",
@@ -83,7 +85,9 @@ pub async fn fix(
     .await
     .map_err(|e| anyhow::anyhow!("Developer fix error for '{}': {}", file_path, e))?;
 
+    send_tool_action(options, &agent_name, "read_file", file_path);
     let old_code = fs.read(file_path).ok();
+    send_tool_action(options, &agent_name, "write_file", file_path);
     fs.write(file_path, &fixed)?;
     let _ = options.tx.send(TuiEvent::FileWritten {
         agent: agent_name.clone(),

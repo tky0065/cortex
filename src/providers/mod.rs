@@ -616,12 +616,43 @@ pub async fn complete(
         format!("{enriched_preamble}{project_context}")
     };
 
-    // Extract a concise search query from the first 200 chars of the prompt.
-    let search_query: String = prompt_with_mentions.chars().take(200).collect();
-    let web_context = crate::tools::web_search::fetch_context(&search_query, &options.config).await;
+    // Extract a concise search query — strip markdown section headers (## / #) so
+    // that inter-agent formatted prompts don't pollute the query or the label.
+    let search_query: String = prompt_with_mentions
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect();
+    // Decide whether to fire web search:
+    // - Custom agents (agent_tools = Some): only if "web_search" is explicitly declared in tools.
+    // - Built-in agents (agent_tools = None): global flag + minimum 5-word query.
+    let should_web_search = match &options.agent_tools {
+        Some(tools) => tools.iter().any(|t| t.eq_ignore_ascii_case("web_search")),
+        None => {
+            options.config.tools.web_search_enabled && search_query.split_whitespace().count() > 5
+        }
+    };
+    let web_context = if should_web_search {
+        crate::tools::web_search::fetch_context(&search_query, &options.config).await
+    } else {
+        String::new()
+    };
     let enriched_prompt = if web_context.is_empty() {
         prompt_with_mentions
     } else {
+        let _result_count = web_context.lines().filter(|l| l.starts_with("###")).count();
+        crate::workflows::send_tool_action(
+            options,
+            agent_name,
+            "web_search",
+            &search_query.chars().take(80).collect::<String>(),
+        );
         format!("{}{}", prompt_with_mentions, web_context)
     };
 

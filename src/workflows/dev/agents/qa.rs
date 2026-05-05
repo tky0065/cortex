@@ -6,6 +6,7 @@ use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
+    send_tool_action,
 };
 
 const PREAMBLE_RAW: &str = include_str!("../prompts/qa.md");
@@ -18,7 +19,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
     send_agent_progress(options, "qa", "Lecture du code et verification qualite");
     bus_agent_started(options, "qa").await;
 
-    let source_files = collect_source_files(fs);
+    let source_files = collect_source_files(fs, options);
     let model = crate::providers::model_for_role("qa", &options.config)?;
     let prompt = format!(
         "Architecture:\n{}\n\nSource files to review:\n{}\n\nProduce a QA report.",
@@ -51,17 +52,21 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
     Ok(report)
 }
 
-fn collect_source_files(fs: &FileSystem) -> String {
+fn collect_source_files(fs: &FileSystem, options: &RunOptions) -> String {
     let entries = fs.list("src").unwrap_or_default();
+    send_tool_action(
+        options,
+        "qa",
+        "scan",
+        &format!("{} source files", entries.len().min(10)),
+    );
     let mut result = String::new();
     for entry in entries.iter().take(10) {
         let path_str = entry.to_string_lossy();
         if let Ok(content) = fs.read(path_str.as_ref()) {
-            result.push_str(&format!(
-                "\n=== {} ===\n{}\n",
-                path_str,
-                &content[..content.len().min(2000)]
-            ));
+            let len = content.len().min(2000);
+            send_tool_action(options, "qa", "read_file", path_str.as_ref());
+            result.push_str(&format!("\n=== {} ===\n{}\n", path_str, &content[..len]));
         }
     }
     result

@@ -6,7 +6,6 @@ pub struct CustomAgentDef {
     pub name: String,
     pub description: String,
     pub model: String,
-    #[allow(dead_code)]
     pub tools: Vec<String>,
     pub system_prompt: String,
 }

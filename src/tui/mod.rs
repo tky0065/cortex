@@ -95,6 +95,12 @@ enum PopupState {
         question: String,
         input: tui_input::Input,
     },
+    /// An agent finished and awaits user approval or feedback before the next agent runs.
+    AgentReview {
+        agent: String,
+        summary: String,
+        input: tui_input::Input,
+    },
     /// Shows a diff popup when an agent writes a file.
     DiffViewer {
         diffs: Vec<FileDiff>,
@@ -357,6 +363,13 @@ impl App {
             } => {
                 draw_question_overlay(frame, agent, question, input);
             }
+            PopupState::AgentReview {
+                agent,
+                summary,
+                input,
+            } => {
+                draw_agent_review_overlay(frame, agent, summary, input);
+            }
             PopupState::DiffViewer {
                 diffs,
                 cursor,
@@ -511,6 +524,25 @@ impl App {
                     question: question.clone(),
                     input: tui_input::Input::default(),
                 };
+            }
+            TuiEvent::AgentReviewRequest { agent, summary } => {
+                self.logs.push(LogEntry::system(format!(
+                    "[review:{}] waiting for user approval",
+                    agent
+                )));
+                self.popup = PopupState::AgentReview {
+                    agent: agent.clone(),
+                    summary: summary.clone(),
+                    input: tui_input::Input::default(),
+                };
+            }
+            TuiEvent::AgentToolCall { agent, tool, label } => {
+                self.ensure_agent(agent);
+                if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
+                    a.push_tool_call(tool, label);
+                }
+                self.logs
+                    .push(LogEntry::agent(agent, format!("{}({})", tool, label)));
             }
             TuiEvent::Resume => {
                 self.show_pause_popup = false;
@@ -1142,6 +1174,9 @@ impl Tui {
             }
             PopupState::QuestionInput { .. } => {
                 return Self::handle_question_input(app, key, tx).await;
+            }
+            PopupState::AgentReview { .. } => {
+                return Self::handle_agent_review_input(app, key).await;
             }
             PopupState::DiffViewer { .. } => {
                 Self::handle_diff_viewer(app, key);
@@ -2427,6 +2462,39 @@ impl Tui {
         false
     }
 
+    // Agent review input key handler
+    // -------------------------------------------------------------------------
+
+    async fn handle_agent_review_input(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
+        let PopupState::AgentReview { ref mut input, .. } = app.popup else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Enter => {
+                let answer = input.value().to_string();
+                app.popup = PopupState::None;
+                app.logs
+                    .push(LogEntry::system(format!("review: {}", answer)));
+                let guard = app.repl_state.answer_tx.lock().await;
+                if let Some(ref atx) = *guard {
+                    let _ = atx.send(answer).await;
+                }
+            }
+            KeyCode::Esc => {
+                app.popup = PopupState::None;
+                let guard = app.repl_state.answer_tx.lock().await;
+                if let Some(ref atx) = *guard {
+                    let _ = atx.send(String::new()).await;
+                }
+            }
+            _ => {
+                input.handle_event(&crossterm::event::Event::Key(*key));
+            }
+        }
+        false
+    }
+
     fn handle_diff_viewer(app: &mut App, key: &crossterm::event::KeyEvent) {
         let PopupState::DiffViewer {
             diffs,
@@ -3228,6 +3296,92 @@ fn draw_question_overlay(frame: &mut Frame, agent: &str, question: &str, input: 
     // Footer
     frame.render_widget(
         Paragraph::new(" Enter to confirm  •  Esc to skip").style(Style::default().fg(THEME.muted)),
+        chunks[4],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Agent Review overlay (shown after each agent completes)
+// ---------------------------------------------------------------------------
+
+fn draw_agent_review_overlay(
+    frame: &mut Frame,
+    agent: &str,
+    summary: &str,
+    input: &tui_input::Input,
+) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::text::Line;
+
+    let screen = frame.area();
+    const POPUP_H: u16 = 16;
+    const POPUP_W_PCT: u16 = 65;
+    let popup_w = screen.width * POPUP_W_PCT / 100;
+    let popup_x = screen.x + (screen.width.saturating_sub(popup_w)) / 2;
+    let popup_y = screen.y + screen.height.saturating_sub(POPUP_H) / 2;
+    let area = Rect::new(popup_x, popup_y, popup_w, POPUP_H.min(screen.height));
+
+    frame.render_widget(Clear, area);
+
+    let title = format!(" {agent} — Revue ");
+    let block = Block::default()
+        .title(Span::styled(title, THEME.title_style()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(THEME.accent))
+        .style(Style::default().bg(THEME.bg));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // top padding
+            Constraint::Length(5), // summary text
+            Constraint::Length(1), // spacing
+            Constraint::Length(3), // input box
+            Constraint::Length(1), // footer hint
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    // Summary text (truncated)
+    let display_summary = if summary.len() > 300 {
+        format!("{}…", &summary[..300])
+    } else {
+        summary.to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(format!(" {}", display_summary)))
+            .style(Style::default().fg(THEME.text))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        chunks[1],
+    );
+
+    // Feedback input field
+    let typed = input.value();
+    let display = if typed.is_empty() {
+        " Modifications ? (ou Entree / Esc pour continuer)".to_string()
+    } else {
+        format!(" {}", typed)
+    };
+    let input_style = if typed.is_empty() {
+        Style::default().fg(THEME.muted)
+    } else {
+        Style::default().fg(THEME.text)
+    };
+    frame.render_widget(
+        Paragraph::new(display).style(input_style).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(THEME.active_border_style()),
+        ),
+        chunks[3],
+    );
+
+    // Footer
+    frame.render_widget(
+        Paragraph::new(" Enter pour valider  •  Esc pour continuer sans modifier")
+            .style(Style::default().fg(THEME.muted)),
         chunks[4],
     );
 }

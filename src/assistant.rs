@@ -1184,6 +1184,7 @@ async fn execute_tool(
                 answer_rx: Arc::new(tokio::sync::Mutex::new(answer_rx)),
                 verbose: false,
                 agent_bus: agent_bus.clone(),
+                agent_tools: None,
             };
             drop(cfg2);
 

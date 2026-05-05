@@ -189,6 +189,7 @@ impl Orchestrator {
                 answer_rx: Arc::clone(&self.answer_rx),
                 verbose,
                 agent_bus: Some(Arc::clone(&agent_bus)),
+                agent_tools: None,
             };
 
             return tokio::select! {
@@ -217,6 +218,7 @@ impl Orchestrator {
             answer_rx: Arc::clone(&self.answer_rx),
             verbose,
             agent_bus: Some(Arc::clone(&agent_bus)),
+            agent_tools: None,
         };
 
         tokio::select! {

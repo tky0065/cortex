@@ -3,11 +3,33 @@ use async_trait::async_trait;
 
 use crate::agent_loader::AgentLoader;
 use crate::custom_defs::{CustomAgentDef, CustomWorkflowDef};
+use crate::tui::events::Task;
 use crate::tui::events::TuiEvent;
-use crate::workflows::{RunOptions, Workflow, send_agent_progress};
+use crate::workflows::{
+    RunOptions, Workflow, request_agent_review, send_agent_progress, send_tool_action,
+};
 
 pub struct CustomWorkflow {
     pub def: CustomWorkflowDef,
+}
+
+/// Resolve the effective model for a custom agent.
+///
+/// If the agent's model string has a provider prefix that matches the currently
+/// configured provider (e.g. `"ollama/qwen2.5-coder:32b"` while ollama is active),
+/// use it as-is. Otherwise — including bare model names like `"gemini-flash-latest"`
+/// that have no prefix — fall back to the assistant model so the call goes to the
+/// correct provider regardless of what the agent YAML file was originally written for.
+fn resolve_model(agent_model: &str, config: &crate::config::Config) -> String {
+    let configured = config.provider.default.to_lowercase();
+    if let Some((prefix, _)) = agent_model.split_once('/') {
+        if prefix.to_lowercase() == configured {
+            return agent_model.to_string();
+        }
+        // Provider prefix present but different → fall back
+    }
+    // No prefix, or mismatched prefix → use the configured assistant model
+    config.models.assistant.clone()
 }
 
 #[async_trait]
@@ -25,8 +47,25 @@ impl Workflow for CustomWorkflow {
 
         let _ = options.tx.send(TuiEvent::WorkflowStarted {
             workflow: self.def.name.clone(),
-            agents: agent_names,
+            agents: agent_names.clone(),
         });
+
+        // Build task list from agent roles and display it
+        let task_labels: Vec<String> = agent_names.clone();
+        let send_tasks = |completed: usize| {
+            let tasks: Vec<Task> = task_labels
+                .iter()
+                .enumerate()
+                .map(|(i, name)| Task {
+                    description: name.clone(),
+                    is_done: i < completed,
+                })
+                .collect();
+            let _ = options
+                .tx
+                .send(crate::tui::events::TuiEvent::TasksUpdated { tasks });
+        };
+        send_tasks(0);
 
         let project_root = std::env::current_dir().ok();
         let project_root_ref = project_root.as_deref();
@@ -70,25 +109,48 @@ impl Workflow for CustomWorkflow {
                 }
             };
 
-            let _ = options.tx.send(TuiEvent::AgentStarted {
+            // Build per-step options carrying this agent's declared tools.
+            // This controls whether web search fires for this specific agent.
+            let step_opts = RunOptions {
+                agent_tools: Some(agent_def.tools.clone()),
+                ..options.clone()
+            };
+
+            let _ = step_opts.tx.send(TuiEvent::AgentStarted {
                 agent: step.role.clone(),
             });
-            send_agent_progress(&options, &step.role, "Running...");
+            send_agent_progress(&step_opts, &step.role, "Running...");
 
             // After the first agent, include the original user request so every
             // downstream agent knows the criteria it is working against.
             let agent_input = if step_idx == 0 {
+                send_tool_action(&step_opts, &step.role, "read_input", "user prompt");
                 pipeline_input.clone()
             } else {
+                let prev_role = self
+                    .def
+                    .agents
+                    .get(step_idx - 1)
+                    .map(|s| s.role.as_str())
+                    .unwrap_or("previous");
+                send_tool_action(
+                    &step_opts,
+                    &step.role,
+                    "read_input",
+                    &format!("{} output", prev_role),
+                );
                 format!(
                     "## User request\n{}\n\n## Previous agent output\n{}",
                     original_prompt, pipeline_input
                 )
             };
 
-            // When web search is enabled, append a note so the agent knows
-            // to use the injected `## Web Search Results` block.
-            let system_prompt = if options.config.tools.web_search_enabled {
+            // Tell the agent about web search only if it declared the tool.
+            let uses_web_search = agent_def
+                .tools
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case("web_search"));
+            let system_prompt = if uses_web_search {
                 format!(
                     "{}\n\nIMPORTANT: The user message may contain a \
                      `## Web Search Results` section with live data fetched \
@@ -100,20 +162,46 @@ impl Workflow for CustomWorkflow {
                 agent_def.system_prompt.clone()
             };
 
-            let response = crate::providers::complete(
-                &agent_def.model,
+            let effective_model = resolve_model(&agent_def.model, &options.config);
+            let mut response = crate::providers::complete(
+                &effective_model,
                 &system_prompt,
                 &agent_input,
-                &options,
+                &step_opts,
                 &step.role,
             )
             .await
             .with_context(|| format!("agent '{}' LLM call failed", step.role))?;
 
-            let _ = options.tx.send(TuiEvent::AgentDone {
+            let _ = step_opts.tx.send(TuiEvent::AgentDone {
                 agent: step.role.clone(),
             });
 
+            // Inter-agent review: wait for user approval or feedback
+            let mut current_input = agent_input.clone();
+            loop {
+                if step_opts.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                match request_agent_review(&step.role, &response, &step_opts).await? {
+                    None => break,
+                    Some(feedback) => {
+                        current_input =
+                            format!("{}\n\n## User feedback\n{}", current_input, feedback);
+                        response = crate::providers::complete(
+                            &effective_model,
+                            &system_prompt,
+                            &current_input,
+                            &step_opts,
+                            &step.role,
+                        )
+                        .await
+                        .with_context(|| format!("agent '{}' retry LLM call failed", step.role))?;
+                    }
+                }
+            }
+
+            send_tasks(step_idx + 1);
             pipeline_input = response;
         }
 

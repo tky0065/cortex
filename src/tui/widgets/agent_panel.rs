@@ -32,6 +32,8 @@ pub struct ActiveAgent {
     pub scroll_offset: usize,
     /// Inline file diffs accumulated during this agent's run.
     pub diffs: Vec<FileDiff>,
+    /// Tool calls emitted during this agent's run — rendered as structured labeled blocks.
+    pub tool_calls: Vec<(String, String)>, // (tool, label)
 }
 
 impl ActiveAgent {
@@ -45,11 +47,16 @@ impl ActiveAgent {
             progress: 0,
             scroll_offset: 0,
             diffs: Vec::new(),
+            tool_calls: Vec::new(),
         }
     }
 
     pub fn push_diff(&mut self, diff: FileDiff) {
         self.diffs.push(diff);
+    }
+
+    pub fn push_tool_call(&mut self, tool: impl Into<String>, label: impl Into<String>) {
+        self.tool_calls.push((tool.into(), label.into()));
     }
 
     pub fn set_progress(&mut self, message: &str) {
@@ -65,6 +72,7 @@ impl ActiveAgent {
         self.progress = 0;
         self.scroll_offset = 0;
         self.diffs.clear();
+        self.tool_calls.clear();
     }
 
     /// Like `restart()` but keeps previous content with a visual separator so
@@ -335,10 +343,17 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
     let available_lines = content_area.height as usize;
     let panel_width = content_area.width as usize;
 
-    // Build all content lines: diffs first (actions), then stream buffer (agent reply).
+    // Build all content lines: tool calls first, then diffs, then stream buffer.
     // With bottom-anchored scroll this means: scroll_offset=0 shows the agent's final
-    // message at the bottom, and scrolling up reveals the file diffs above it.
+    // message at the bottom, and scrolling up reveals the file diffs and tool calls above it.
     let mut all_lines: Vec<Line<'static>> = Vec::new();
+
+    for (tool, label) in &agent.tool_calls {
+        all_lines.extend(render_tool_call_line(tool, label, panel_width));
+    }
+    if !agent.tool_calls.is_empty() {
+        all_lines.push(Line::from(""));
+    }
 
     for diff in &agent.diffs {
         all_lines.extend(render_diff_inline(diff, panel_width));
@@ -380,6 +395,29 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
         let visible = all_lines[start..end].to_vec();
         frame.render_widget(Paragraph::new(visible), content_area);
     }
+}
+
+/// Render a tool call as a single styled line — Claude Code style:
+/// `  ✓ write_file(specs.md)`  in accent + checkmark green.
+fn render_tool_call_line(tool: &str, label: &str, width: usize) -> Vec<Line<'static>> {
+    let icon = "✓ ";
+    let call_text = format!("{}({})", tool, label);
+    let call_truncated = truncate_str(&call_text, width.saturating_sub(4));
+    vec![Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            icon,
+            Style::default()
+                .fg(THEME.success)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            call_truncated,
+            Style::default()
+                .fg(THEME.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])]
 }
 
 /// Render a `FileDiff` as compact inline lines for display inside an agent panel.

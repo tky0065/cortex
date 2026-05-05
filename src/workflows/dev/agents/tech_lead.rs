@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::tui::events::TuiEvent;
 use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
+    send_tool_action,
 };
 
 const PREAMBLE_RAW: &str = include_str!("../prompts/tech_lead.md");
@@ -16,6 +17,7 @@ pub async fn run(specs: &str, options: &RunOptions) -> Result<String> {
     send_agent_progress(options, "tech_lead", "Generation de architecture.md");
     bus_agent_started(options, "tech_lead").await;
 
+    send_tool_action(options, "tech_lead", "read_file", "specs.md");
     let model = crate::providers::model_for_role("tech_lead", &options.config)?;
     let prompt = format!(
         "Generate a complete architecture.md for these specifications:\n\n{}",

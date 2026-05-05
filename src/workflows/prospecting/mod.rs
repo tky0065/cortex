@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-use super::{RunOptions, Workflow, send_phase_tasks};
+use super::{RunOptions, Workflow, request_agent_review, send_phase_tasks, send_tool_action};
 use crate::tools::filesystem::FileSystem;
 use crate::tui::events::TuiEvent;
 
@@ -61,15 +61,35 @@ impl Workflow for ProspectingWorkflow {
             let profile_prefix = load_profile(&options.project_dir).unwrap_or_default();
             format!("{}{}", profile_prefix, prompt)
         };
-        let prospects_raw = agents::researcher::run(&enriched_prompt, &opts).await?;
+        let mut prospects_raw = agents::researcher::run(&enriched_prompt, &opts).await?;
+        send_tool_action(&opts, "researcher", "write_file", "prospects.md");
         fs.write("prospects.md", &prospects_raw)?;
         send_phase_tasks(&opts, PROSPECTING_TASKS, 1);
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "prospects-identified".into(),
         });
 
+        // Inter-agent review: Researcher output
+        let mut researcher_input = enriched_prompt.clone();
+        loop {
+            if opts.cancel.is_cancelled() {
+                return Ok(());
+            }
+            match request_agent_review("Researcher", &prospects_raw, &opts).await? {
+                None => break,
+                Some(feedback) => {
+                    researcher_input =
+                        format!("{}\n\n## User feedback\n{}", researcher_input, feedback);
+                    let new_prospects = agents::researcher::run(&researcher_input, &opts).await?;
+                    fs.write("prospects.md", &new_prospects)?;
+                    prospects_raw = new_prospects;
+                }
+            }
+        }
+
         // ── Phase 2: Profiler ‖ Copywriter workers (parallel) ────────────
         let prospect_entries = parse_prospects(&prospects_raw);
+        let prospect_count = prospect_entries.len();
         let sem = Arc::new(Semaphore::new(
             opts.config.limits.max_parallel_workers as usize,
         ));
@@ -93,7 +113,19 @@ impl Workflow for ProspectingWorkflow {
 
                 // Save per-prospect files
                 let slug = slugify_prospect(&entry);
+                send_tool_action(
+                    &opts_clone,
+                    "profiler",
+                    "write_file",
+                    &format!("profiles/{}.md", slug),
+                );
                 local_fs.write(format!("profiles/{}.md", slug), &profile)?;
+                send_tool_action(
+                    &opts_clone,
+                    "copywriter",
+                    "write_file",
+                    &format!("emails/{}.md", slug),
+                );
                 local_fs.write(format!("emails/{}.md", slug), &email)?;
 
                 Ok::<(String, String), anyhow::Error>((profile, email))
@@ -117,10 +149,55 @@ impl Workflow for ProspectingWorkflow {
         });
         send_phase_tasks(&opts, PROSPECTING_TASKS, 3);
 
+        // Inter-agent review: Profiler/Copywriter phase summary
+        // Re-running the full parallel pool is expensive so we accept one round of feedback
+        // and forward it to the outreach manager rather than spawning new worker tasks.
+        if !opts.cancel.is_cancelled() {
+            let phase2_summary = format!(
+                "Profiler and Copywriter generated {} prospect profiles and emails.",
+                prospect_count
+            );
+            if let Some(feedback) =
+                request_agent_review("Profiler / Copywriter", &phase2_summary, &opts).await?
+            {
+                let _ = opts.tx.send(TuiEvent::TokenChunk {
+                    agent: "orchestrator".into(),
+                    chunk: format!("Profiler/Copywriter feedback noted: {}", feedback),
+                });
+                all_profiles_emails =
+                    format!("{}\n\n## User feedback\n{}", all_profiles_emails, feedback);
+            }
+        }
+
         // ── Phase 3: Outreach Manager → outreach_report.md ───────────────
-        let report = agents::outreach_manager::run(&all_profiles_emails, &opts).await?;
+        let mut report = agents::outreach_manager::run(&all_profiles_emails, &opts).await?;
+        send_tool_action(
+            &opts,
+            "outreach_manager",
+            "write_file",
+            "outreach_report.md",
+        );
         fs.write("outreach_report.md", &report)?;
         send_phase_tasks(&opts, PROSPECTING_TASKS, PROSPECTING_TASKS.len());
+
+        // Inter-agent review: Outreach Manager output
+        let mut outreach_input = all_profiles_emails.clone();
+        loop {
+            if opts.cancel.is_cancelled() {
+                return Ok(());
+            }
+            match request_agent_review("Outreach Manager", &report, &opts).await? {
+                None => break,
+                Some(feedback) => {
+                    outreach_input =
+                        format!("{}\n\n## User feedback\n{}", outreach_input, feedback);
+                    let new_report = agents::outreach_manager::run(&outreach_input, &opts).await?;
+                    fs.write("outreach_report.md", &new_report)?;
+                    report = new_report;
+                }
+            }
+        }
+
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "done".into(),
         });

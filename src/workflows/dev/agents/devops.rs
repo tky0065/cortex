@@ -7,6 +7,7 @@ use crate::tools::terminal;
 use crate::tui::events::TuiEvent;
 use crate::workflows::{
     RunOptions, bus_agent_done, bus_agent_started, send_agent_progress, send_agent_summary,
+    send_tool_action,
 };
 
 const PREAMBLE_RAW: &str = include_str!("../prompts/devops.md");
@@ -35,7 +36,7 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
     .map_err(|e| anyhow::anyhow!("DevOps agent error: {e}"))?;
 
     send_agent_progress(options, "devops", "Ecriture des fichiers de deploiement");
-    parse_and_write_files(&output, fs, &options.tx)?;
+    parse_and_write_files(&output, fs, options)?;
     send_agent_summary(options, "devops", &output);
     bus_agent_done(options, "devops", &output).await;
 
@@ -52,19 +53,16 @@ pub async fn run(architecture: &str, options: &RunOptions, fs: &FileSystem) -> R
     Ok(())
 }
 
-fn parse_and_write_files(
-    output: &str,
-    fs: &FileSystem,
-    tx: &crate::tui::events::TuiSender,
-) -> Result<()> {
+fn parse_and_write_files(output: &str, fs: &FileSystem, options: &RunOptions) -> Result<()> {
     let sections: Vec<&str> = output.split("=== FILE:").collect();
     for section in sections.iter().skip(1) {
         if let Some((header, content)) = section.split_once("===") {
             let file_path = header.trim();
             let file_content = content.trim_start_matches('\n');
+            send_tool_action(options, "devops", "write_file", file_path);
             let old_content = fs.read(file_path).ok();
             fs.write(file_path, file_content)?;
-            let _ = tx.send(TuiEvent::FileWritten {
+            let _ = options.tx.send(TuiEvent::FileWritten {
                 agent: "devops".to_string(),
                 path: file_path.to_string(),
                 old_content,
@@ -83,8 +81,24 @@ async fn git_commit(options: &RunOptions) -> Result<()> {
         "devops",
         "Initialisation git et creation du commit",
     );
-    let _ = terminal::run("git", &["init"], Some(dir.as_path()), Some(30)).await;
 
+    send_tool_action(options, "devops", "bash", "git init");
+    let init_out = terminal::run("git", &["init"], Some(dir.as_path()), Some(30)).await;
+    if let Ok(ref out) = init_out {
+        let msg = if out.stdout.is_empty() {
+            &out.stderr
+        } else {
+            &out.stdout
+        };
+        if !msg.trim().is_empty() {
+            let _ = options.tx.send(TuiEvent::TokenChunk {
+                agent: "devops".into(),
+                chunk: format!("   {}\n", msg.trim()),
+            });
+        }
+    }
+
+    send_tool_action(options, "devops", "bash", "git add .");
     let add_out = terminal::run("git", &["add", "."], Some(dir.as_path()), Some(30)).await?;
     if !add_out.success {
         let _ = options.tx.send(TuiEvent::Error {
@@ -94,6 +108,12 @@ async fn git_commit(options: &RunOptions) -> Result<()> {
         return Ok(());
     }
 
+    send_tool_action(
+        options,
+        "devops",
+        "bash",
+        "git commit -m \"initial commit\"",
+    );
     let commit_out = terminal::run(
         "git",
         &[
@@ -107,10 +127,13 @@ async fn git_commit(options: &RunOptions) -> Result<()> {
     .await?;
 
     if commit_out.success {
-        let _ = options.tx.send(TuiEvent::TokenChunk {
-            agent: "devops".into(),
-            chunk: "git commit: initial commit".into(),
-        });
+        let msg = commit_out.stdout.trim();
+        if !msg.is_empty() {
+            let _ = options.tx.send(TuiEvent::TokenChunk {
+                agent: "devops".into(),
+                chunk: format!("   {}\n", msg),
+            });
+        }
     }
     Ok(())
 }

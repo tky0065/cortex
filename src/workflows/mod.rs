@@ -113,6 +113,10 @@ pub struct RunOptions {
     pub verbose: bool,
     /// Shared inter-agent communication bus (optional — absent in legacy tests).
     pub agent_bus: Option<Arc<AgentBus>>,
+    /// Tools declared by the current custom agent.
+    /// `None` = built-in agent (uses global web_search_enabled flag).
+    /// `Some(tools)` = custom agent; web search only fires if "web_search" is in this list.
+    pub agent_tools: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -172,6 +176,17 @@ pub fn available_workflows_dynamic() -> Vec<(String, String)> {
         result.push((def.name, def.description));
     }
     result
+}
+
+/// Emit a tool call event into the agent panel (Claude Code style labeled block).
+/// `tool` is a short name ("write_file", "read_file", "bash", "web_search", "scan").
+/// `label` is the argument shown to the user (file path, command, query…).
+pub fn send_tool_action(opts: &RunOptions, agent: &str, tool: &str, label: &str) {
+    let _ = opts.tx.send(TuiEvent::AgentToolCall {
+        agent: agent.to_string(),
+        tool: tool.to_string(),
+        label: label.to_string(),
+    });
 }
 
 pub fn send_agent_progress(
@@ -312,6 +327,51 @@ pub async fn bus_agent_error(options: &RunOptions, name: &str, error: &str) {
     if let Some(ref bus) = options.agent_bus {
         bus.update_agent(name, AgentStatus::Error(error.to_string()), None)
             .await;
+    }
+}
+
+/// After an agent completes, show its output summary to the user and ask for feedback.
+///
+/// Returns `Some(feedback)` if the user wants changes, `None` if they approve.
+/// Skips entirely in `--auto` mode.
+pub async fn request_agent_review(
+    agent: &str,
+    output: &str,
+    opts: &RunOptions,
+) -> Result<Option<String>> {
+    if opts.auto {
+        return Ok(None);
+    }
+
+    let summary = output.chars().take(600).collect::<String>();
+    let _ = opts.tx.send(TuiEvent::AgentReviewRequest {
+        agent: agent.to_string(),
+        summary,
+    });
+
+    let answer = tokio::select! {
+        a = async {
+            let mut rx = opts.answer_rx.lock().await;
+            rx.recv().await.unwrap_or_default()
+        } => a,
+        _ = opts.cancel.cancelled() => return Ok(None),
+    };
+
+    let trimmed = answer.trim().to_lowercase();
+    let ok_words = [
+        "ok",
+        "oui",
+        "yes",
+        "good",
+        "parfait",
+        "done",
+        "c'est bon",
+        "continue",
+    ];
+    if trimmed.is_empty() || ok_words.iter().any(|w| trimmed == *w) {
+        Ok(None)
+    } else {
+        Ok(Some(answer.trim().to_string()))
     }
 }
 

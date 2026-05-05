@@ -52,6 +52,20 @@ pub enum TuiEvent {
         agent: String,
         question: String,
     },
+    /// Emitted after an agent completes — waits for user approval or feedback before next agent.
+    AgentReviewRequest {
+        agent: String,
+        summary: String,
+    },
+    /// Emitted when an agent invokes a tool (file read/write, bash, web search…).
+    /// Displayed as a structured labeled block in the agent panel (Claude Code style).
+    AgentToolCall {
+        agent: String,
+        /// Short tool name: "read_file", "write_file", "bash", "web_search", "scan", "read_input"
+        tool: String,
+        /// Tool argument shown to the user (file path, command, query…)
+        label: String,
+    },
     /// Emitted by the REPL `/continue` command to resume a paused workflow.
     Resume,
     /// Emitted periodically or at end to report aggregate token usage.
