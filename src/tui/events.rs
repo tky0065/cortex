@@ -159,6 +159,10 @@ pub enum TuiEvent {
     },
     /// Reload the launcher panel (e.g. after creating a new workflow or agent).
     LauncherRefresh,
+    /// Emitted when ESC ESC interrupts the running workflow or chat generation.
+    WorkflowInterrupted {
+        message: String,
+    },
 }
 
 pub type TuiSender = mpsc::UnboundedSender<TuiEvent>;

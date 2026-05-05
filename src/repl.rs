@@ -104,7 +104,7 @@ impl ReplState {
     }
 
     /// Save session history to disk.
-    fn save_history(&self) -> Result<()> {
+    pub fn save_history(&self) -> Result<()> {
         let history_path = self.history_dir.join("sessions.json");
         let sessions = self.session_history.lock().unwrap();
         let content = serde_json::to_string_pretty(&*sessions)?;

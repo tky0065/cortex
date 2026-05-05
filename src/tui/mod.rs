@@ -129,6 +129,13 @@ enum PopupState {
         /// Editable copy of the plan (initialised from content on [e]).
         edit_input: tui_input::Input,
     },
+    /// Shown after ESC ESC interrupts the running workflow or chat generation.
+    InterruptMenu {
+        /// Human-readable description of what was interrupted.
+        message: String,
+        /// True when at least one `Interrupted` session exists in history (enables [R] Resume).
+        has_resume: bool,
+    },
 }
 
 struct SkillPickerState {
@@ -177,6 +184,8 @@ struct App {
     execution_mode: crate::workflows::ExecutionMode,
     /// Cached data for the idle launcher panel.
     launcher: LauncherData,
+    /// Timestamp of the last ESC key press — used to detect ESC ESC double-press.
+    last_esc: Option<std::time::Instant>,
 }
 
 impl App {
@@ -223,6 +232,7 @@ impl App {
             model_display,
             execution_mode: crate::workflows::ExecutionMode::default(),
             launcher: LauncherData::load(),
+            last_esc: None,
         }
     }
 
@@ -404,6 +414,9 @@ impl App {
                 edit_input,
             } => {
                 draw_plan_review(frame, path, content, *scroll_offset, *editing, edit_input);
+            }
+            PopupState::InterruptMenu { message, has_resume } => {
+                draw_interrupt_menu(frame, message, *has_resume);
             }
         }
     }
@@ -810,6 +823,10 @@ impl App {
                     a.push_diff(diff);
                 }
             }
+            TuiEvent::WorkflowInterrupted { message } => {
+                self.logs
+                    .push(LogEntry::system(format!("⏸ interrupted: {}", message)));
+            }
         }
     }
 
@@ -1196,6 +1213,9 @@ impl Tui {
             PopupState::PlanReview { .. } => {
                 return Self::handle_plan_review(app, key, tx).await;
             }
+            PopupState::InterruptMenu { .. } => {
+                return Self::handle_interrupt_menu(app, key, tx).await;
+            }
             PopupState::None => {}
         }
 
@@ -1349,7 +1369,17 @@ impl Tui {
                     return false;
                 }
                 KeyCode::Esc => {
+                    let now = std::time::Instant::now();
+                    let is_double = app
+                        .last_esc
+                        .map(|t| now.duration_since(t) < Duration::from_millis(500))
+                        .unwrap_or(false);
+                    app.last_esc = Some(now);
                     app.input_bar.dismiss_completions();
+                    if is_double {
+                        // ESC ESC — interrupt whatever is running without closing the app.
+                        Self::handle_double_esc(app, tx).await;
+                    }
                     return false;
                 }
                 KeyCode::PageUp => {
@@ -1515,6 +1545,77 @@ impl Tui {
 
     fn is_quit_command(cmd: &str) -> bool {
         matches!(cmd.split_whitespace().next(), Some("/quit" | "/exit"))
+    }
+
+    // -------------------------------------------------------------------------
+    // ESC ESC — interrupt running workflow or chat generation
+    // -------------------------------------------------------------------------
+
+    async fn handle_double_esc(app: &mut App, tx: &TuiSender) {
+        let cancel_guard = app.repl_state.cancel.lock().await;
+        if let Some(token) = cancel_guard.as_ref() {
+            token.cancel();
+
+            let is_workflow = {
+                app.repl_state
+                    .session_history
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| matches!(s.status, crate::repl::SessionStatus::Running))
+            };
+
+            let message = if is_workflow {
+                "Workflow interrupted — files written so far are preserved.\nUse [R] or /resume to continue later."
+            } else {
+                "Chat generation interrupted.\nPrevious messages are preserved — type to continue."
+            }
+            .to_string();
+
+            // Mark the last running session as Interrupted (same bookkeeping as /abort).
+            {
+                let mut history = app.repl_state.session_history.lock().unwrap();
+                if let Some(s) = history.iter_mut().last()
+                    && matches!(s.status, crate::repl::SessionStatus::Running)
+                {
+                    s.status = crate::repl::SessionStatus::Interrupted;
+                }
+            }
+            let _ = app.repl_state.save_history();
+
+            let has_resume = app
+                .repl_state
+                .session_history
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| matches!(s.status, crate::repl::SessionStatus::Interrupted));
+
+            app.popup = PopupState::InterruptMenu { message, has_resume };
+            app.logs.push(LogEntry::system("⏸ interrupted (ESC ESC)"));
+            let _ = tx.send(TuiEvent::WorkflowInterrupted {
+                message: "interrupted via ESC ESC".to_string(),
+            });
+        } else {
+            app.logs
+                .push(LogEntry::system("ESC ESC — nothing is running"));
+        }
+    }
+
+    async fn handle_interrupt_menu(app: &mut App, key: &crossterm::event::KeyEvent, tx: &TuiSender) -> bool {
+        match key.code {
+            // Dismiss the popup — user can keep chatting
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                app.popup = PopupState::None;
+            }
+            // Open resume picker to pick an interrupted session
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                app.popup = PopupState::None;
+                let _ = tx.send(TuiEvent::OpenResumePicker);
+            }
+            _ => {}
+        }
+        false
     }
 
     // -------------------------------------------------------------------------
@@ -3620,6 +3721,38 @@ fn draw_plan_review(
     frame.render_widget(
         Paragraph::new(action_text).style(Style::default().fg(THEME.muted)),
         action_inner,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Interrupt Menu overlay — shown after ESC ESC
+// ---------------------------------------------------------------------------
+
+fn draw_interrupt_menu(frame: &mut Frame, message: &str, has_resume: bool) {
+    let popup_area = centered_rect(55, 35, frame.area());
+    frame.render_widget(Clear, popup_area);
+
+    let resume_line = if has_resume {
+        "  [R] Open resume picker   "
+    } else {
+        ""
+    };
+    let actions = format!(
+        "\n  [Enter] Dismiss   {}[Esc] Dismiss",
+        resume_line
+    );
+    let body = format!("\n  ⏸  {}\n{}", message.replace('\n', "\n  "), actions);
+
+    let block = Block::default()
+        .title(" Interrupted ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(THEME.warning));
+    frame.render_widget(
+        Paragraph::new(body)
+            .block(block)
+            .style(Style::default().fg(THEME.text))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        popup_area,
     );
 }
 
