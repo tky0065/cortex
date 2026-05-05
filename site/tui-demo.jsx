@@ -200,7 +200,7 @@ function CommandBar({ command, blink }) {
 function StatusBar({ time }) {
   return (
     <div className="tui-status">
-      <span className="tui-status__brand">CORTEX v0.1.6 beta</span>
+      <span className="tui-status__brand">CORTEX v0.2.3 beta</span>
       <span className="tui-status__sep">│</span>
       <span><span className="muted">PROVIDER:</span> OPENROUTER</span>
       <span className="tui-status__sep">│</span>

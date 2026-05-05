@@ -6,6 +6,13 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 **Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
+## What's new in 0.2.3
+
+- **ESC ESC interrupt** — Press <kbd>Esc</kbd> twice within 500 ms to immediately interrupt the running workflow or chat generation without closing the application (inspired by GitHub Copilot). A contextual popup appears with:
+  - **`[Enter]` / `[Esc]`** — dismiss and keep chatting; all previous conversation messages are preserved.
+  - **`[R]`** — open the resume picker to continue an interrupted workflow from where it stopped (files written so far are kept on disk).
+- History is automatically preserved: `session_history` is saved to `~/.cortex/sessions.json` with an `Interrupted` status so workflows can always be resumed via `/resume`.
+
 ## What's new in 0.2.0
 
 - **Custom Agents** — Define your own agents with a Markdown file using YAML frontmatter. Drop them in `.cortex/agents/` (project-local) or `~/.cortex/agents/` (global). Local definitions shadow global ones on name collision.

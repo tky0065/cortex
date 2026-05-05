@@ -143,13 +143,14 @@ function TOC({ active }) {
 function Content() {
   return (
     <main className="docs-content">
-      <span className="docs-eyebrow">Documentation · v0.2.0</span>
+      <span className="docs-eyebrow">Documentation · v0.2.3</span>
       <h1>Cortex</h1>
       <p style={{ fontSize: 18, color: "var(--fg)" }}>Orchestrate specialized AI agents to build and ship your projects from your terminal. Cortex is currently in beta.</p>
 
       <section id="introduction" className="docs-section">
         <h2>Introduction</h2>
         <p><strong>Status:</strong> Cortex is ready for early adopters, while workflows, providers, and generated project structure may still evolve before a stable 1.0 release.</p>
+        <p><strong>0.2.3 highlights:</strong> ESC ESC interrupt — press Escape twice within 500 ms to stop the running workflow or chat generation without closing the app; a contextual popup lets you dismiss (history preserved, keep chatting) or open the resume picker to restart an interrupted workflow from where it stopped.</p>
         <p><strong>0.2.0 highlights:</strong> custom agents &amp; workflows — define your own agents with YAML frontmatter Markdown files in <code>.cortex/agents/</code> or <code>~/.cortex/agents/</code>; compose multi-step custom workflows in <code>.cortex/workflows/</code>; generate them instantly with <code>/agent create</code> and <code>/workflow create</code>; fallback handling keeps pipelines running even when an agent file is missing.</p>
         <p><strong>0.1.8 highlights:</strong> execution modes — cycle NORMAL / PLAN / AUTO / REVIEW with <strong>Shift+Tab</strong>; Plan mode scans the project, asks clarifying questions, and produces a reviewable <code>PLAN.md</code> before any agent runs; full-screen PlanReview popup with inline editing; <code>/mode</code> and <code>/approve</code> REPL commands.</p>
         <p><strong>0.1.7 highlights:</strong> task management widget (track progress in real-time), workflow explorer (list all workflows with <code>/workflows</code>), responsive agent grid (UI adapts to small terminals), professional progress indicators.</p>
