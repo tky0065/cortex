@@ -190,6 +190,17 @@ check_local_paths() {
   fi
 }
 
+check_project_symlinks() {
+  matches="$(find "$PROJECT_ROOT" -type l -print 2>/dev/null || true)"
+  if [ -n "$matches" ]; then
+    echo "$matches" | sed 's/^/  /'
+    fail "DEV-SEC-004" "project tree contains symlink"
+    return 1
+  fi
+  pass "DEV-SEC-004" "project tree contains no symlinks"
+  return 0
+}
+
 run_scenario_commands() {
   if [ -z "$SCENARIO_FILE" ]; then
     warn "DEV-BUILD-001" "no scenario file provided; stack commands skipped"
@@ -230,6 +241,10 @@ $binaries
 EOF_BINARIES
 
   if [ "$missing_binary" -ne 0 ]; then
+    return
+  fi
+
+  if ! check_project_symlinks; then
     return
   fi
 
