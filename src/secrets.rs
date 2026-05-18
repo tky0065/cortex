@@ -257,6 +257,41 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(name: &'static str, value: &str) -> (MutexGuard<'static, ()>, Self) {
+            let lock = ENV_LOCK.lock().expect("env lock poisoned");
+            let previous = std::env::var(name).ok();
+
+            // SAFETY: tests that mutate process environment hold ENV_LOCK until this guard drops.
+            unsafe {
+                std::env::set_var(name, value);
+            }
+
+            (lock, Self { name, previous })
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: EnvVarGuard is created only while holding ENV_LOCK, and drops before the lock.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.name, previous);
+                } else {
+                    std::env::remove_var(self.name);
+                }
+            }
+        }
+    }
 
     #[test]
     fn redacts_exact_configured_values() {
@@ -323,26 +358,12 @@ mod tests {
     fn from_config_and_env_reads_config_and_env_keys() {
         let mut config = Config::default();
         config.api_keys.openai = Some("sk-config-1234567890".to_string());
-        let previous = std::env::var("GROQ_API_KEY").ok();
-
-        // SAFETY: this unit test updates a process env var before constructing the redactor.
-        unsafe {
-            std::env::set_var("GROQ_API_KEY", "gsk-env-1234567890");
-        }
+        let (_env_lock, _env_guard) = EnvVarGuard::set("GROQ_API_KEY", "gsk-env-1234567890");
 
         let redactor = SecretRedactor::from_config_and_env(&config);
         let output =
             redactor.redact_text("config sk-config-1234567890 env gsk-env-1234567890 visible");
 
         assert_eq!(output, "config [REDACTED] env [REDACTED] visible");
-
-        // SAFETY: cleanup for the env var set by this test.
-        unsafe {
-            if let Some(previous) = previous {
-                std::env::set_var("GROQ_API_KEY", previous);
-            } else {
-                std::env::remove_var("GROQ_API_KEY");
-            }
-        }
     }
 }
