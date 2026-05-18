@@ -165,8 +165,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 ## Lacunes produit et go-to-market
 
 ### 16. Audience cible trop implicite
-**Statut:** Terminé
-**Preuve:** Couvert par `docs/BETA.md`, qui choisit `dev` comme chemin beta recommandé et cadre les autres workflows.
+**Statut:** En cours
+**Preuve:** Partiellement traité par `docs/BETA.md`, qui choisit `dev` comme chemin beta recommandé. Il reste à définir un ICP principal explicite.
 
 **Constat:** Le PRD liste plusieurs utilisateurs, mais ne choisit pas clairement le premier segment a convaincre.
 
@@ -185,8 +185,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter une section de positionnement: multi-agent workflows, local-first, workflows personnalisables, TUI, generation de depot complet.
 
 ### 18. Pas de strategie de support et feedback beta
-**Statut:** Terminé
-**Preuve:** Couvert par `.github/ISSUE_TEMPLATE/failed_run.md`, qui structure les retours de runs échoués.
+**Statut:** En cours
+**Preuve:** Partiellement traité par `.github/ISSUE_TEMPLATE/failed_run.md`, qui structure les retours de runs échoués. Il reste à compléter la stratégie de support et feedback beta.
 
 **Constat:** Le projet est en beta, mais il manque un canal structure pour rapporter bugs, partager logs et collecter les cas d'usage.
 
@@ -271,4 +271,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 ## Suivi des lots
 
-- 2026-05-18 — Lot docs/process beta terminé: guide beta, guide providers, template failed run, liens README. Lacunes terminées: 4, 5, 10, 16, 18, 19.
+- 2026-05-18 — Lot docs/process beta terminé: guide beta, guide providers, template failed run, liens README. Lacunes terminées: 4, 5, 10, 19. Lacunes partiellement traitées: 16, 18.
