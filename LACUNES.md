@@ -1,0 +1,274 @@
+# Lacunes du projet Cortex
+
+## Resume executif
+
+Cortex a deja une base ambitieuse: workflows multiples, TUI, providers, agents personnalisables, reprise de session, web search, skills et publication beta. Les lacunes principales ne sont donc plus des manques de fonctionnalites de base, mais des risques de produit complet: fiabilite des generations, securite des outils, clarte du positionnement, qualite mesurable des outputs, compatibilite provider, et experience d'installation/support.
+
+Le risque central est que Cortex promette "une equipe logicielle en une commande" sans encore definir assez strictement ce qui rend un resultat acceptable, reproductible, securise et maintenable. Le projet gagnerait a passer d'une logique "beaucoup de workflows implementes" a une logique "quelques workflows prouves, mesures et fiables".
+
+## Lacunes critiques
+
+### 1. Absence de criteres de qualite mesurables pour les projets generes
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Le produit vise a generer des depots complets et deployables, mais il n'y a pas de definition testable de "complet", "deployable", "acceptable" ou "production-ready" selon les stacks.
+
+**Pourquoi c'est important:** Sans criteres objectifs, Cortex peut sembler fonctionner parce qu'il produit des fichiers, tout en livrant des projets incomplets, fragiles ou impossibles a maintenir.
+
+**Action recommandee:** Definir une matrice d'acceptation par type de projet: build, tests, lint, README runnable, Docker valide, commandes de lancement, couverture minimale, absence de secrets, absence de TODO bloquants.
+
+### 2. Risque de securite lie aux outils executes depuis des sorties LLM
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Le PRD mentionne l'allowlist terminal et le sandbox filesystem, mais le produit s'est elargi: web search, fetch URL, email SMTP, update binary, providers remote, custom agents, custom workflows, mentions, skills.
+
+**Pourquoi c'est important:** Plus Cortex accepte de contenu externe et d'instructions personnalisees, plus les risques de prompt injection, exfiltration, execution non desiree et ecriture de fichiers sensibles augmentent.
+
+**Action recommandee:** Formaliser un modele de menace complet et ajouter des tests d'abus: chemins symboliques, URLs malveillantes, prompt injection dans resultats web, workflow custom qui demande des secrets, envoi email accidentel, update compromis.
+
+### 3. Pas de banc d'evaluation reproductible
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Le projet a des tests unitaires, mais il manque un eval harness qui lance Cortex sur des prompts representatifs et mesure la qualite des depots produits.
+
+**Pourquoi c'est important:** Les regressions d'agents et de prompts sont difficiles a detecter avec des tests Rust classiques. Une petite modification de prompt ou provider peut degrader fortement les resultats sans casser la compilation.
+
+**Action recommandee:** Creer un dossier `evals/` avec 10 a 20 scenarios fixes, sorties attendues, commandes de verification et scoring: build pass, tests pass, fichiers attendus, coherence specs/architecture/code.
+
+### 4. Positionnement produit trop large pour une beta fiable
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/BETA.md`, qui définit le workflow phare, les workflows expérimentaux et les limites beta.
+
+**Constat:** Cortex couvre dev, marketing, prospecting, code-review, custom agents, custom workflows, skills et providers multiples. Cela cree une promesse tres large.
+
+**Pourquoi c'est important:** Une beta qui couvre trop de cas d'usage risque de paraitre superficielle si aucun workflow n'est excellent. Les utilisateurs ne sauront pas quel probleme Cortex resout mieux que Cursor, Claude Code, Copilot ou OpenCode.
+
+**Action recommandee:** Choisir un workflow phare pour la beta publique, probablement `dev` ou `code-review`, et presenter les autres comme experimentaux jusqu'a validation.
+
+## Lacunes importantes
+
+### 5. Strategie provider insuffisamment clarifiee
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/PROVIDERS.md`, qui documente les niveaux de support, les recommandations modèles et les limites provider.
+
+**Constat:** Le projet supporte plusieurs providers et modes d'auth, mais la documentation ne semble pas assez explicite sur les niveaux de support, les modeles recommandes, les limites connues et les couts.
+
+**Pourquoi c'est important:** L'experience utilisateur depend fortement du modele choisi. Un mauvais provider peut faire echouer Cortex alors que l'orchestrateur fonctionne correctement.
+
+**Action recommandee:** Ajouter une matrice providers/modeles: qualite attendue par workflow, streaming, tool calling, cout approximatif, local/remote, configuration minimale, limitations connues.
+
+### 6. Observabilite et debogage encore trop orientes developpeur
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Il existe du verbose logging et des evenements TUI, mais il manque une vue claire pour diagnostiquer pourquoi un run a echoue: provider, prompt, outil, fichier, test, timeout, budget contexte.
+
+**Pourquoi c'est important:** Les workflows multi-agents echouent souvent de maniere partielle. Sans diagnostics exploitables, l'utilisateur ne peut pas corriger le probleme ni fournir un rapport utile.
+
+**Action recommandee:** Ajouter un rapport de run structure: timeline, agents executes, prompts tronques ou non, outils appeles, erreurs, fichiers modifies, commandes lancees, cause probable d'echec.
+
+### 7. Gestion des couts et quotas absente
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Cortex peut appeler plusieurs agents, workers paralleles, web search et providers distants, mais ne semble pas exposer un budget clair par run.
+
+**Pourquoi c'est important:** Un utilisateur peut declencher des couts eleves sans comprendre combien d'appels ont ete faits ni pourquoi.
+
+**Action recommandee:** Ajouter estimation et suivi: tokens input/output par agent, cout estime par provider, limite de cout par run, alerte avant depassement.
+
+### 8. Custom agents et workflows: validation trop critique pour rester permissive
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Les workflows custom et agents Markdown rendent Cortex extensible, mais ils introduisent un format declaratif qui peut etre incomplet, contradictoire ou dangereux.
+
+**Pourquoi c'est important:** Une mauvaise definition custom peut produire des erreurs difficiles a comprendre ou contourner les garde-fous attendus.
+
+**Action recommandee:** Ajouter une commande de validation stricte: schema, agents manquants, outils interdits, permissions, cycles de dependances, taille de prompts, exemples de bonnes definitions.
+
+### 9. Experience de reprise de session a durcir
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** La reprise apres interruption est une fonctionnalite forte, mais elle depend de l'etat disque, de l'historique de session et de la coherence des fichiers deja generes.
+
+**Pourquoi c'est important:** Reprendre un run dans un etat partiellement modifie peut creer des incoherences ou ecraser du travail utilisateur.
+
+**Action recommandee:** Ajouter des checkpoints explicites avec manifest: phase courante, fichiers crees, hash des fichiers, agent responsable, prochaines actions, conflits detectes.
+
+### 10. Documentation d'utilisation avancee incomplete
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/BETA.md` et les liens ajoutés dans `README.md`.
+
+**Constat:** Le README est riche, mais la densite des features rend l'apprentissage difficile.
+
+**Pourquoi c'est important:** Les nouveaux utilisateurs ont besoin de parcours courts: installer, connecter un provider, lancer un workflow, comprendre les outputs, reparer un echec.
+
+**Action recommandee:** Ajouter des guides par persona: indie hacker, dev local Ollama, equipe qui fait du code review, freelance prospecting.
+
+## Lacunes moyennes
+
+### 11. Manque de politique claire sur les donnees et la confidentialite
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Le produit met en avant le local et l'absence de lock-in, mais supporte aussi de nombreux providers distants.
+
+**Pourquoi c'est important:** Les utilisateurs doivent savoir quelles donnees partent vers quels services.
+
+**Action recommandee:** Ajouter une page "Data & Privacy": donnees envoyees aux providers, logs locaux, secrets, web search, retention, opt-out.
+
+### 12. Versioning des prompts non formalise
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Les prompts sont au coeur du comportement, mais leur evolution n'est pas traitee comme une surface produit versionnee.
+
+**Pourquoi c'est important:** Les changements de prompts peuvent casser la qualite des workflows sans changement Rust visible.
+
+**Action recommandee:** Ajouter changelog de prompts, tests/evals lies aux prompts, et conventions de revue pour modifications d'agents.
+
+### 13. Pas de strategie claire de compatibilite des sorties generees
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Cortex genere des projets dans le repertoire courant, mais il manque une strategie de compatibilite entre versions de Cortex et structures de projet generees.
+
+**Pourquoi c'est important:** Les utilisateurs peuvent vouloir reprendre ou maintenir un projet genere par une ancienne version.
+
+**Action recommandee:** Ecrire un `cortex.manifest.json` dans chaque projet genere avec version Cortex, workflow, provider, modeles, prompts et commandes de verification.
+
+### 14. Release process a renforcer
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Il existe install/update et verification SHA, mais il manque une checklist release visible dans le depot.
+
+**Pourquoi c'est important:** Un outil CLI distribue en binaire doit inspirer confiance, surtout s'il manipule des fichiers et execute des commandes.
+
+**Action recommandee:** Ajouter `RELEASE.md`: tests requis, evals, generation checksums, smoke tests install Linux/macOS/Windows, rollback.
+
+### 15. Tests TUI et UX terminal a completer par scenarios reels
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Les widgets ont des tests headless, mais les flux clavier longs restent probablement difficiles a couvrir.
+
+**Pourquoi c'est important:** La valeur percue de Cortex passe beaucoup par la TUI. Les bugs d'interruption, popup, resume, diff viewer ou input peuvent ruiner l'experience.
+
+**Action recommandee:** Ajouter des scripts de smoke test interactifs ou snapshots de sessions TUI avec sequences clavier.
+
+## Lacunes produit et go-to-market
+
+### 16. Audience cible trop implicite
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/BETA.md`, qui choisit `dev` comme chemin beta recommandé et cadre les autres workflows.
+
+**Constat:** Le PRD liste plusieurs utilisateurs, mais ne choisit pas clairement le premier segment a convaincre.
+
+**Pourquoi c'est important:** Les besoins d'un founder non technique, d'un senior engineer et d'un freelance prospecting sont tres differents.
+
+**Action recommandee:** Choisir un ICP principal pour la beta et adapter README, site, demo et workflows a ce segment.
+
+### 17. Comparaison concurrentielle insuffisante
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Cortex ressemble par certains aspects a Claude Code, Cursor, OpenCode, Aider, Copilot Workspace et Devin-like tools.
+
+**Pourquoi c'est important:** Sans difference claire, l'utilisateur evaluera Cortex comme "un agent de plus".
+
+**Action recommandee:** Ajouter une section de positionnement: multi-agent workflows, local-first, workflows personnalisables, TUI, generation de depot complet.
+
+### 18. Pas de strategie de support et feedback beta
+**Statut:** Terminé
+**Preuve:** Couvert par `.github/ISSUE_TEMPLATE/failed_run.md`, qui structure les retours de runs échoués.
+
+**Constat:** Le projet est en beta, mais il manque un canal structure pour rapporter bugs, partager logs et collecter les cas d'usage.
+
+**Pourquoi c'est important:** Une beta utile doit apprendre vite des echecs reels.
+
+**Action recommandee:** Ajouter templates GitHub Issues: bug run, provider issue, generated project quality, feature request, security report.
+
+### 19. Promesse "software company" potentiellement trop forte
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/BETA.md`, qui recadre la promesse beta et précise les limites du résultat généré.
+
+**Constat:** La metaphore est memorable, mais elle peut creer des attentes de niveau agence complete.
+
+**Pourquoi c'est important:** Si le resultat ressemble a un scaffold avance, la promesse peut sembler excessive.
+
+**Action recommandee:** Recalibrer le wording: "agentic project factory", "multi-agent CLI for project generation", ou garder la formule mais clarifier les limites beta.
+
+## Lacunes techniques transversales
+
+### 20. Tests de securite adversariaux manquants
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Les tests couvrent des cas normaux et certains garde-fous, mais pas assez les attaques composees.
+
+**Pourquoi c'est important:** Les agents lisent du contenu non fiable et peuvent appeler des outils.
+
+**Action recommandee:** Ajouter des tests adversariaux: prompt injection dans README externe, URL qui demande de lire `.env`, agent custom demandant `/etc/passwd`, symlink vers hors sandbox, commande shell deguisee.
+
+### 21. Isolation des outputs utilisateur a preciser
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Le workflow `dev` ecrit dans le repertoire de lancement. Cela peut etre pratique, mais dangereux si l'utilisateur lance Cortex dans un repo existant.
+
+**Pourquoi c'est important:** Le risque d'ecraser ou melanger des fichiers est eleve.
+
+**Action recommandee:** Par defaut, generer dans un sous-dossier nomme, ou exiger confirmation explicite avant ecriture dans un repertoire non vide.
+
+### 22. Gestion des secrets a renforcer
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Cortex gere des API keys, SMTP, OAuth et providers distants.
+
+**Pourquoi c'est important:** Les logs, prompts et outputs ne doivent jamais exposer de secrets.
+
+**Action recommandee:** Centraliser le masquage des secrets, ajouter tests de non-regression, scanner les logs avant ecriture et exclure secrets du contexte agent.
+
+### 23. Controle de concurrence et annulation a tester sous charge
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Le projet utilise tokio, workers paralleles, cancellation tokens et event bus.
+
+**Pourquoi c'est important:** Les bugs de concurrence apparaissent rarement dans les tests simples mais causent des freezes, doublons, pertes d'evenements ou fichiers partiels.
+
+**Action recommandee:** Ajouter tests de stress: interruption pendant tool call, provider lent, worker panique, channel ferme, resume apres cancellation.
+
+### 24. Dependances et supply chain a surveiller
+**Statut:** À faire
+**Preuve:** Non traité dans ce lot.
+
+**Constat:** Le projet depend de crates reseau, AWS, SMTP, TUI, parsing YAML/TOML et update binaire.
+
+**Pourquoi c'est important:** La surface supply chain est large pour un outil qui tourne localement sur les machines developpeur.
+
+**Action recommandee:** Ajouter `cargo audit`, `cargo deny`, verification licenses et dependabot/renovate.
+
+## Prochaines etapes recommandees
+
+1. Definir une matrice d'acceptation des outputs pour le workflow `dev`.
+2. Creer un harness `evals/` avec scenarios reproductibles et scoring.
+3. Rediger un modele de menace couvrant tools, providers, custom workflows, web search, email et updater.
+4. Ajouter un mode de run avec budget: tokens, cout estime, limites et rapport final.
+5. Generer un `cortex.manifest.json` par run pour audit, reprise et debogage.
+6. Choisir le workflow phare de la beta publique et marquer les autres comme experimentaux si necessaire.
+7. Ajouter une validation stricte pour agents/workflows custom.
+8. Durcir l'ecriture dans les repertoires non vides avec confirmation ou sous-dossier par defaut.
+9. Ajouter templates GitHub Issues et guide "How to report a failed run".
+10. Introduire `cargo audit` / `cargo deny` dans la CI.
+
+## Suivi des lots
+
+- 2026-05-18 — Lot docs/process beta terminé: guide beta, guide providers, template failed run, liens README. Lacunes terminées: 4, 5, 10, 16, 18, 19.
