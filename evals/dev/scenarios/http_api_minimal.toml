@@ -1,14 +1,17 @@
 id = "http_api_minimal"
 name = "Minimal HTTP API"
 project_class = "service"
-stack = "http-api"
+stack = "node"
 prompt = "Build a minimal HTTP API with health check and todo CRUD endpoints, includes tests, a README, Dockerfile, and CI. Keep persistence in memory."
 
 required_files = [
   "specs.md",
   "architecture.md",
   "README.md",
-  "Dockerfile"
+  "Dockerfile",
+  "package.json",
+  "src/server.js",
+  "test/server.test.js"
 ]
 
 optional_files = [
@@ -17,9 +20,13 @@ optional_files = [
   ".github/workflows/ci.yml"
 ]
 
-commands = []
+commands = [
+  "npm test"
+]
 
-required_command_binaries = []
+required_command_binaries = [
+  "npm"
+]
 
 acceptance_notes = [
   "The API should expose a health endpoint.",
