@@ -9,8 +9,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 ## Lacunes critiques
 
 ### 1. Absence de criteres de qualite mesurables pour les projets generes
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/QUALITY_GATE.md` et `evals/dev/acceptance_matrix.toml`, qui définissent une matrice d'acceptation humaine et structurée pour les outputs `dev`.
 
 **Constat:** Le produit vise a generer des depots complets et deployables, mais il n'y a pas de definition testable de "complet", "deployable", "acceptable" ou "production-ready" selon les stacks.
 
@@ -29,8 +29,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Formaliser un modele de menace complet et ajouter des tests d'abus: chemins symboliques, URLs malveillantes, prompt injection dans resultats web, workflow custom qui demande des secrets, envoi email accidentel, update compromis.
 
 ### 3. Pas de banc d'evaluation reproductible
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** En cours
+**Preuve:** Partiellement traité par `evals/dev/` et `evals/check_dev_output.sh`, qui ajoutent les premiers scénarios reproductibles et un checker minimal sans provider. Il reste à ajouter le scoring complet et l'exécution de campagnes d'evals.
 
 **Constat:** Le projet a des tests unitaires, mais il manque un eval harness qui lance Cortex sur des prompts representatifs et mesure la qualite des depots produits.
 
@@ -258,8 +258,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 ## Prochaines etapes recommandees
 
-1. Definir une matrice d'acceptation des outputs pour le workflow `dev`.
-2. Creer un harness `evals/` avec scenarios reproductibles et scoring.
+1. Etendre la matrice d'acceptation des outputs pour le workflow `dev` avec des resultats reels de beta.
+2. Completer le harness `evals/` avec scoring, historique de runs et campagnes reproductibles.
 3. Rediger un modele de menace couvrant tools, providers, custom workflows, web search, email et updater.
 4. Ajouter un mode de run avec budget: tokens, cout estime, limites et rapport final.
 5. Generer un `cortex.manifest.json` par run pour audit, reprise et debogage.
@@ -272,3 +272,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 ## Suivi des lots
 
 - 2026-05-18 — Lot docs/process beta terminé: guide beta, guide providers, template failed run, liens README. Lacunes terminées: 4, 5, 10, 19. Lacunes partiellement traitées: 16, 18.
+- 2026-05-18 — Lot quality/evals dev terminé: matrice d'acceptation `dev`, fixtures `evals/dev/`, checker minimal pour outputs générés. Lacunes terminées: 1. Lacunes partiellement traitées: 3.
