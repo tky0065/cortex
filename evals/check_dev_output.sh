@@ -52,6 +52,7 @@ fi
 failures=0
 warnings=0
 scenario_parse_failed=0
+project_symlink_failed=0
 
 pass() {
   echo "PASS $1 $2"
@@ -195,6 +196,7 @@ check_project_symlinks() {
   if [ -n "$matches" ]; then
     echo "$matches" | sed 's/^/  /'
     fail "DEV-SEC-004" "project tree contains symlink"
+    project_symlink_failed=1
     return 1
   fi
   pass "DEV-SEC-004" "project tree contains no symlinks"
@@ -207,6 +209,9 @@ run_scenario_commands() {
     return
   fi
   if [ "$scenario_parse_failed" -ne 0 ]; then
+    return
+  fi
+  if [ "$project_symlink_failed" -ne 0 ]; then
     return
   fi
 
@@ -241,10 +246,6 @@ $binaries
 EOF_BINARIES
 
   if [ "$missing_binary" -ne 0 ]; then
-    return
-  fi
-
-  if ! check_project_symlinks; then
     return
   fi
 
@@ -356,6 +357,7 @@ fi
 check_blocking_markers
 check_secret_patterns
 check_local_paths
+check_project_symlinks || true
 run_scenario_commands
 
 echo "SUMMARY failures=$failures warnings=$warnings"
