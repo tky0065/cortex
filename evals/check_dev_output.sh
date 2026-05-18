@@ -307,9 +307,10 @@ require_file "architecture.md" "DEV-ART-002"
 require_file "README.md" "DEV-DOC-001"
 
 if [ -n "$SCENARIO_FILE" ]; then
-  required_files="$(extract_required_files)"
-  if contains_parse_error "$required_files"; then
-    fail "DEV-RUN-007" "$(printf '%s\n' "$required_files" | grep '__DEV_RUN_007__' | sed 's/__DEV_RUN_007__ //')"
+  required_files_tmp="$(mktemp "${TMPDIR:-/tmp}/cortex-required-files.XXXXXX")"
+  extract_required_files > "$required_files_tmp"
+  if grep -q '__DEV_RUN_007__' "$required_files_tmp"; then
+    fail "DEV-RUN-007" "$(grep '__DEV_RUN_007__' "$required_files_tmp" | sed 's/__DEV_RUN_007__ //')"
     scenario_parse_failed=1
   fi
   while IFS= read -r file; do
@@ -319,9 +320,7 @@ if [ -n "$SCENARIO_FILE" ]; then
         ;;
     esac
     require_file "$file" "DEV-STRUCT-001"
-  done <<EOF_REQUIRED_FILES
-$required_files
-EOF_REQUIRED_FILES
+  done < "$required_files_tmp"
 else
   warn "DEV-STRUCT-001" "no scenario file provided; scenario required files skipped"
 fi
