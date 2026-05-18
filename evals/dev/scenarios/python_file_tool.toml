@@ -1,0 +1,35 @@
+id = "python_file_tool"
+name = "Python File Utility"
+project_class = "cli"
+stack = "python"
+prompt = "Build a Python CLI that renames files in a directory from spaces to underscores, supports dry-run mode, includes tests, and ships with a README. Do not add networking, a database, or a TUI."
+
+required_files = [
+  "specs.md",
+  "architecture.md",
+  "README.md",
+  "main.py"
+]
+
+optional_files = [
+  "TASKS.md",
+  "requirements.txt",
+  "pyproject.toml",
+  "tests/test_main.py",
+  ".github/workflows/ci.yml",
+  "Dockerfile"
+]
+
+commands = [
+  "python3 -m pytest"
+]
+
+required_command_binaries = [
+  "python3"
+]
+
+acceptance_notes = [
+  "Dry-run mode should not rename files.",
+  "The CLI should reject missing directories with a clear error.",
+  "A simple file utility does not require docker-compose.yml."
+]

@@ -1,0 +1,33 @@
+id = "rust_json_cli"
+name = "Rust JSON CLI"
+project_class = "cli"
+stack = "rust"
+prompt = "Build a Rust CLI named jsonlint that validates JSON files, prints line and column errors, includes unit tests, and ships with a README. Do not add networking or a TUI."
+
+required_files = [
+  "specs.md",
+  "architecture.md",
+  "README.md",
+  "Cargo.toml",
+  "src/main.rs"
+]
+
+optional_files = [
+  "TASKS.md",
+  ".github/workflows/ci.yml",
+  "Dockerfile"
+]
+
+commands = [
+  "cargo test"
+]
+
+required_command_binaries = [
+  "cargo"
+]
+
+acceptance_notes = [
+  "The CLI should accept at least one JSON file path.",
+  "Invalid JSON should produce a non-zero exit code.",
+  "A simple CLI does not require docker-compose.yml."
+]

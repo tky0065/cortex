@@ -1,0 +1,137 @@
+# Structured version of docs/QUALITY_GATE.md for the dev eval harness.
+
+[[checks]]
+id = "DEV-ART-001"
+name = "specs document exists"
+severity = "required"
+description = "specs.md exists and describes requirements, acceptance criteria, and scope boundaries."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-ART-002"
+name = "architecture document exists"
+severity = "required"
+description = "architecture.md exists and describes stack, file plan, implementation order, and constraints."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-ART-003"
+name = "task breakdown exists"
+severity = "recommended"
+description = "A task breakdown exists for the generated project."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-STRUCT-001"
+name = "scenario required files exist"
+severity = "required"
+description = "Required scenario files exist and are non-empty."
+applies_to = ["scenario"]
+manual_review = false
+
+[[checks]]
+id = "DEV-STRUCT-002"
+name = "source matches architecture"
+severity = "required"
+description = "Generated source files match the architecture instead of unrelated boilerplate."
+applies_to = ["all"]
+manual_review = true
+
+[[checks]]
+id = "DEV-BUILD-001"
+name = "build command passes"
+severity = "contextual"
+description = "The declared build command succeeds for the chosen stack."
+applies_to = ["scenario"]
+manual_review = false
+
+[[checks]]
+id = "DEV-TEST-001"
+name = "test command passes"
+severity = "contextual"
+description = "The declared test command succeeds for the chosen stack."
+applies_to = ["scenario"]
+manual_review = false
+
+[[checks]]
+id = "DEV-DOC-001"
+name = "readme has run instructions"
+severity = "required"
+description = "README.md explains prerequisites, setup, run command, and test command."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-DOC-002"
+name = "readme documents beta caveats"
+severity = "recommended"
+description = "README documents generated-output caveats and expected manual review."
+applies_to = ["all"]
+manual_review = true
+
+[[checks]]
+id = "DEV-DEPLOY-001"
+name = "dockerfile when required"
+severity = "contextual"
+description = "Dockerfile exists when the project is a service or scenario requires containerization."
+applies_to = ["service"]
+manual_review = false
+
+[[checks]]
+id = "DEV-DEPLOY-002"
+name = "compose only for multi-service"
+severity = "contextual"
+description = "docker-compose.yml exists only when multiple services are needed."
+applies_to = ["service"]
+manual_review = true
+
+[[checks]]
+id = "DEV-CI-001"
+name = "ci runs checks"
+severity = "recommended"
+description = "CI config runs stack-appropriate test and lint commands."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-SEC-001"
+name = "no obvious hardcoded secrets"
+severity = "required"
+description = "Generated files do not contain obvious hardcoded secrets or private keys."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-SEC-002"
+name = "path traversal reviewed"
+severity = "required"
+description = "Generated files do not contain obvious path traversal patterns in user-controlled file operations."
+applies_to = ["all"]
+manual_review = true
+
+[[checks]]
+id = "DEV-SEC-003"
+name = "no local machine paths"
+severity = "required"
+description = "Generated files do not embed local machine paths as runtime defaults."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-MAINT-001"
+name = "no blocking implementation markers"
+severity = "required"
+description = "Generated files do not contain unimplemented stubs, filler text, or unfinished sections."
+applies_to = ["all"]
+manual_review = false
+
+[[checks]]
+id = "DEV-MAINT-002"
+name = "reviewable code shape"
+severity = "recommended"
+description = "Code is small enough to review and avoids unexplained duplication."
+applies_to = ["all"]
+manual_review = true

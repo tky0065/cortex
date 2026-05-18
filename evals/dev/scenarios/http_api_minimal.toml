@@ -1,0 +1,28 @@
+id = "http_api_minimal"
+name = "Minimal HTTP API"
+project_class = "service"
+stack = "http-api"
+prompt = "Build a minimal HTTP API with health check and todo CRUD endpoints, includes tests, a README, Dockerfile, and CI. Keep persistence in memory."
+
+required_files = [
+  "specs.md",
+  "architecture.md",
+  "README.md",
+  "Dockerfile"
+]
+
+optional_files = [
+  "TASKS.md",
+  "docker-compose.yml",
+  ".github/workflows/ci.yml"
+]
+
+commands = []
+
+required_command_binaries = []
+
+acceptance_notes = [
+  "The API should expose a health endpoint.",
+  "The README should document the local run command and test command.",
+  "docker-compose.yml is optional because in-memory persistence does not require a second service."
+]
