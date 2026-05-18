@@ -6,6 +6,12 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 **Status:** Beta. Cortex is ready for early adopters, but workflows, providers, and generated project structure may still evolve before a stable 1.0 release.
 
+### Beta resources
+
+- [Beta guide](docs/BETA.md) — recommended workflow, support stance, limits, and good beta prompts.
+- [Providers guide](docs/PROVIDERS.md) — provider support levels, model expectations, cost/privacy notes, and troubleshooting.
+- [Failed run report](.github/ISSUE_TEMPLATE/failed_run.md) — what to include when a run fails or produces unusable output.
+
 ## What's new in 0.2.3
 
 - **ESC ESC interrupt** — Press <kbd>Esc</kbd> twice within 500 ms to immediately interrupt the running workflow or chat generation without closing the application (inspired by GitHub Copilot). A contextual popup appears with:
@@ -68,29 +74,30 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 1. [Installation](#1-installation)
 2. [Updating](#2-updating)
 3. [Quick Start](#3-quick-start)
-4. [Configuration](#4-configuration)
-5. [Usage Modes](#5-usage-modes)
-   - [REPL (interactive)](#51-repl-interactive)
-   - [One-shot CLI](#52-one-shot-cli)
-   - [Initialize project context](#53-initialize-project-context)
-   - [Resume an interrupted run](#54-resume-an-interrupted-run)
-   - [Execution modes](#55-execution-modes)
-6. [Project Context](#6-project-context)
-7. [Task Tracking](#7-task-tracking)
-8. [Skills](#8-skills)
-9. [Web Search](#9-web-search)
-10. [Workflows](#10-workflows)
-   - [dev](#91-dev--software-development)
-   - [marketing](#92-marketing--content-campaign)
-   - [prospecting](#93-prospecting--freelance-outreach)
-   - [code-review](#94-code-review--code-audit)
-11. [Providers & Models](#11-providers--models)
-12. [Architecture Internals](#12-architecture-internals)
-13. [Security & Sandboxing](#13-security--sandboxing)
-14. [Verbose Logging](#14-verbose-logging)
-15. [Running Tests](#15-running-tests)
-16. [Release Process](#16-release-process)
-17. [Output Structure](#17-output-structure)
+4. [Beta Resources](#4-beta-resources)
+5. [Configuration](#5-configuration)
+6. [Usage Modes](#6-usage-modes)
+   - [REPL (interactive)](#61-repl-interactive)
+   - [One-shot CLI](#62-one-shot-cli)
+   - [Initialize project context](#63-initialize-project-context)
+   - [Resume an interrupted run](#64-resume-an-interrupted-run)
+   - [Execution modes](#65-execution-modes)
+7. [Project Context](#7-project-context)
+8. [Task Tracking](#8-task-tracking)
+9. [Skills](#9-skills)
+10. [Web Search](#10-web-search)
+11. [Workflows](#11-workflows)
+   - [dev](#111-dev--software-development)
+   - [marketing](#112-marketing--content-campaign)
+   - [prospecting](#113-prospecting--freelance-outreach)
+   - [code-review](#114-code-review--code-audit)
+12. [Providers & Models](#12-providers--models)
+13. [Architecture Internals](#13-architecture-internals)
+14. [Security & Sandboxing](#14-security--sandboxing)
+15. [Verbose Logging](#15-verbose-logging)
+16. [Running Tests](#16-running-tests)
+17. [Release Process](#17-release-process)
+18. [Output Structure](#18-output-structure)
 
 ---
 
@@ -189,7 +196,17 @@ where `cortex` was launched.
 
 ---
 
-## 4. Configuration
+## 4. Beta Resources
+
+Cortex is in beta, so start with the `dev` workflow and a small, concrete prompt before trying broad or custom workflows.
+
+- Read the [Beta guide](docs/BETA.md) for workflow support levels, current limits, and prompt guidance.
+- Read the [Providers guide](docs/PROVIDERS.md) before switching models or debugging provider-specific failures.
+- Use the [failed run issue template](.github/ISSUE_TEMPLATE/failed_run.md) when a workflow fails, stalls, or produces unusable output.
+
+---
+
+## 5. Configuration
 
 Cortex reads `~/.cortex/config.toml` at startup. If the file does not exist it is **created automatically** with sensible defaults.
 
@@ -302,9 +319,9 @@ export WEB_SEARCH_API_KEY="BSA..."
 
 ---
 
-## 5. Usage Modes
+## 6. Usage Modes
 
-### 5.1 REPL (interactive)
+### 6.1 REPL (interactive)
 
 ```bash
 cortex
@@ -365,7 +382,7 @@ The workflow name can be omitted (defaults to `dev`):
 /start "build a chat app"
 ```
 
-### 5.2 One-shot CLI
+### 6.2 One-shot CLI
 
 ```bash
 # Fully autonomous (no interactive pauses)
@@ -387,7 +404,7 @@ cortex init
 cortex -v start "build a todo app" --auto
 ```
 
-### 5.3 Initialize project context
+### 6.3 Initialize project context
 
 ```bash
 # CLI
@@ -399,7 +416,7 @@ cortex init
 
 `init` scans the current project, detects stack and commands, and generates or updates `AGENTS.md`. If `AGENTS.md` already exists, Cortex preserves manual content and refreshes only the Cortex-managed section between stable markers. Future agents automatically receive this file as project context before planning or changing code.
 
-### 5.4 Resume an interrupted run
+### 6.4 Resume an interrupted run
 
 ```bash
 # CLI
@@ -411,7 +428,7 @@ cortex resume ./demo
 
 Cortex re-runs the dev workflow with a prompt that asks the agents to continue from the existing files in the directory. Best used when a run was aborted mid-way.
 
-### 5.5 Execution modes
+### 6.5 Execution modes
 
 Press **Shift+Tab** in the TUI to cycle the execution mode. The active mode is shown in the status bar at the bottom of the screen.
 
@@ -446,7 +463,7 @@ You can also set or inspect the mode from the REPL:
 
 ---
 
-## 6. Project Context
+## 7. Project Context
 
 `cortex init` prepares an existing or new project for future Cortex changes.
 
@@ -470,7 +487,7 @@ Inside the TUI input bar, type `@` to autocomplete project files and folders. Me
 
 ---
 
-## 7. Task Tracking
+## 8. Task Tracking
 
 Cortex displays a live **Tasks** panel in the TUI that shows the progress of every phase in the current workflow.
 
@@ -502,7 +519,7 @@ The panel is visible during any active workflow and clears automatically when th
 
 ---
 
-## 8. Skills
+## 9. Skills
 
 
 Cortex skills are reusable local instructions that can be installed globally or per project and injected into relevant agent prompts.
@@ -522,7 +539,7 @@ In free-form prompts and workflow prompts, type `$` to autocomplete installed sk
 
 ---
 
-## 9. Web Search
+## 10. Web Search
 
 When enabled, every agent automatically enriches its prompt with live web search results before calling the LLM. This lets agents use up-to-date information: latest library versions, recent CVEs, current pricing, new best practices, etc.
 
@@ -577,9 +594,9 @@ If web search is enabled but no API key is set (or the key is empty), the agent 
 
 ---
 
-## 10. Workflows
+## 11. Workflows
 
-### 9.1 `dev` — Software Development
+### 11.1 `dev` — Software Development
 
 The flagship workflow. Simulates a complete dev team from idea to deployable repo.
 
@@ -623,7 +640,7 @@ Output: ./
 
 ---
 
-### 9.2 `marketing` — Content Campaign
+### 11.2 `marketing` — Content Campaign
 
 Produces a full marketing campaign from a product/service description.
 
@@ -649,7 +666,7 @@ Produces a full marketing campaign from a product/service description.
 
 ---
 
-### 9.3 `prospecting` — Freelance Outreach
+### 11.3 `prospecting` — Freelance Outreach
 
 Automates the identification and outreach process for freelance prospects.
 
@@ -680,7 +697,7 @@ rate       = "€600/day"
 
 ---
 
-### 9.4 `code-review` — Code Audit
+### 11.4 `code-review` — Code Audit
 
 Runs a multi-angle audit on an existing codebase.
 
@@ -711,7 +728,7 @@ Files larger than 8 KB are automatically truncated to protect context windows.
 
 ---
 
-## 11. Providers & Models
+## 12. Providers & Models
 
 ### Role → Model mapping
 
@@ -747,7 +764,7 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 
 ---
 
-## 12. Architecture Internals
+## 13. Architecture Internals
 
 ```
 main.rs
@@ -818,7 +835,7 @@ The REPL's `/continue` sends `()` to `resume_tx`, unblocking the channel receive
 
 ---
 
-## 13. Security & Sandboxing
+## 14. Security & Sandboxing
 
 ### Filesystem sandbox
 All file I/O is mediated through `FileSystem` (`src/tools/filesystem.rs`).
@@ -841,7 +858,7 @@ API keys can be read from environment variables or stored locally in `~/.cortex/
 
 ---
 
-## 14. Verbose Logging
+## 15. Verbose Logging
 
 Add `-v` to any command to write full agent I/O to `cortex.log` in the working directory:
 
@@ -854,7 +871,7 @@ The log file is appended (not overwritten) and each session is marked with a Uni
 
 ---
 
-## 15. Running Tests
+## 16. Running Tests
 
 ```bash
 cargo test                          # all tests
@@ -880,7 +897,7 @@ Test coverage areas:
 
 ---
 
-## 16. Release Process
+## 17. Release Process
 
 Cortex beta releases are published through GitHub Releases.
 
@@ -906,7 +923,7 @@ The `.github/workflows/release.yml` workflow builds macOS, Linux, and Windows bi
 
 ---
 
-## 17. Output Structure
+## 18. Output Structure
 
 The `dev` workflow writes generated project files directly into the directory where
 `cortex` was run. Other workflows keep their generated artifacts under
