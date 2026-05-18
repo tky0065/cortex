@@ -237,6 +237,10 @@ EOF_BINARIES
       fail "DEV-RUN-006" "unsafe or undeclared scenario command: $command_line"
       continue
     fi
+    if ! is_allowed_scenario_command "$command_line"; then
+      fail "DEV-RUN-009" "scenario command is not allowed: $command_line"
+      continue
+    fi
     echo "RUN $command_line"
     if run_validated_command "$command_line"; then
       pass "DEV-BUILD-001" "command passed: $command_line"
@@ -280,6 +284,18 @@ EOF_BINARIES
   [ "$found" -eq 1 ]
 }
 
+is_allowed_scenario_command() {
+  command_line="$1"
+  case "$command_line" in
+    "cargo test" | "python3 -m pytest" | "npm test")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 run_validated_command() {
   command_line="$1"
   set -- $command_line
@@ -298,7 +314,7 @@ if [ -n "$SCENARIO_FILE" ]; then
   fi
   while IFS= read -r file; do
     case "$file" in
-      *__DEV_RUN_007__* | "")
+      *__DEV_RUN_007__*)
         continue
         ;;
     esac
