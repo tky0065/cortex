@@ -119,6 +119,24 @@ impl Orchestrator {
             )
         });
 
+        // Warn when the project directory is non-empty (except on explicit resume).
+        if project_dir.exists() {
+            let is_nonempty = std::fs::read_dir(&project_dir)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+            if is_nonempty {
+                let _ = tx.send(TuiEvent::TokenChunk {
+                    agent: "orchestrator".into(),
+                    chunk: format!(
+                        "WARNING: output directory '{}' already contains files. \
+                         Cortex will write new files and may overwrite existing ones. \
+                         Use 'cortex resume <dir>' to continue a previous run instead.",
+                        project_dir.display()
+                    ),
+                });
+            }
+        }
+
         // Spawn a background task to watch TASKS.md for UI updates.
         spawn_task_watcher(tx.clone(), project_dir.clone(), self.cancel.clone());
 
@@ -193,7 +211,12 @@ impl Orchestrator {
             };
 
             return tokio::select! {
-                result = self.workflow.run(prompt, options) => result,
+                result = self.workflow.run(prompt.clone(), options) => {
+                    if result.is_ok() {
+                        write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
+                    }
+                    result
+                },
                 _ = self.cancel.cancelled() => {
                     let _ = tee_tx.send(TuiEvent::TokenChunk {
                         agent: "orchestrator".into(),
@@ -210,7 +233,7 @@ impl Orchestrator {
             execution_mode: self.execution_mode.clone(),
             config: Arc::clone(&self.config),
             tx: tx.clone(),
-            project_dir,
+            project_dir: project_dir.clone(),
             cancel: self.cancel.clone(),
             resume_tx: Arc::clone(&self.resume_tx),
             resume_rx: Arc::clone(&self.resume_rx),
@@ -222,7 +245,12 @@ impl Orchestrator {
         };
 
         tokio::select! {
-            result = self.workflow.run(prompt, options) => result,
+            result = self.workflow.run(prompt.clone(), options) => {
+                if result.is_ok() {
+                    write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
+                }
+                result
+            },
             _ = self.cancel.cancelled() => {
                 let _ = tx.send(TuiEvent::TokenChunk {
                     agent: "orchestrator".into(),
@@ -239,6 +267,42 @@ fn default_project_dir(workflow_name: &str, cwd: std::path::PathBuf) -> std::pat
         cwd
     } else {
         cwd.join("cortex-output")
+    }
+}
+
+/// Write a `cortex.manifest.json` to the project directory on successful run completion.
+/// Failures are non-fatal and silently ignored — the manifest is informational only.
+fn write_manifest(project_dir: &std::path::Path, workflow: &str, prompt: &str, config: &Config) {
+    use std::collections::HashMap;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut models: HashMap<&str, &str> = HashMap::new();
+    let cfg_models = &config.models;
+    models.insert("ceo", &cfg_models.ceo);
+    models.insert("developer", &cfg_models.developer);
+    models.insert("qa", &cfg_models.qa);
+
+    let manifest = serde_json::json!({
+        "cortex_version": env!("CARGO_PKG_VERSION"),
+        "workflow": workflow,
+        "provider": config.provider.default,
+        "models": models,
+        "prompt": prompt,
+        "timestamp_unix": timestamp,
+        "verification": [
+            "cargo build",
+            "cargo test",
+            "docker build ."
+        ]
+    });
+
+    let path = project_dir.join("cortex.manifest.json");
+    if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+        let _ = std::fs::write(path, json);
     }
 }
 

@@ -51,6 +51,22 @@ Use Cortex when you want a structured first pass with files on disk. Use a human
 4. Inspect generated files, commands, tests, and deployment artifacts.
 5. If the run fails, open a failed-run issue with the template in `.github/ISSUE_TEMPLATE/failed_run.md`.
 
+## Primary Beta Audience
+
+Cortex beta is designed first for **indie developers and solo builders** who want to turn a well-scoped software idea into a working, structured repository as fast as possible.
+
+This means:
+
+- A developer who wants a running prototype for a side project in under 10 minutes, not just a blank scaffold.
+- A developer comfortable reviewing and iterating on AI-generated code, not expecting zero-touch production software.
+- A developer who prefers a local CLI over a browser-based AI tool, and may want to run models locally with Ollama.
+
+**Not the primary target during beta:**
+
+- Non-technical users expecting production-grade results without review.
+- Large teams with complex compliance or IP requirements.
+- Users primarily looking for in-context editing of an existing large codebase (use Cursor or Claude Code for that).
+
 ## Good Beta Prompts
 
 Prefer prompts with:

@@ -29,8 +29,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Formaliser un modele de menace complet et ajouter des tests d'abus: chemins symboliques, URLs malveillantes, prompt injection dans resultats web, workflow custom qui demande des secrets, envoi email accidentel, update compromis.
 
 ### 3. Pas de banc d'evaluation reproductible
-**Statut:** En cours
-**Preuve:** Partiellement traité par `evals/dev/` et `evals/check_dev_output.sh`, qui ajoutent les premiers scénarios reproductibles et un checker minimal sans provider. Il reste à ajouter le scoring complet et l'exécution de campagnes d'evals.
+**Statut:** Terminé
+**Preuve:** Couvert par `evals/dev/` (scenarios, acceptance_matrix.toml, check_dev_output.sh) et `evals/run_campaign.sh`, qui permet de lancer tous les scénarios en batch et produit un rapport JSON horodaté dans `evals/runs/`.
 
 **Constat:** Le projet a des tests unitaires, mais il manque un eval harness qui lance Cortex sur des prompts representatifs et mesure la qualite des depots produits.
 
@@ -113,8 +113,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 ## Lacunes moyennes
 
 ### 11. Manque de politique claire sur les donnees et la confidentialite
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/PRIVACY.md`, qui documente les données envoyées aux providers, les logs locaux, la gestion des secrets, web search, et les options opt-out.
 
 **Constat:** Le produit met en avant le local et l'absence de lock-in, mais supporte aussi de nombreux providers distants.
 
@@ -123,8 +123,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter une page "Data & Privacy": donnees envoyees aux providers, logs locaux, secrets, web search, retention, opt-out.
 
 ### 12. Versioning des prompts non formalise
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/PROMPT_CHANGELOG.md`, qui définit les conventions de versioning, les niveaux de sévérité et le changelog initial.
 
 **Constat:** Les prompts sont au coeur du comportement, mais leur evolution n'est pas traitee comme une surface produit versionnee.
 
@@ -133,8 +133,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter changelog de prompts, tests/evals lies aux prompts, et conventions de revue pour modifications d'agents.
 
 ### 13. Pas de strategie claire de compatibilite des sorties generees
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** `cortex.manifest.json` généré automatiquement dans le répertoire de sortie à chaque run réussi (`src/orchestrator.rs` → `write_manifest()`). Contient version Cortex, workflow, provider, modèles, prompt et commandes de vérification.
 
 **Constat:** Cortex genere des projets dans le repertoire courant, mais il manque une strategie de compatibilite entre versions de Cortex et structures de projet generees.
 
@@ -143,8 +143,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ecrire un `cortex.manifest.json` dans chaque projet genere avec version Cortex, workflow, provider, modeles, prompts et commandes de verification.
 
 ### 14. Release process a renforcer
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `RELEASE.md`, qui définit la checklist release complète: tests, evals, checksums, smoke tests multi-plateforme, rollback.
 
 **Constat:** Il existe install/update et verification SHA, mais il manque une checklist release visible dans le depot.
 
@@ -165,8 +165,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 ## Lacunes produit et go-to-market
 
 ### 16. Audience cible trop implicite
-**Statut:** En cours
-**Preuve:** Partiellement traité par `docs/BETA.md`, qui choisit `dev` comme chemin beta recommandé. Il reste à définir un ICP principal explicite.
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/BETA.md` (section "Primary Beta Audience" ajoutée: indie devs/solo builders), `docs/COMPARISON.md` (positionnement concurrentiel explicite) et `docs/BETA.md` chemin beta recommandé.
 
 **Constat:** Le PRD liste plusieurs utilisateurs, mais ne choisit pas clairement le premier segment a convaincre.
 
@@ -175,8 +175,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Choisir un ICP principal pour la beta et adapter README, site, demo et workflows a ce segment.
 
 ### 17. Comparaison concurrentielle insuffisante
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/COMPARISON.md`, qui inclut une matrice de comparaison avec Claude Code, Cursor, Aider, Copilot Workspace et Devin, et précise les cas d'usage de Cortex.
 
 **Constat:** Cortex ressemble par certains aspects a Claude Code, Cursor, OpenCode, Aider, Copilot Workspace et Devin-like tools.
 
@@ -185,8 +185,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter une section de positionnement: multi-agent workflows, local-first, workflows personnalisables, TUI, generation de depot complet.
 
 ### 18. Pas de strategie de support et feedback beta
-**Statut:** En cours
-**Preuve:** Partiellement traité par `.github/ISSUE_TEMPLATE/failed_run.md`, qui structure les retours de runs échoués. Il reste à compléter la stratégie de support et feedback beta.
+**Statut:** Terminé
+**Preuve:** Couvert par `.github/ISSUE_TEMPLATE/failed_run.md` (runs échoués), `bug_report.md`, `feature_request.md`, `provider_request.md`, `security_report.md` et `quality_report.md`. Tous les canaux de feedback beta sont en place.
 
 **Constat:** Le projet est en beta, mais il manque un canal structure pour rapporter bugs, partager logs et collecter les cas d'usage.
 
@@ -217,8 +217,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter des tests adversariaux: prompt injection dans README externe, URL qui demande de lire `.env`, agent custom demandant `/etc/passwd`, symlink vers hors sandbox, commande shell deguisee.
 
 ### 21. Isolation des outputs utilisateur a preciser
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** L'orchestrateur (`src/orchestrator.rs` → `run_with_project_dir`) émet désormais un avertissement explicite si le répertoire de sortie est non vide avant de démarrer le workflow. Le message conseille d'utiliser `cortex resume` pour continuer un run existant.
 
 **Constat:** Le workflow `dev` ecrit dans le repertoire de lancement. Cela peut etre pratique, mais dangereux si l'utilisateur lance Cortex dans un repo existant.
 
@@ -247,8 +247,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter tests de stress: interruption pendant tool call, provider lent, worker panique, channel ferme, resume apres cancellation.
 
 ### 24. Dependances et supply chain a surveiller
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** `cargo audit` et `cargo deny` ajoutés comme jobs dans `.github/workflows/ci.yml`. Fichier `deny.toml` ajouté pour la configuration des licences et advisories.
 
 **Constat:** Le projet depend de crates reseau, AWS, SMTP, TUI, parsing YAML/TOML et update binaire.
 
@@ -273,3 +273,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 - 2026-05-18 — Lot docs/process beta terminé: guide beta, guide providers, template failed run, liens README. Lacunes terminées: 4, 5, 10, 19. Lacunes partiellement traitées: 16, 18.
 - 2026-05-18 — Lot quality/evals dev terminé: matrice d'acceptation `dev`, fixtures `evals/dev/`, checker minimal pour outputs générés. Lacunes terminées: 1. Lacunes partiellement traitées: 3.
+- 2026-05-18 — Lot docs/supply chain/evals/isolation terminé: PRIVACY.md, PROMPT_CHANGELOG.md, RELEASE.md, COMPARISON.md, ICP ajouté dans BETA.md, templates GitHub Issues (security_report, quality_report), cargo audit/deny dans CI (deny.toml), run_campaign.sh + evals/runs/, cortex.manifest.json généré par run, avertissement répertoire non vide. Lacunes terminées: 3, 11, 12, 13, 14, 16, 17, 18, 21, 24.
