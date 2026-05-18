@@ -21,6 +21,8 @@ if [ ! -d "$PROJECT_DIR" ]; then
   exit 1
 fi
 
+PROJECT_ROOT="$(CDPATH= cd "$PROJECT_DIR" && pwd -P)"
+
 if [ -n "$SCENARIO_FILE" ] && [ ! -f "$SCENARIO_FILE" ]; then
   echo "FAIL DEV-RUN-002 scenario file does not exist: $SCENARIO_FILE" >&2
   exit 1
@@ -42,13 +44,14 @@ if [ -n "$SCENARIO_FILE" ]; then
   fi
 fi
 
-if [ -n "$SCENARIO_FILE" ] && ! grep -q '^required_files = \[' "$SCENARIO_FILE"; then
+if [ -n "$SCENARIO_FILE" ] && ! grep -Eq '^[[:space:]]*required_files[[:space:]]*=[[:space:]]*\[' "$SCENARIO_FILE"; then
   echo "FAIL DEV-RUN-004 scenario file is missing required_files array: $SCENARIO_FILE" >&2
   exit 1
 fi
 
 failures=0
 warnings=0
+scenario_parse_failed=0
 
 pass() {
   echo "PASS $1 $2"
@@ -67,7 +70,12 @@ warn() {
 require_file() {
   file="$1"
   check_id="$2"
-  path="$PROJECT_DIR/$file"
+  if ! validate_required_file_entry "$file"; then
+    fail "$check_id" "invalid required file path: $file"
+    return
+  fi
+
+  path="$PROJECT_ROOT/$file"
   if [ -s "$path" ]; then
     pass "$check_id" "$file exists"
   else
@@ -75,18 +83,51 @@ require_file() {
   fi
 }
 
+validate_required_file_entry() {
+  file="$1"
+  if [ -z "$file" ]; then
+    return 1
+  fi
+  case "$file" in
+    /* | ../* | */../* | */.. | ..)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 extract_toml_array() {
   key="$1"
   file="$2"
   awk -v key="$key" '
-    $0 ~ "^" key " = \\[" { active = 1; next }
-    active && $0 ~ "\\]" { active = 0; next }
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=[[:space:]]*\\[" { active = 1; next }
     active {
-      gsub(/^[[:space:]]+/, "", $0)
-      gsub(/[",]/, "", $0)
-      if (length($0) > 0) print $0
+      line = $0
+      gsub(/^[[:space:]]+/, "", line)
+      gsub(/[[:space:]]+$/, "", line)
+      if (line == "]") {
+        active = 0
+        next
+      }
+      if (line == "") {
+        next
+      }
+      if (line !~ /^"[^"]*",?$/) {
+        print "__DEV_RUN_007__ " key " malformed TOML array item on line " NR
+        next
+      }
+      sub(/^"/, "", line)
+      sub(/",?$/, "", line)
+      print line
     }
   ' "$file"
+}
+
+contains_parse_error() {
+  case "$1" in
+    *"__DEV_RUN_007__"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 extract_required_files() {
@@ -150,40 +191,99 @@ run_scenario_commands() {
     warn "DEV-BUILD-001" "no scenario file provided; stack commands skipped"
     return
   fi
+  if [ "$scenario_parse_failed" -ne 0 ]; then
+    return
+  fi
 
   commands="$(extract_commands)"
   binaries="$(extract_required_command_binaries)"
+  if contains_parse_error "$commands"; then
+    fail "DEV-RUN-007" "$(printf '%s\n' "$commands" | grep '__DEV_RUN_007__' | sed 's/__DEV_RUN_007__ //')"
+    return
+  fi
+  if contains_parse_error "$binaries"; then
+    fail "DEV-RUN-007" "$(printf '%s\n' "$binaries" | grep '__DEV_RUN_007__' | sed 's/__DEV_RUN_007__ //')"
+    return
+  fi
   if [ -n "$commands" ] && [ -z "$binaries" ]; then
     fail "DEV-RUN-006" "scenario commands require required_command_binaries"
     return
   fi
 
   missing_binary=0
-  for binary in $binaries; do
+  while IFS= read -r binary; do
+    if [ -z "$binary" ]; then
+      continue
+    fi
     if command -v "$binary" >/dev/null 2>&1; then
       pass "DEV-RUN-003" "required command binary available: $binary"
     else
       warn "DEV-RUN-003" "required command binary unavailable; commands skipped: $binary"
       missing_binary=1
     fi
-  done
+  done <<EOF_BINARIES
+$binaries
+EOF_BINARIES
 
   if [ "$missing_binary" -ne 0 ]; then
     return
   fi
 
-  for command_line in $(printf '%s\n' "$commands" | sed 's/ /__SPACE__/g'); do
-    command_line="$(printf '%s' "$command_line" | sed 's/__SPACE__/ /g')"
+  while IFS= read -r command_line; do
     if [ -z "$command_line" ]; then
       continue
     fi
+    if ! validate_scenario_command "$command_line" "$binaries"; then
+      fail "DEV-RUN-006" "unsafe or undeclared scenario command: $command_line"
+      continue
+    fi
     echo "RUN $command_line"
-    if (cd "$PROJECT_DIR" && sh -c "$command_line"); then
+    if run_validated_command "$command_line"; then
       pass "DEV-BUILD-001" "command passed: $command_line"
     else
       fail "DEV-BUILD-001" "command failed: $command_line"
     fi
-  done
+  done <<EOF_COMMANDS
+$commands
+EOF_COMMANDS
+}
+
+validate_scenario_command() {
+  command_line="$1"
+  binaries="$2"
+  case "$command_line" in
+    *';'* | *'|'* | *'&'* | *'<'* | *'>'* | *'`'* | *'$'* | *'('* | *')'* | *'{'* | *'}'* | *'['* | *']'* | *'*'* | *'?'* | *'!'* | *\\*)
+      return 1
+      ;;
+  esac
+  tab="$(printf '\t')"
+  newline='
+'
+  case "$command_line" in
+    *"$tab"* | *"$newline"*)
+      return 1
+      ;;
+  esac
+  set -- $command_line
+  if [ "$#" -eq 0 ]; then
+    return 1
+  fi
+  first_word="$1"
+  found=0
+  while IFS= read -r binary; do
+    if [ "$first_word" = "$binary" ]; then
+      found=1
+    fi
+  done <<EOF_BINARIES
+$binaries
+EOF_BINARIES
+  [ "$found" -eq 1 ]
+}
+
+run_validated_command() {
+  command_line="$1"
+  set -- $command_line
+  (cd "$PROJECT_ROOT" && "$@")
 }
 
 require_file "specs.md" "DEV-ART-001"
@@ -191,9 +291,21 @@ require_file "architecture.md" "DEV-ART-002"
 require_file "README.md" "DEV-DOC-001"
 
 if [ -n "$SCENARIO_FILE" ]; then
-  for file in $(extract_required_files); do
+  required_files="$(extract_required_files)"
+  if contains_parse_error "$required_files"; then
+    fail "DEV-RUN-007" "$(printf '%s\n' "$required_files" | grep '__DEV_RUN_007__' | sed 's/__DEV_RUN_007__ //')"
+    scenario_parse_failed=1
+  fi
+  while IFS= read -r file; do
+    case "$file" in
+      *__DEV_RUN_007__* | "")
+        continue
+        ;;
+    esac
     require_file "$file" "DEV-STRUCT-001"
-  done
+  done <<EOF_REQUIRED_FILES
+$required_files
+EOF_REQUIRED_FILES
 else
   warn "DEV-STRUCT-001" "no scenario file provided; scenario required files skipped"
 fi
