@@ -7,6 +7,9 @@ usage() {
 
 PROJECT_DIR="${1:-}"
 SCENARIO_FILE="${2:-}"
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd -P)"
+REPO_ROOT="$(CDPATH= cd "$SCRIPT_DIR/.." && pwd -P)"
+SCENARIOS_DIR="$REPO_ROOT/evals/dev/scenarios"
 
 if [ -z "$PROJECT_DIR" ]; then
   usage
@@ -21,6 +24,22 @@ fi
 if [ -n "$SCENARIO_FILE" ] && [ ! -f "$SCENARIO_FILE" ]; then
   echo "FAIL DEV-RUN-002 scenario file does not exist: $SCENARIO_FILE" >&2
   exit 1
+fi
+
+if [ -n "$SCENARIO_FILE" ]; then
+  scenario_dir="$(CDPATH= cd "$(dirname "$SCENARIO_FILE")" && pwd -P)"
+  scenario_name="$(basename "$SCENARIO_FILE")"
+  case "$scenario_name" in
+    *.toml) ;;
+    *)
+      echo "FAIL DEV-RUN-005 scenario file must be a repository-owned .toml fixture: $SCENARIO_FILE" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$scenario_dir" != "$SCENARIOS_DIR" ] || [ -L "$SCENARIO_FILE" ]; then
+    echo "FAIL DEV-RUN-005 scenario file must be under evals/dev/scenarios/: $SCENARIO_FILE" >&2
+    exit 1
+  fi
 fi
 
 if [ -n "$SCENARIO_FILE" ] && ! grep -q '^required_files = \[' "$SCENARIO_FILE"; then
@@ -132,8 +151,15 @@ run_scenario_commands() {
     return
   fi
 
+  commands="$(extract_commands)"
+  binaries="$(extract_required_command_binaries)"
+  if [ -n "$commands" ] && [ -z "$binaries" ]; then
+    fail "DEV-RUN-006" "scenario commands require required_command_binaries"
+    return
+  fi
+
   missing_binary=0
-  for binary in $(extract_required_command_binaries); do
+  for binary in $binaries; do
     if command -v "$binary" >/dev/null 2>&1; then
       pass "DEV-RUN-003" "required command binary available: $binary"
     else
@@ -146,7 +172,7 @@ run_scenario_commands() {
     return
   fi
 
-  for command_line in $(extract_commands | sed 's/ /__SPACE__/g'); do
+  for command_line in $(printf '%s\n' "$commands" | sed 's/ /__SPACE__/g'); do
     command_line="$(printf '%s' "$command_line" | sed 's/__SPACE__/ /g')"
     if [ -z "$command_line" ]; then
       continue
