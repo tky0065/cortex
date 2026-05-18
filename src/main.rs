@@ -10,6 +10,7 @@ mod orchestrator;
 mod project_context;
 mod providers;
 mod repl;
+mod secrets;
 mod skills;
 mod tools;
 mod tui;
