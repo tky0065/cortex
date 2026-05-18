@@ -76,6 +76,10 @@ require_file() {
   fi
 
   path="$PROJECT_ROOT/$file"
+  if [ -L "$path" ]; then
+    fail "$check_id" "$file is a symlink"
+    return
+  fi
   if [ -s "$path" ]; then
     pass "$check_id" "$file exists"
   else
@@ -150,7 +154,7 @@ extract_required_command_binaries() {
 
 grep_scan() {
   regex="$1"
-  find "$PROJECT_DIR" \
+  find "$PROJECT_ROOT" \
     -type d \( -name .git -o -name target -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune \
     -o -type f -exec grep -InE "$regex" {} + 2>/dev/null || true
 }
@@ -229,6 +233,14 @@ EOF_BINARIES
     return
   fi
 
+  run_project_root="$(mktemp -d "${TMPDIR:-/tmp}/cortex-eval-run.XXXXXX")"
+  if cp -R "$PROJECT_ROOT/." "$run_project_root"; then
+    echo "INFO DEV-RUN-008 scenario commands use temp copy: $run_project_root"
+  else
+    fail "DEV-RUN-008" "failed to copy project for scenario commands"
+    return
+  fi
+
   while IFS= read -r command_line; do
     if [ -z "$command_line" ]; then
       continue
@@ -242,7 +254,7 @@ EOF_BINARIES
       continue
     fi
     echo "RUN $command_line"
-    if run_validated_command "$command_line"; then
+    if run_validated_command "$command_line" "$run_project_root"; then
       pass "DEV-BUILD-001" "command passed: $command_line"
     else
       fail "DEV-BUILD-001" "command failed: $command_line"
@@ -298,8 +310,9 @@ is_allowed_scenario_command() {
 
 run_validated_command() {
   command_line="$1"
+  run_dir="$2"
   set -- $command_line
-  (cd "$PROJECT_ROOT" && "$@")
+  (cd "$run_dir" && "$@")
 }
 
 require_file "specs.md" "DEV-ART-001"
