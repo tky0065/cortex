@@ -129,21 +129,25 @@ pub trait Workflow: Send + Sync {
 }
 
 pub fn get_workflow(name: &str) -> Result<Box<dyn Workflow>> {
+    let project_root = std::env::current_dir().ok();
+    get_workflow_with_project_root(name, project_root.as_deref())
+}
+
+fn get_workflow_with_project_root(
+    name: &str,
+    project_root: Option<&std::path::Path>,
+) -> Result<Box<dyn Workflow>> {
     match name {
         "dev" => Ok(Box::new(dev::DevWorkflow)),
         "marketing" => Ok(Box::new(marketing::MarketingWorkflow)),
         "prospecting" => Ok(Box::new(prospecting::ProspectingWorkflow)),
         "code-review" => Ok(Box::new(code_review::CodeReviewWorkflow)),
         custom_name => {
-            let project_root = std::env::current_dir().ok();
-            match crate::agent_loader::AgentLoader::load_workflow(
-                custom_name,
-                project_root.as_deref(),
-            ) {
+            match crate::agent_loader::AgentLoader::load_workflow(custom_name, project_root) {
                 Ok(Some(def)) => {
                     let report = crate::custom_validation::validate_named_workflow(
                         custom_name,
-                        project_root.as_deref(),
+                        project_root,
                     );
                     if report.has_errors() {
                         anyhow::bail!("{}", report.format_human());
@@ -152,7 +156,7 @@ pub fn get_workflow(name: &str) -> Result<Box<dyn Workflow>> {
                 }
                 Ok(None) => {
                     let custom_names =
-                        crate::agent_loader::AgentLoader::list_workflows(project_root.as_deref())
+                        crate::agent_loader::AgentLoader::list_workflows(project_root)
                             .into_iter()
                             .map(|w| w.name)
                             .collect::<Vec<_>>()
@@ -280,24 +284,6 @@ mod tests {
 
     static TEST_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    struct CwdGuard {
-        previous: PathBuf,
-    }
-
-    impl CwdGuard {
-        fn enter(path: impl Into<PathBuf>) -> Self {
-            let previous = std::env::current_dir().expect("read current dir");
-            std::env::set_current_dir(path.into()).expect("set current dir");
-            Self { previous }
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.previous).expect("restore current dir");
-        }
-    }
-
     fn make_project_root(test_name: &str) -> PathBuf {
         let nonce = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
@@ -336,8 +322,7 @@ mod tests {
         )
         .expect("write workflow file");
 
-        let _cwd = CwdGuard::enter(&root);
-        let err = match get_workflow("outreach") {
+        let err = match get_workflow_with_project_root("outreach", Some(&root)) {
             Ok(_) => panic!("custom workflow with missing agent should fail"),
             Err(err) => err.to_string(),
         };
