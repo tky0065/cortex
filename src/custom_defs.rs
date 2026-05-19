@@ -34,6 +34,16 @@ pub fn prompt_body(raw: &'static str) -> &'static str {
     }
 }
 
+pub fn canonical_tool_name(tool: &str) -> Option<&'static str> {
+    match tool.trim().to_ascii_lowercase().as_str() {
+        "filesystem" | "read" | "write" | "edit" | "glob" | "grep" => Some("filesystem"),
+        "terminal" | "bash" => Some("terminal"),
+        "web_search" | "websearch" | "webfetch" | "web_fetch" => Some("web_search"),
+        "email" => Some("email"),
+        _ => None,
+    }
+}
+
 fn split_frontmatter(content: &str) -> Result<(&str, &str)> {
     let content = content.trim_start();
     if !content.starts_with("---") {
@@ -103,9 +113,23 @@ pub fn parse_agent_def(content: &str) -> Result<CustomAgentDef> {
         name: fm.name,
         description: fm.description,
         model: fm.model,
-        tools: fm.tools,
+        tools: canonicalize_tools(fm.tools),
         system_prompt: body.to_string(),
     })
+}
+
+fn canonicalize_tools(tools: Vec<String>) -> Vec<String> {
+    tools
+        .into_iter()
+        .filter_map(|tool| {
+            let trimmed = tool.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(canonical_tool_name(trimmed).unwrap_or(trimmed).to_string())
+            }
+        })
+        .collect()
 }
 
 pub fn parse_workflow_def(content: &str) -> Result<CustomWorkflowDef> {
@@ -142,6 +166,17 @@ mod tests {
         assert_eq!(def.model, "ollama/qwen2.5:32b");
         assert_eq!(def.tools, vec!["filesystem"]);
         assert!(def.system_prompt.contains("designer"));
+    }
+
+    #[test]
+    fn parse_agent_def_canonicalizes_tool_aliases() {
+        let content = "---\nname: ops\ndescription: Operations agent\nmodel: ollama/qwen2.5:32b\ntools: [Read, Bash, WebSearch, email]\n---\nYou are an ops agent.\n";
+        let def = parse_agent_def(content).unwrap();
+
+        assert_eq!(
+            def.tools,
+            vec!["filesystem", "terminal", "web_search", "email"]
+        );
     }
 
     #[test]

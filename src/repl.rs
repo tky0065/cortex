@@ -171,6 +171,7 @@ pub async fn dispatch(
                 "  /agent <name> \"<directive>\"         — inject a directive to a running agent",
                 "  /workflow list                       — list built-in and custom workflows",
                 "  /workflow create <name> [desc]       — generate a custom workflow with Cortex AI",
+                "  /validate                     — validate custom agents and workflows",
                 "  /config                       — print active configuration",
                 "  /model [<role> <model>]       — show or change a role's model",
                 "  /provider [<name>]            — show or change the default provider",
@@ -835,6 +836,20 @@ pub async fn dispatch(
                     TuiEvent::TokenChunk {
                         agent: "agents".to_string(),
                         chunk: "  No workflow is currently running.".to_string(),
+                    },
+                );
+            }
+        }
+
+        "/validate" => {
+            let project_root = std::env::current_dir().ok();
+            let report = crate::custom_validation::validate_all(project_root.as_deref());
+            for line in report.format_human().lines() {
+                send(
+                    tx,
+                    TuiEvent::TokenChunk {
+                        agent: "validate".to_string(),
+                        chunk: format!("  {line}"),
                     },
                 );
             }

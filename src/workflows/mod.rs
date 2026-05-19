@@ -129,21 +129,34 @@ pub trait Workflow: Send + Sync {
 }
 
 pub fn get_workflow(name: &str) -> Result<Box<dyn Workflow>> {
+    let project_root = std::env::current_dir().ok();
+    get_workflow_with_project_root(name, project_root.as_deref())
+}
+
+fn get_workflow_with_project_root(
+    name: &str,
+    project_root: Option<&std::path::Path>,
+) -> Result<Box<dyn Workflow>> {
     match name {
         "dev" => Ok(Box::new(dev::DevWorkflow)),
         "marketing" => Ok(Box::new(marketing::MarketingWorkflow)),
         "prospecting" => Ok(Box::new(prospecting::ProspectingWorkflow)),
         "code-review" => Ok(Box::new(code_review::CodeReviewWorkflow)),
         custom_name => {
-            let project_root = std::env::current_dir().ok();
-            match crate::agent_loader::AgentLoader::load_workflow(
-                custom_name,
-                project_root.as_deref(),
-            ) {
-                Ok(Some(def)) => Ok(Box::new(custom::CustomWorkflow { def })),
+            match crate::agent_loader::AgentLoader::load_workflow(custom_name, project_root) {
+                Ok(Some(def)) => {
+                    let report = crate::custom_validation::validate_named_workflow(
+                        custom_name,
+                        project_root,
+                    );
+                    if report.has_errors() {
+                        anyhow::bail!("{}", report.format_human());
+                    }
+                    Ok(Box::new(custom::CustomWorkflow { def }))
+                }
                 Ok(None) => {
                     let custom_names =
-                        crate::agent_loader::AgentLoader::list_workflows(project_root.as_deref())
+                        crate::agent_loader::AgentLoader::list_workflows(project_root)
                             .into_iter()
                             .map(|w| w.name)
                             .collect::<Vec<_>>()
@@ -263,6 +276,24 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    static TEST_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn make_project_root(test_name: &str) -> PathBuf {
+        let nonce = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "cortex-workflows-{}-{test_name}-{nonce}",
+            std::process::id(),
+        ));
+        fs::create_dir_all(root.join(".cortex").join("workflows")).expect("create workflows dir");
+        fs::create_dir_all(root.join(".cortex").join("agents")).expect("create agents dir");
+        root
+    }
 
     #[test]
     fn available_workflow_names_match_registry() {
@@ -280,6 +311,25 @@ mod tests {
         };
         assert!(err.contains("Unknown workflow 'unknown'"));
         assert!(err.contains("Available: dev, marketing, prospecting, code-review"));
+    }
+
+    #[test]
+    fn custom_workflow_with_missing_agent_is_rejected() {
+        let root = make_project_root("custom_workflow_with_missing_agent_is_rejected");
+        fs::write(
+            root.join(".cortex").join("workflows").join("outreach.md"),
+            "---\nname: outreach\ndescription: Outreach workflow\nagents:\n  - role: researcher\n    agent: missing-researcher\n---\nFind prospects.\n",
+        )
+        .expect("write workflow file");
+
+        let err = match get_workflow_with_project_root("outreach", Some(&root)) {
+            Ok(_) => panic!("custom workflow with missing agent should fail"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("Custom definition validation failed"));
+        assert!(err.contains("[missing-agent]"));
+        assert!(err.contains("missing-researcher"));
     }
 
     #[test]

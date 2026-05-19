@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod context;
 mod custom_defs;
+mod custom_validation;
 mod mentions;
 mod orchestrator;
 mod project_context;
@@ -92,6 +93,8 @@ enum Commands {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Validate custom agents and workflows in the current project and user config
+    Validate,
     /// Manage Cortex skills
     #[command(alias = "skills")]
     Skill {
@@ -271,6 +274,14 @@ async fn main() -> Result<()> {
                 if outcome.restart_required {
                     println!("Restart your terminal to use the new version.");
                 }
+            }
+        }
+        Some(Commands::Validate) => {
+            let project_root = std::env::current_dir().ok();
+            let report = custom_validation::validate_all(project_root.as_deref());
+            println!("{}", report.format_human());
+            if report.has_errors() {
+                std::process::exit(1);
             }
         }
         Some(Commands::Skill { command }) => {

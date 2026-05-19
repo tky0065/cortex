@@ -20,7 +20,7 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 ### 2. Risque de securite lie aux outils executes depuis des sorties LLM
 **Statut:** En cours
-**Preuve:** Modèle de menace ajouté dans `docs/SECURITY_THREAT_MODEL.md`; premières protections runtime couvertes par le lot sécurité/secrets (redaction logs, manifests, email, web search, et symlink sandbox). Reste à couvrir updater, validation custom workflows et prompt injection web avancée.
+**Preuve:** Modèle de menace ajouté dans `docs/SECURITY_THREAT_MODEL.md`; premières protections runtime couvertes par le lot sécurité/secrets (redaction logs, manifests, email, web search, et symlink sandbox). Reste à couvrir updater et prompt injection web avancée.
 
 **Constat:** Le PRD mentionne l'allowlist terminal et le sandbox filesystem, mais le produit s'est elargi: web search, fetch URL, email SMTP, update binary, providers remote, custom agents, custom workflows, mentions, skills.
 
@@ -81,14 +81,14 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter estimation et suivi: tokens input/output par agent, cout estime par provider, limite de cout par run, alerte avant depassement.
 
 ### 8. Custom agents et workflows: validation trop critique pour rester permissive
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `src/custom_validation.rs`, `cortex validate`, `/validate`, validation pré-exécution des workflows custom, blocage des agents manquants/outils inconnus/YAML invalide, et tests Rust dédiés.
 
 **Constat:** Les workflows custom et agents Markdown rendent Cortex extensible, mais ils introduisent un format declaratif qui peut etre incomplet, contradictoire ou dangereux.
 
 **Pourquoi c'est important:** Une mauvaise definition custom peut produire des erreurs difficiles a comprendre ou contourner les garde-fous attendus.
 
-**Action recommandee:** Ajouter une commande de validation stricte: schema, agents manquants, outils interdits, permissions, cycles de dependances, taille de prompts, exemples de bonnes definitions.
+**Action réalisée:** Validation structurée ajoutée pour les agents et workflows custom: schéma, agents manquants, outils inconnus, YAML invalide, collisions avec workflows intégrés, commande `cortex validate`, commande `/validate`, blocage pré-exécution, et tests dédiés. Les raffinements futurs peuvent couvrir permissions fines, cycles de dépendances, taille de prompts et exemples enrichis.
 
 ### 9. Experience de reprise de session a durcir
 **Statut:** À faire
@@ -264,10 +264,9 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 4. Ajouter un mode de run avec budget: tokens, cout estime, limites et rapport final.
 5. Generer un `cortex.manifest.json` par run pour audit, reprise et debogage.
 6. Choisir le workflow phare de la beta publique et marquer les autres comme experimentaux si necessaire.
-7. Ajouter une validation stricte pour agents/workflows custom.
-8. Durcir l'ecriture dans les repertoires non vides avec confirmation ou sous-dossier par defaut.
-9. Ajouter templates GitHub Issues et guide "How to report a failed run".
-10. Introduire `cargo audit` / `cargo deny` dans la CI.
+7. Durcir l'ecriture dans les repertoires non vides avec confirmation ou sous-dossier par defaut.
+8. Ajouter templates GitHub Issues et guide "How to report a failed run".
+9. Introduire `cargo audit` / `cargo deny` dans la CI.
 
 ## Suivi des lots
 
@@ -275,3 +274,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-18 — Lot quality/evals dev terminé: matrice d'acceptation `dev`, fixtures `evals/dev/`, checker minimal pour outputs générés. Lacunes terminées: 1. Lacunes partiellement traitées: 3.
 - 2026-05-18 — Lot docs/supply chain/evals/isolation terminé: PRIVACY.md, PROMPT_CHANGELOG.md, RELEASE.md, COMPARISON.md, ICP ajouté dans BETA.md, templates GitHub Issues (security_report, quality_report), cargo audit/deny dans CI (deny.toml), run_campaign.sh + evals/runs/, cortex.manifest.json généré par run, avertissement répertoire non vide. Lacunes terminées: 3, 11, 12, 13, 14, 16, 17, 18, 21, 24.
 - 2026-05-19 — Lot sécurité/secrets terminé: modèle de menace, redaction centrale, logs/manifests/email/web search redacted, premiers tests adversariaux et durcissement symlink filesystem. Lacunes terminées: 22. Lacunes partiellement traitées: 2, 20.
+- 2026-05-19 — Lot validation custom terminé: validation structurée agents/workflows custom, commandes `cortex validate` et `/validate`, blocage pré-exécution des workflows invalides. Lacune terminée: 8.

@@ -28,7 +28,7 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 - **`/agent <name> "<directive>"`** — Inject a directive to a named agent while a workflow is running.
 - **`/workflow list`** — List all built-in and custom workflows.
 - **`/workflow create <name> [desc]`** — Generate a new custom workflow definition with AI, including skeleton agent files.
-- **Fallback handling** — If a custom workflow references a missing agent, Cortex logs a clear warning and runs a generic fallback so the pipeline still completes. Fix it with `/agent create <name>`.
+- **Custom validation** — Run `cortex validate` or `/validate` to check custom agents and workflows. Cortex also validates a custom workflow before execution and blocks critical errors like missing agents, invalid YAML, unknown tools, or built-in workflow name collisions.
 - **YAML frontmatter parser improvements** — Tolerates AI-generated files with `tools: Read, Write` (comma string) instead of `tools: [Read, Write]` (YAML list); also accepts `##` headings as the body separator when the closing `---` is misplaced.
 
 ## What's new in 0.1.8 beta
@@ -340,6 +340,7 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/continue` | Resume an interactive pause |
 | `/approve` | Confirm a plan or resume a Review-mode pause (alias for `/continue`) |
 | `/mode [<name>]` | Show or set the execution mode (`normal`, `plan`, `auto`, `review`) |
+| `/validate` | Validate custom agents and workflows |
 | `/config` | Display active config values |
 | `/model [<role> <model>]` | Show or change a role's model |
 | `/provider [<name>]` | Show or change the default provider |
@@ -399,6 +400,9 @@ cortex run --workflow code-review ./my-project
 
 # Initialize project context for future Cortex agents
 cortex init
+
+# Validate custom agent/workflow definitions
+cortex validate
 
 # Verbose (writes all agent I/O to cortex.log)
 cortex -v start "build a todo app" --auto

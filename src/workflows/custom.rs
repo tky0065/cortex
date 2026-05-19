@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 use crate::agent_loader::AgentLoader;
-use crate::custom_defs::{CustomAgentDef, CustomWorkflowDef};
+use crate::custom_defs::CustomWorkflowDef;
 use crate::tui::events::Task;
 use crate::tui::events::TuiEvent;
 use crate::workflows::{
@@ -82,30 +82,11 @@ impl Workflow for CustomWorkflow {
             {
                 Some(def) => def,
                 None => {
-                    // Agent file not found — use a generic fallback so the workflow
-                    // still runs. Log a hint so the user knows to create the file.
-                    let _ = options.tx.send(TuiEvent::TokenChunk {
-                        agent: step.role.clone(),
-                        chunk: format!(
-                            "  [WARNING] No agent file found for '{}'. \
-                             Using generic fallback — output quality will be poor. \
-                             Fix this: /agent create {}",
-                            step.agent, step.agent
-                        ),
-                    });
-                    let model = options.config.models.assistant.clone();
-                    CustomAgentDef {
-                        name: step.agent.clone(),
-                        description: format!("Generic fallback for role '{}'", step.role),
-                        model,
-                        tools: vec![],
-                        system_prompt: format!(
-                            "You are a professional {}. Complete the task given to you \
-                             thoroughly and accurately. Output only the result of your work, \
-                             no meta-commentary.",
-                            step.role
-                        ),
-                    }
+                    anyhow::bail!(
+                        "custom workflow '{}' references missing agent '{}'. Run `cortex validate` to find and fix invalid custom definitions.",
+                        self.def.name,
+                        step.agent
+                    );
                 }
             };
 

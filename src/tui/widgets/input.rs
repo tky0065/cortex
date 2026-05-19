@@ -51,6 +51,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "/workflow create",
         "Generate a custom workflow with AI: /workflow create <name> [description]",
     ),
+    ("/validate", "Validate custom agents and workflows"),
     ("/quit", "Exit cortex"),
     ("/exit", "Exit cortex"),
 ];
@@ -1115,6 +1116,18 @@ mod tests {
         let matches = bar.palette_matches(&context());
         assert_eq!(matches[0].value, "/init");
         assert_eq!(matches[0].description, "Generate or update AGENTS.md");
+    }
+
+    #[test]
+    fn palette_includes_validate_command() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "/val");
+        let matches = bar.palette_matches(&context());
+        assert_eq!(matches[0].value, "/validate");
+        assert_eq!(
+            matches[0].description,
+            "Validate custom agents and workflows"
+        );
     }
 
     #[test]
