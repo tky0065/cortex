@@ -121,6 +121,7 @@ pub fn validate_agent_file(path: &Path) -> ValidationReport {
     let agent = match parse_agent_def(&content) {
         Ok(agent) => agent,
         Err(error) => {
+            push_missing_frontmatter_fields(&mut report, path, &content);
             push_error(
                 &mut report,
                 path,
@@ -134,6 +135,39 @@ pub fn validate_agent_file(path: &Path) -> ValidationReport {
 
     validate_agent(path, &agent, &mut report);
     report
+}
+
+fn push_missing_frontmatter_fields(report: &mut ValidationReport, path: &Path, content: &str) {
+    let Some(yaml) = frontmatter_yaml(content) else {
+        return;
+    };
+
+    let Ok(frontmatter) = serde_yaml::from_str::<serde_yaml::Mapping>(yaml) else {
+        return;
+    };
+
+    for (field, code) in [
+        ("name", "missing-name"),
+        ("description", "missing-description"),
+        ("model", "missing-model"),
+    ] {
+        if !frontmatter.contains_key(serde_yaml::Value::String(field.to_string())) {
+            push_error(
+                report,
+                path,
+                &display_name(path),
+                code,
+                format!("agent {field} must not be empty"),
+            );
+        }
+    }
+}
+
+fn frontmatter_yaml(content: &str) -> Option<&str> {
+    let content = content.trim_start();
+    let after_open = content.strip_prefix("---")?;
+    let close_pos = after_open.find("\n---")?;
+    Some(after_open[..close_pos].trim())
 }
 
 fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationReport) {
@@ -447,6 +481,42 @@ mod tests {
             let report = validate_agent_file(&path);
 
             assert_diagnostic(&report, "empty-prompt", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn agent_with_omitted_name_is_error() {
+            let path = write_agent_file(
+                "designer.md",
+                "---\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [filesystem]\n---\nYou are a designer.\n",
+            );
+
+            let report = validate_agent_file(&path);
+
+            assert_diagnostic(&report, "missing-name", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn agent_with_omitted_description_is_error() {
+            let path = write_agent_file(
+                "designer.md",
+                "---\nname: designer\nmodel: ollama/qwen2.5:32b\ntools: [filesystem]\n---\nYou are a designer.\n",
+            );
+
+            let report = validate_agent_file(&path);
+
+            assert_diagnostic(&report, "missing-description", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn agent_with_omitted_model_is_error() {
+            let path = write_agent_file(
+                "designer.md",
+                "---\nname: designer\ndescription: Creates practical interface designs\ntools: [filesystem]\n---\nYou are a designer.\n",
+            );
+
+            let report = validate_agent_file(&path);
+
+            assert_diagnostic(&report, "missing-model", ValidationSeverity::Error);
         }
 
         #[test]
