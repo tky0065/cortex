@@ -352,8 +352,10 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
+        sync::atomic::{AtomicUsize, Ordering},
     };
+
+    static TEST_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
     fn report_formats_clean_success() {
@@ -398,14 +400,11 @@ mod tests {
     mod agent {
         use super::*;
 
-        fn write_agent_file(name: &str, content: &str) -> PathBuf {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock before unix epoch")
-                .as_nanos();
+        fn write_agent_file(test_name: &str, name: &str, content: &str) -> PathBuf {
+            let nonce = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
             let dir = std::env::temp_dir().join(format!(
-                "cortex-custom-validation-agent-{}-{nonce}",
-                std::process::id()
+                "cortex-custom-validation-agent-{}-{test_name}-{nonce}",
+                std::process::id(),
             ));
             fs::create_dir_all(&dir).expect("create temp dir");
             let path = dir.join(name);
@@ -438,7 +437,11 @@ mod tests {
 
         #[test]
         fn valid_agent_has_no_diagnostics() {
-            let path = write_agent_file("designer.md", valid_agent_content());
+            let path = write_agent_file(
+                "valid_agent_has_no_diagnostics",
+                "designer.md",
+                valid_agent_content(),
+            );
 
             let report = validate_agent_file(&path);
 
@@ -448,6 +451,7 @@ mod tests {
         #[test]
         fn agent_with_unknown_tool_is_error() {
             let path = write_agent_file(
+                "agent_with_unknown_tool_is_error",
                 "designer.md",
                 "---\nname: designer\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [filesystem, browser]\n---\nYou are a designer.\n",
             );
@@ -461,6 +465,7 @@ mod tests {
         #[test]
         fn agent_with_sensitive_tool_is_warning() {
             let path = write_agent_file(
+                "agent_with_sensitive_tool_is_warning",
                 "designer.md",
                 "---\nname: designer\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [terminal, email]\n---\nYou are a designer.\n",
             );
@@ -474,6 +479,7 @@ mod tests {
         #[test]
         fn agent_with_empty_body_is_error() {
             let path = write_agent_file(
+                "agent_with_empty_body_is_error",
                 "designer.md",
                 "---\nname: designer\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [filesystem]\n---\n\n",
             );
@@ -486,6 +492,7 @@ mod tests {
         #[test]
         fn agent_with_omitted_name_is_error() {
             let path = write_agent_file(
+                "agent_with_omitted_name_is_error",
                 "designer.md",
                 "---\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [filesystem]\n---\nYou are a designer.\n",
             );
@@ -498,6 +505,7 @@ mod tests {
         #[test]
         fn agent_with_omitted_description_is_error() {
             let path = write_agent_file(
+                "agent_with_omitted_description_is_error",
                 "designer.md",
                 "---\nname: designer\nmodel: ollama/qwen2.5:32b\ntools: [filesystem]\n---\nYou are a designer.\n",
             );
@@ -510,6 +518,7 @@ mod tests {
         #[test]
         fn agent_with_omitted_model_is_error() {
             let path = write_agent_file(
+                "agent_with_omitted_model_is_error",
                 "designer.md",
                 "---\nname: designer\ndescription: Creates practical interface designs\ntools: [filesystem]\n---\nYou are a designer.\n",
             );
@@ -522,6 +531,7 @@ mod tests {
         #[test]
         fn agent_with_invalid_yaml_is_error() {
             let path = write_agent_file(
+                "agent_with_invalid_yaml_is_error",
                 "designer.md",
                 "---\nname: [designer\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [filesystem]\n---\nYou are a designer.\n",
             );
