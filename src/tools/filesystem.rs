@@ -56,6 +56,18 @@ impl FileSystem {
         if !abs.starts_with(&self.root) {
             bail!("path escapes sandbox: {}", abs.display());
         }
+        if self.root.exists() {
+            let canonical_root = self.root.canonicalize().with_context(|| {
+                format!("canonicalize sandbox root failed: {}", self.root.display())
+            })?;
+            let existing = nearest_existing_path(&abs);
+            let canonical_existing = existing
+                .canonicalize()
+                .with_context(|| format!("canonicalize path failed: {}", existing.display()))?;
+            if !canonical_existing.starts_with(&canonical_root) {
+                bail!("path escapes sandbox: {}", canonical_existing.display());
+            }
+        }
         Ok(abs)
     }
 }
@@ -72,6 +84,18 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+fn nearest_existing_path(path: &Path) -> PathBuf {
+    let mut current = path;
+    while !current.exists() {
+        if let Some(parent) = current.parent() {
+            current = parent;
+        } else {
+            break;
+        }
+    }
+    current.to_path_buf()
 }
 
 #[cfg(test)]
@@ -103,5 +127,29 @@ mod tests {
         let sandbox = FileSystem::new(&dir);
         sandbox.write("a/b/c.txt", "deep").unwrap();
         assert_eq!(sandbox.read("a/b/c.txt").unwrap(), "deep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("cortex_fs_symlink_root_{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("cortex_fs_symlink_outside_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        symlink(&outside, root.join("escape")).unwrap();
+
+        let sandbox = FileSystem::new(&root);
+        assert!(sandbox.read("escape/secret.txt").is_err());
+        assert!(sandbox.write("escape/new.txt", "secret").is_err());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
     }
 }

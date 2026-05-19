@@ -72,6 +72,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_shell_like_command_names() {
+        assert!(run("cargo;sh", &["--version"], None, None).await.is_err());
+        assert!(run("git&&sh", &["--version"], None, None).await.is_err());
+        assert!(
+            run("/bin/sh", &["-c", "echo hi"], None, None)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn listed_command_runs() {
         // `git --version` should succeed on any dev machine
         let out = run("git", &["--version"], None, None).await.unwrap();
