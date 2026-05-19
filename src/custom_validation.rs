@@ -7,9 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::custom_defs::{CustomAgentDef, parse_agent_def};
+use crate::custom_defs::{CustomAgentDef, canonical_tool_name, parse_agent_def};
 
-const KNOWN_TOOLS: &[&str] = &["filesystem", "terminal", "web_search", "email"];
 const SENSITIVE_TOOLS: &[&str] = &["terminal", "email"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,7 +255,7 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
     }
 
     for tool in &agent.tools {
-        let Some(normalized_tool) = normalize_tool(tool) else {
+        let Some(canonical_tool) = canonical_tool_name(tool) else {
             push_error(
                 report,
                 path,
@@ -267,7 +266,7 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
             continue;
         };
 
-        if SENSITIVE_TOOLS.contains(&normalized_tool) {
+        if SENSITIVE_TOOLS.contains(&canonical_tool) {
             push_warning(
                 report,
                 path,
@@ -276,19 +275,6 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
                 format!("agent uses sensitive tool '{tool}'"),
             );
         }
-    }
-}
-
-fn normalize_tool(tool: &str) -> Option<&'static str> {
-    match tool {
-        "filesystem" | "Read" | "Write" | "Edit" | "Glob" | "Grep" => Some("filesystem"),
-        "terminal" | "Bash" => Some("terminal"),
-        "web_search" | "WebFetch" | "WebSearch" => Some("web_search"),
-        "email" => Some("email"),
-        _ => KNOWN_TOOLS
-            .iter()
-            .copied()
-            .find(|known_tool| *known_tool == tool),
     }
 }
 
