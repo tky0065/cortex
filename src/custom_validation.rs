@@ -203,7 +203,11 @@ pub fn workflow_path(name: &str, project_root: Option<&Path>) -> Option<PathBuf>
 
 pub fn validate_named_workflow(name: &str, project_root: Option<&Path>) -> ValidationReport {
     match workflow_path(name, project_root) {
-        Some(path) => validate_workflow_file(&path, project_root),
+        Some(path) => {
+            let mut report = validate_workflow_file(&path, project_root);
+            validate_referenced_agent_files(&path, project_root, &mut report);
+            report
+        }
         None => {
             let mut report = ValidationReport::default();
             push_error(
@@ -354,7 +358,7 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
         &agent.model,
         "missing-model",
     );
-    validate_name(report, path, &target, &agent.name);
+    validate_name(report, path, &target, "agent", &agent.name);
 
     if agent.system_prompt.trim().is_empty() {
         push_error(
@@ -458,7 +462,7 @@ fn validate_workflow(
         &workflow.description,
         "missing-description",
     );
-    validate_name(report, path, &target, &workflow.name);
+    validate_name(report, path, &target, "workflow", &workflow.name);
 
     if crate::workflows::available_workflows()
         .iter()
@@ -547,15 +551,73 @@ fn validate_workflow(
                 "missing-step-agent",
                 "workflow step agent must not be empty".to_string(),
             );
-        } else if agent_path(agent, project_root).is_none() {
-            push_error(
-                report,
-                path,
-                &target,
-                "missing-agent",
-                format!("workflow references missing agent '{agent}'"),
-            );
+        } else {
+            validate_name(report, path, &target, "agent reference", agent);
+            if agent_path(agent, project_root).is_none() {
+                push_error(
+                    report,
+                    path,
+                    &target,
+                    "missing-agent",
+                    format!("workflow references missing agent '{agent}'"),
+                );
+            }
         }
+    }
+}
+
+fn validate_referenced_agent_files(
+    workflow_path: &Path,
+    project_root: Option<&Path>,
+    report: &mut ValidationReport,
+) {
+    let Ok(content) = fs::read_to_string(workflow_path) else {
+        return;
+    };
+    let Ok(workflow) = parse_workflow_def(&content) else {
+        return;
+    };
+
+    let mut seen = HashSet::new();
+    for step in workflow.agents {
+        let agent = step.agent.trim();
+        if agent.is_empty() || !is_valid_name(agent) || !seen.insert(agent.to_string()) {
+            continue;
+        }
+
+        if let Some(path) = agent_path(agent, project_root) {
+            report.extend(validate_agent_file(&path));
+        }
+    }
+}
+
+fn is_valid_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+fn validate_name(
+    report: &mut ValidationReport,
+    path: &Path,
+    target: &str,
+    subject: &str,
+    name: &str,
+) {
+    if name.trim().is_empty() {
+        return;
+    }
+
+    if !is_valid_name(name) {
+        push_error(
+            report,
+            path,
+            target,
+            "invalid-name",
+            format!("{subject} name may only contain ASCII letters, digits, '_' and '-'"),
+        );
     }
 }
 
@@ -629,25 +691,6 @@ fn require_workflow_nonempty(
     }
 }
 
-fn validate_name(report: &mut ValidationReport, path: &Path, target: &str, name: &str) {
-    if name.trim().is_empty() {
-        return;
-    }
-
-    if !name
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-    {
-        push_error(
-            report,
-            path,
-            target,
-            "invalid-name",
-            "agent name may only contain ASCII letters, digits, '_' and '-'".to_string(),
-        );
-    }
-}
-
 fn agent_dirs(project_root: Option<&Path>) -> Vec<PathBuf> {
     definition_dirs(project_root, "agents")
 }
@@ -668,7 +711,12 @@ fn definition_dirs(project_root: Option<&Path>, kind: &str) -> Vec<PathBuf> {
 }
 
 fn definition_path(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let file_name = format!("{}.md", name.trim());
+    let name = name.trim();
+    if !is_valid_name(name) {
+        return None;
+    }
+
+    let file_name = format!("{name}.md");
     dirs.iter()
         .map(|dir| dir.join(&file_name))
         .find(|path| path.exists())
@@ -989,6 +1037,16 @@ mod tests {
             .expect("write agent file");
         }
 
+        fn write_agent_content(root: &Path, name: &str, content: &str) {
+            fs::write(
+                root.join(".cortex")
+                    .join("agents")
+                    .join(format!("{name}.md")),
+                content,
+            )
+            .expect("write agent file");
+        }
+
         fn write_workflow(root: &Path, file_name: &str, content: &str) -> PathBuf {
             let path = root
                 .join(".cortex")
@@ -1029,6 +1087,42 @@ mod tests {
 
             assert_diagnostic(&report, "missing-agent", ValidationSeverity::Error);
             assert!(report.has_errors());
+        }
+
+        #[test]
+        fn workflow_with_traversal_like_agent_reference_is_invalid_name() {
+            let root =
+                make_project_root("workflow_with_traversal_like_agent_reference_is_invalid_name");
+            let path = write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: designer\n    agent: ../../README\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_diagnostic(&report, "invalid-name", ValidationSeverity::Error);
+            assert_diagnostic(&report, "missing-agent", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn validate_named_workflow_includes_referenced_agent_errors() {
+            let root =
+                make_project_root("validate_named_workflow_includes_referenced_agent_errors");
+            write_agent_content(
+                &root,
+                "designer",
+                "---\nname: designer\ndescription: Creates practical work products\nmodel: ollama/qwen2.5:32b\ntools: [browser]\n---\nYou are designer.\n",
+            );
+            write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: designer\n    agent: designer\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_named_workflow("sprint", Some(&root));
+
+            assert_diagnostic(&report, "unknown-tool", ValidationSeverity::Error);
         }
 
         #[test]
