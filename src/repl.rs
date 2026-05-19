@@ -171,7 +171,7 @@ pub async fn dispatch(
                 "  /agent <name> \"<directive>\"         — inject a directive to a running agent",
                 "  /workflow list                       — list built-in and custom workflows",
                 "  /workflow create <name> [desc]       — generate a custom workflow with Cortex AI",
-                "  /validate                    — validate custom agents and workflows",
+                "  /validate                     — validate custom agents and workflows",
                 "  /config                       — print active configuration",
                 "  /model [<role> <model>]       — show or change a role's model",
                 "  /provider [<name>]            — show or change the default provider",
