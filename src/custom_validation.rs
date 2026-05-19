@@ -1,3 +1,7 @@
+// Temporary while validation core types are staged before CLI/runtime validation wiring.
+// Remove once later custom validation tasks call this module from production paths.
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
