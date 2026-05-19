@@ -3,11 +3,14 @@
 #![allow(dead_code)]
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
 
-use crate::custom_defs::{CustomAgentDef, canonical_tool_name, parse_agent_def};
+use crate::custom_defs::{
+    CustomAgentDef, CustomWorkflowDef, canonical_tool_name, parse_agent_def, parse_workflow_def,
+};
 
 const SENSITIVE_TOOLS: &[&str] = &["terminal", "email"];
 
@@ -34,6 +37,10 @@ pub struct ValidationReport {
 impl ValidationReport {
     pub fn push(&mut self, diagnostic: ValidationDiagnostic) {
         self.diagnostics.push(diagnostic);
+    }
+
+    pub fn extend(&mut self, report: ValidationReport) {
+        self.diagnostics.extend(report.diagnostics);
     }
 
     pub fn has_errors(&self) -> bool {
@@ -134,6 +141,111 @@ pub fn validate_agent_file(path: &Path) -> ValidationReport {
 
     validate_agent(path, &agent, &mut report);
     report
+}
+
+pub fn validate_workflow_file(path: &Path, project_root: Option<&Path>) -> ValidationReport {
+    let mut report = ValidationReport::default();
+
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) => {
+            push_error(
+                &mut report,
+                path,
+                &display_name(path),
+                "read-error",
+                format!("cannot read workflow file: {error}"),
+            );
+            return report;
+        }
+    };
+
+    let workflow = match parse_workflow_def(&content) {
+        Ok(workflow) => workflow,
+        Err(error) => {
+            push_missing_workflow_frontmatter_fields(&mut report, path, &content);
+            push_error(
+                &mut report,
+                path,
+                &display_name(path),
+                "parse-error",
+                format!("cannot parse workflow definition: {error}"),
+            );
+            return report;
+        }
+    };
+
+    validate_workflow(path, &workflow, project_root, &mut report);
+    report
+}
+
+pub fn validate_all(project_root: Option<&Path>) -> ValidationReport {
+    let mut report = ValidationReport::default();
+
+    for path in discover_agent_paths(project_root) {
+        report.extend(validate_agent_file(&path));
+    }
+
+    for path in discover_workflow_paths(project_root) {
+        report.extend(validate_workflow_file(&path, project_root));
+    }
+
+    report
+}
+
+pub fn agent_path(name: &str, project_root: Option<&Path>) -> Option<PathBuf> {
+    definition_path(name, &agent_dirs(project_root))
+}
+
+pub fn workflow_path(name: &str, project_root: Option<&Path>) -> Option<PathBuf> {
+    definition_path(name, &workflow_dirs(project_root))
+}
+
+pub fn validate_named_workflow(name: &str, project_root: Option<&Path>) -> ValidationReport {
+    match workflow_path(name, project_root) {
+        Some(path) => validate_workflow_file(&path, project_root),
+        None => {
+            let mut report = ValidationReport::default();
+            push_error(
+                &mut report,
+                Path::new("<workflow>"),
+                name,
+                "missing-workflow",
+                format!("workflow '{name}' was not found"),
+            );
+            report
+        }
+    }
+}
+
+fn push_missing_workflow_frontmatter_fields(
+    report: &mut ValidationReport,
+    path: &Path,
+    content: &str,
+) {
+    let Some(yaml) = frontmatter_yaml(content) else {
+        return;
+    };
+
+    let Ok(frontmatter) = serde_yaml::from_str::<serde_yaml::Mapping>(yaml) else {
+        return;
+    };
+
+    for (field, code) in [
+        ("name", "missing-name"),
+        ("description", "missing-description"),
+        ("agents", "missing-agents"),
+    ] {
+        if !frontmatter.contains_key(serde_yaml::Value::String(field.to_string())) {
+            push_error(
+                report,
+                path,
+                &display_name(path),
+                code,
+                format!("workflow {field} must not be empty"),
+            );
+        }
+    }
 }
 
 fn push_missing_frontmatter_fields(report: &mut ValidationReport, path: &Path, content: &str) {
@@ -278,6 +390,135 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
     }
 }
 
+fn validate_workflow(
+    path: &Path,
+    workflow: &CustomWorkflowDef,
+    project_root: Option<&Path>,
+    report: &mut ValidationReport,
+) {
+    let target = if workflow.name.trim().is_empty() {
+        display_name(path)
+    } else {
+        workflow.name.clone()
+    };
+
+    require_workflow_nonempty(
+        report,
+        path,
+        &target,
+        "name",
+        &workflow.name,
+        "missing-name",
+    );
+    require_workflow_nonempty(
+        report,
+        path,
+        &target,
+        "description",
+        &workflow.description,
+        "missing-description",
+    );
+    validate_name(report, path, &target, &workflow.name);
+
+    if crate::workflows::available_workflows()
+        .iter()
+        .any(|builtin| builtin.name == workflow.name.trim())
+    {
+        push_error(
+            report,
+            path,
+            &target,
+            "builtin-workflow-collision",
+            format!(
+                "workflow name '{}' collides with a built-in workflow",
+                workflow.name
+            ),
+        );
+    }
+
+    if workflow.agents.is_empty() {
+        push_error(
+            report,
+            path,
+            &target,
+            "missing-agents",
+            "workflow must define at least one agent step".to_string(),
+        );
+    }
+
+    if workflow.body.trim().is_empty() {
+        push_warning(
+            report,
+            path,
+            &target,
+            "empty-workflow-body",
+            "workflow body should describe how the steps collaborate".to_string(),
+        );
+    }
+
+    if workflow.agents.len() > 8 {
+        push_warning(
+            report,
+            path,
+            &target,
+            "many-steps",
+            "workflow has more than 8 agent steps".to_string(),
+        );
+    }
+
+    if path.file_stem().and_then(|stem| stem.to_str()) != Some(workflow.name.as_str()) {
+        push_warning(
+            report,
+            path,
+            &target,
+            "filename-name-mismatch",
+            "workflow filename stem should match declared name".to_string(),
+        );
+    }
+
+    let mut seen_roles = HashSet::new();
+    for step in &workflow.agents {
+        let role = step.role.trim();
+        let agent = step.agent.trim();
+
+        if role.is_empty() {
+            push_error(
+                report,
+                path,
+                &target,
+                "missing-role",
+                "workflow step role must not be empty".to_string(),
+            );
+        } else if !seen_roles.insert(role.to_string()) {
+            push_error(
+                report,
+                path,
+                &target,
+                "duplicate-role",
+                format!("workflow role '{role}' is defined more than once"),
+            );
+        }
+
+        if agent.is_empty() {
+            push_error(
+                report,
+                path,
+                &target,
+                "missing-step-agent",
+                "workflow step agent must not be empty".to_string(),
+            );
+        } else if agent_path(agent, project_root).is_none() {
+            push_error(
+                report,
+                path,
+                &target,
+                "missing-agent",
+                format!("workflow references missing agent '{agent}'"),
+            );
+        }
+    }
+}
+
 fn push_error(
     report: &mut ValidationReport,
     path: &Path,
@@ -329,6 +570,25 @@ fn require_nonempty(
     }
 }
 
+fn require_workflow_nonempty(
+    report: &mut ValidationReport,
+    path: &Path,
+    target: &str,
+    field: &str,
+    value: &str,
+    code: &'static str,
+) {
+    if value.trim().is_empty() {
+        push_error(
+            report,
+            path,
+            target,
+            code,
+            format!("workflow {field} must not be empty"),
+        );
+    }
+}
+
 fn validate_name(report: &mut ValidationReport, path: &Path, target: &str, name: &str) {
     if name.trim().is_empty() {
         return;
@@ -346,6 +606,69 @@ fn validate_name(report: &mut ValidationReport, path: &Path, target: &str, name:
             "agent name may only contain ASCII letters, digits, '_' and '-'".to_string(),
         );
     }
+}
+
+fn agent_dirs(project_root: Option<&Path>) -> Vec<PathBuf> {
+    definition_dirs(project_root, "agents")
+}
+
+fn workflow_dirs(project_root: Option<&Path>) -> Vec<PathBuf> {
+    definition_dirs(project_root, "workflows")
+}
+
+fn definition_dirs(project_root: Option<&Path>, kind: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(root) = project_root {
+        dirs.push(root.join(".cortex").join(kind));
+    }
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".cortex").join(kind));
+    }
+    dirs
+}
+
+fn definition_path(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let file_name = format!("{}.md", name.trim());
+    dirs.iter()
+        .map(|dir| dir.join(&file_name))
+        .find(|path| path.exists())
+}
+
+fn discover_agent_paths(project_root: Option<&Path>) -> Vec<PathBuf> {
+    discover_definition_paths(&agent_dirs(project_root))
+}
+
+fn discover_workflow_paths(project_root: Option<&Path>) -> Vec<PathBuf> {
+    discover_definition_paths(&workflow_dirs(project_root))
+}
+
+fn discover_definition_paths(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+
+        let mut entries = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+            .collect::<Vec<_>>();
+        entries.sort();
+
+        for path in entries {
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if seen.insert(stem.to_string()) {
+                paths.push(path);
+            }
+        }
+    }
+
+    paths
 }
 
 fn display_name(path: &Path) -> String {
@@ -596,6 +919,126 @@ mod tests {
 
             assert_eq!(diagnostic_codes(&report), vec!["parse-error"]);
             assert_diagnostic(&report, "parse-error", ValidationSeverity::Error);
+        }
+    }
+
+    mod workflow {
+        use super::*;
+
+        fn make_project_root(test_name: &str) -> PathBuf {
+            let nonce = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "cortex-custom-validation-workflow-{}-{test_name}-{nonce}",
+                std::process::id(),
+            ));
+            fs::create_dir_all(root.join(".cortex").join("agents")).expect("create agents dir");
+            fs::create_dir_all(root.join(".cortex").join("workflows"))
+                .expect("create workflows dir");
+            root
+        }
+
+        fn write_agent(root: &Path, name: &str) {
+            fs::write(
+                root.join(".cortex")
+                    .join("agents")
+                    .join(format!("{name}.md")),
+                format!(
+                    "---\nname: {name}\ndescription: Creates practical work products\nmodel: ollama/qwen2.5:32b\ntools: [filesystem]\n---\nYou are {name}.\n"
+                ),
+            )
+            .expect("write agent file");
+        }
+
+        fn write_workflow(root: &Path, file_name: &str, content: &str) -> PathBuf {
+            let path = root
+                .join(".cortex")
+                .join("workflows")
+                .join(format!("{file_name}.md"));
+            fs::write(&path, content).expect("write workflow file");
+            path
+        }
+
+        fn assert_diagnostic(report: &ValidationReport, code: &str, severity: ValidationSeverity) {
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == code && diagnostic.severity == severity),
+                "expected {severity:?} diagnostic with code {code}, got {:?}",
+                report.diagnostics
+            );
+        }
+
+        #[test]
+        fn workflow_with_missing_agent_is_error() {
+            let root = make_project_root("workflow_with_missing_agent_is_error");
+            let missing_agent = format!(
+                "missing-agent-{}-{}",
+                std::process::id(),
+                TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            let path = write_workflow(
+                &root,
+                "sprint",
+                &format!(
+                    "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: designer\n    agent: {missing_agent}\n---\nBuild a product sprint.\n"
+                ),
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_diagnostic(&report, "missing-agent", ValidationSeverity::Error);
+            assert!(report.has_errors());
+        }
+
+        #[test]
+        fn workflow_with_duplicate_roles_is_error() {
+            let root = make_project_root("workflow_with_duplicate_roles_is_error");
+            write_agent(&root, "designer");
+            write_agent(&root, "reviewer");
+            let path = write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: designer\n    agent: designer\n  - role: designer\n    agent: reviewer\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_diagnostic(&report, "duplicate-role", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn workflow_with_builtin_name_is_error() {
+            let root = make_project_root("workflow_with_builtin_name_is_error");
+            write_agent(&root, "designer");
+            let path = write_workflow(
+                &root,
+                "dev",
+                "---\nname: dev\ndescription: Custom development workflow\nagents:\n  - role: designer\n    agent: designer\n---\nBuild custom software.\n",
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_diagnostic(
+                &report,
+                "builtin-workflow-collision",
+                ValidationSeverity::Error,
+            );
+        }
+
+        #[test]
+        fn workflow_with_existing_agent_has_no_errors() {
+            let root = make_project_root("workflow_with_existing_agent_has_no_errors");
+            write_agent(&root, "designer");
+            let path = write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: designer\n    agent: designer\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_eq!(report.error_count(), 0, "{:?}", report.diagnostics);
         }
     }
 }
