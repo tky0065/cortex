@@ -10,9 +10,52 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+fn offline_stub_result(query: &str, redactor: &crate::secrets::SecretRedactor) -> SearchResult {
+    let redacted_query = redactor.redact_text(query);
+    SearchResult {
+        title: format!("Search results for: {}", redacted_query),
+        url: "https://example.com".into(),
+        snippet: format!(
+            "[offline mode] No WEB_SEARCH_API_KEY set. Query was: {}",
+            redacted_query
+        ),
+    }
+}
+
+fn format_results_block(
+    title: &str,
+    query: &str,
+    results: &[SearchResult],
+    redactor: &crate::secrets::SecretRedactor,
+) -> String {
+    let mut block = format!(
+        "\n\n## {}\nQuery: {}\n\n",
+        title,
+        redactor.redact_text(query)
+    );
+    for (i, result) in results.iter().enumerate() {
+        block.push_str(&format!(
+            "{}. **{}** ({})\n   {}\n",
+            i + 1,
+            redactor.redact_text(&result.title),
+            redactor.redact_text(&result.url),
+            redactor.redact_text(&result.snippet)
+        ));
+    }
+    block
+}
+
 /// Free web search via DuckDuckGo Lite HTML — no API key required.
 /// Returns a formatted Markdown block suitable for injection into an LLM prompt.
 pub async fn search_without_key(query: &str) -> String {
+    let redactor = crate::secrets::SecretRedactor::default();
+    search_without_key_with_redactor(query, &redactor).await
+}
+
+async fn search_without_key_with_redactor(
+    query: &str,
+    redactor: &crate::secrets::SecretRedactor,
+) -> String {
     if query.trim().is_empty() {
         return String::new();
     }
@@ -43,20 +86,12 @@ pub async fn search_without_key(query: &str) -> String {
         return String::new();
     }
 
-    let mut block = format!(
-        "\n\n## Web Search Results (DuckDuckGo Lite)\nQuery: {}\n\n",
-        query
-    );
-    for (i, r) in results.iter().take(5).enumerate() {
-        block.push_str(&format!(
-            "{}. **{}** ({})\n   {}\n\n",
-            i + 1,
-            r.title,
-            r.url,
-            r.snippet
-        ));
-    }
-    block
+    format_results_block(
+        "Web Search Results (DuckDuckGo Lite)",
+        query,
+        &results[..results.len().min(5)],
+        redactor,
+    )
 }
 
 fn parse_ddg_lite_html(html: &str) -> Vec<SearchResult> {
@@ -158,14 +193,8 @@ pub async fn search(query: &str, max_results: usize) -> Result<Vec<SearchResult>
 
     if api_key.is_empty() {
         // Offline stub — real provider wired when WEB_SEARCH_API_KEY is set.
-        return Ok(vec![SearchResult {
-            title: format!("Search results for: {}", query),
-            url: "https://example.com".into(),
-            snippet: format!(
-                "[offline mode] No WEB_SEARCH_API_KEY set. Query was: {}",
-                query
-            ),
-        }]);
+        let redactor = crate::secrets::SecretRedactor::default();
+        return Ok(vec![offline_stub_result(query, &redactor)]);
     }
 
     let client = reqwest::Client::new();
@@ -210,9 +239,11 @@ pub async fn fetch_context(query: &str, config: &Config) -> String {
         return String::new();
     }
 
+    let redactor = crate::secrets::SecretRedactor::from_config_and_env(config);
+
     if config.api_keys.web_search.is_none() {
         // Fallback to free search (no key required)
-        return search_without_key(trimmed).await;
+        return search_without_key_with_redactor(trimmed, &redactor).await;
     }
 
     match search(trimmed, 5).await {
@@ -223,17 +254,7 @@ pub async fn fetch_context(query: &str, config: &Config) -> String {
             if results.len() == 1 && results[0].snippet.contains("[offline mode]") {
                 return String::new();
             }
-            let mut block = String::from("\n\n## Web Search Results\n");
-            for (i, r) in results.iter().enumerate() {
-                block.push_str(&format!(
-                    "{}. **{}** ({})\n   {}\n",
-                    i + 1,
-                    r.title,
-                    r.url,
-                    r.snippet
-                ));
-            }
-            block
+            format_results_block("Web Search Results", trimmed, &results, &redactor)
         }
     }
 }
@@ -274,5 +295,34 @@ mod tests {
         // api_keys.web_search is None by default
         let ctx = fetch_context("Rust async traits", &config).await;
         assert!(ctx.is_empty(), "should be empty when api key is not set");
+    }
+
+    #[test]
+    fn formats_context_with_redacted_query_and_results() {
+        let redactor = crate::secrets::SecretRedactor::from_values(["web-secret-123456"]);
+        let results = vec![SearchResult {
+            title: "title web-secret-123456".into(),
+            url: "https://example.com/?token=web-secret-123456".into(),
+            snippet: "snippet web-secret-123456".into(),
+        }];
+
+        let block = format_results_block(
+            "Web Search Results",
+            "query web-secret-123456",
+            &results,
+            &redactor,
+        );
+
+        assert!(block.contains("[REDACTED]"));
+        assert!(!block.contains("web-secret-123456"));
+    }
+
+    #[test]
+    fn offline_stub_redacts_query() {
+        let redactor = crate::secrets::SecretRedactor::from_values(["offline-secret-123456"]);
+        let result = offline_stub_result("find offline-secret-123456", &redactor);
+
+        assert!(result.snippet.contains("[REDACTED]"));
+        assert!(!result.snippet.contains("offline-secret-123456"));
     }
 }
