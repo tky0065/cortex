@@ -246,6 +246,46 @@ fn push_missing_workflow_frontmatter_fields(
             );
         }
     }
+
+    push_missing_workflow_step_fields(report, path, &frontmatter);
+}
+
+fn push_missing_workflow_step_fields(
+    report: &mut ValidationReport,
+    path: &Path,
+    frontmatter: &serde_yaml::Mapping,
+) {
+    let Some(serde_yaml::Value::Sequence(steps)) =
+        frontmatter.get(serde_yaml::Value::String("agents".to_string()))
+    else {
+        return;
+    };
+
+    for (index, step) in steps.iter().enumerate() {
+        let serde_yaml::Value::Mapping(step) = step else {
+            continue;
+        };
+
+        if !step.contains_key(serde_yaml::Value::String("role".to_string())) {
+            push_error(
+                report,
+                path,
+                &display_name(path),
+                "missing-role",
+                format!("workflow step {} role must not be empty", index + 1),
+            );
+        }
+
+        if !step.contains_key(serde_yaml::Value::String("agent".to_string())) {
+            push_error(
+                report,
+                path,
+                &display_name(path),
+                "missing-step-agent",
+                format!("workflow step {} agent must not be empty", index + 1),
+            );
+        }
+    }
 }
 
 fn push_missing_frontmatter_fields(report: &mut ValidationReport, path: &Path, content: &str) {
@@ -1005,6 +1045,37 @@ mod tests {
             let report = validate_workflow_file(&path, Some(&root));
 
             assert_diagnostic(&report, "duplicate-role", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn workflow_step_omitting_role_reports_missing_role() {
+            let root = make_project_root("workflow_step_omitting_role_reports_missing_role");
+            write_agent(&root, "designer");
+            let path = write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - agent: designer\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_diagnostic(&report, "missing-role", ValidationSeverity::Error);
+            assert_diagnostic(&report, "parse-error", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn workflow_step_omitting_agent_reports_missing_step_agent() {
+            let root = make_project_root("workflow_step_omitting_agent_reports_missing_step_agent");
+            let path = write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: designer\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_diagnostic(&report, "missing-step-agent", ValidationSeverity::Error);
+            assert_diagnostic(&report, "parse-error", ValidationSeverity::Error);
         }
 
         #[test]
