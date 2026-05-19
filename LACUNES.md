@@ -19,8 +19,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Definir une matrice d'acceptation par type de projet: build, tests, lint, README runnable, Docker valide, commandes de lancement, couverture minimale, absence de secrets, absence de TODO bloquants.
 
 ### 2. Risque de securite lie aux outils executes depuis des sorties LLM
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** En cours
+**Preuve:** Modèle de menace ajouté dans `docs/SECURITY_THREAT_MODEL.md`; premières protections runtime couvertes par le lot sécurité/secrets (redaction logs, manifests, email, web search, et symlink sandbox). Reste à couvrir updater, validation custom workflows et prompt injection web avancée.
 
 **Constat:** Le PRD mentionne l'allowlist terminal et le sandbox filesystem, mais le produit s'est elargi: web search, fetch URL, email SMTP, update binary, providers remote, custom agents, custom workflows, mentions, skills.
 
@@ -207,8 +207,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 ## Lacunes techniques transversales
 
 ### 20. Tests de securite adversariaux manquants
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** En cours
+**Preuve:** Premiers tests adversariaux ajoutés pour redaction de secrets et frontières tools (`src/secrets.rs`, `src/tools/filesystem.rs`, `src/tools/terminal.rs`, `src/tools/email.rs`, `src/tools/web_search.rs`). Les attaques composées restent à couvrir.
 
 **Constat:** Les tests couvrent des cas normaux et certains garde-fous, mais pas assez les attaques composees.
 
@@ -227,8 +227,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Par defaut, generer dans un sous-dossier nomme, ou exiger confirmation explicite avant ecriture dans un repertoire non vide.
 
 ### 22. Gestion des secrets a renforcer
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Redaction centrale dans `src/secrets.rs`, appliquée aux artefacts de run (`cortex.log`, `cortex.manifest.json`), aux previews email et au contexte web search, avec tests de non-régression.
 
 **Constat:** Cortex gere des API keys, SMTP, OAuth et providers distants.
 
@@ -274,3 +274,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-18 — Lot docs/process beta terminé: guide beta, guide providers, template failed run, liens README. Lacunes terminées: 4, 5, 10, 19. Lacunes partiellement traitées: 16, 18.
 - 2026-05-18 — Lot quality/evals dev terminé: matrice d'acceptation `dev`, fixtures `evals/dev/`, checker minimal pour outputs générés. Lacunes terminées: 1. Lacunes partiellement traitées: 3.
 - 2026-05-18 — Lot docs/supply chain/evals/isolation terminé: PRIVACY.md, PROMPT_CHANGELOG.md, RELEASE.md, COMPARISON.md, ICP ajouté dans BETA.md, templates GitHub Issues (security_report, quality_report), cargo audit/deny dans CI (deny.toml), run_campaign.sh + evals/runs/, cortex.manifest.json généré par run, avertissement répertoire non vide. Lacunes terminées: 3, 11, 12, 13, 14, 16, 17, 18, 21, 24.
+- 2026-05-19 — Lot sécurité/secrets terminé: modèle de menace, redaction centrale, logs/manifests/email/web search redacted, premiers tests adversariaux et durcissement symlink filesystem. Lacunes terminées: 22. Lacunes partiellement traitées: 2, 20.
