@@ -20,7 +20,7 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 ### 2. Risque de securite lie aux outils executes depuis des sorties LLM
 **Statut:** En cours
-**Preuve:** Modèle de menace ajouté dans `docs/SECURITY_THREAT_MODEL.md`; premières protections runtime couvertes par le lot sécurité/secrets (redaction logs, manifests, email, web search, et symlink sandbox). Reste à couvrir updater, validation custom workflows et prompt injection web avancée.
+**Preuve:** Modèle de menace ajouté dans `docs/SECURITY_THREAT_MODEL.md`; premières protections runtime couvertes par le lot sécurité/secrets (redaction logs, manifests, email, web search, et symlink sandbox). Reste à couvrir updater et prompt injection web avancée.
 
 **Constat:** Le PRD mentionne l'allowlist terminal et le sandbox filesystem, mais le produit s'est elargi: web search, fetch URL, email SMTP, update binary, providers remote, custom agents, custom workflows, mentions, skills.
 
@@ -88,7 +88,7 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 **Pourquoi c'est important:** Une mauvaise definition custom peut produire des erreurs difficiles a comprendre ou contourner les garde-fous attendus.
 
-**Action recommandee:** Ajouter une commande de validation stricte: schema, agents manquants, outils interdits, permissions, cycles de dependances, taille de prompts, exemples de bonnes definitions.
+**Action réalisée:** Validation structurée ajoutée pour les agents et workflows custom: schéma, agents manquants, outils inconnus, YAML invalide, collisions avec workflows intégrés, commande `cortex validate`, commande `/validate`, blocage pré-exécution, et tests dédiés. Les raffinements futurs peuvent couvrir permissions fines, cycles de dépendances, taille de prompts et exemples enrichis.
 
 ### 9. Experience de reprise de session a durcir
 **Statut:** À faire
