@@ -81,8 +81,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter estimation et suivi: tokens input/output par agent, cout estime par provider, limite de cout par run, alerte avant depassement.
 
 ### 8. Custom agents et workflows: validation trop critique pour rester permissive
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `src/custom_validation.rs`, `cortex validate`, `/validate`, validation pré-exécution des workflows custom, blocage des agents manquants/outils inconnus/YAML invalide, et tests Rust dédiés.
 
 **Constat:** Les workflows custom et agents Markdown rendent Cortex extensible, mais ils introduisent un format declaratif qui peut etre incomplet, contradictoire ou dangereux.
 
@@ -275,3 +275,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-18 — Lot quality/evals dev terminé: matrice d'acceptation `dev`, fixtures `evals/dev/`, checker minimal pour outputs générés. Lacunes terminées: 1. Lacunes partiellement traitées: 3.
 - 2026-05-18 — Lot docs/supply chain/evals/isolation terminé: PRIVACY.md, PROMPT_CHANGELOG.md, RELEASE.md, COMPARISON.md, ICP ajouté dans BETA.md, templates GitHub Issues (security_report, quality_report), cargo audit/deny dans CI (deny.toml), run_campaign.sh + evals/runs/, cortex.manifest.json généré par run, avertissement répertoire non vide. Lacunes terminées: 3, 11, 12, 13, 14, 16, 17, 18, 21, 24.
 - 2026-05-19 — Lot sécurité/secrets terminé: modèle de menace, redaction centrale, logs/manifests/email/web search redacted, premiers tests adversariaux et durcissement symlink filesystem. Lacunes terminées: 22. Lacunes partiellement traitées: 2, 20.
+- 2026-05-19 — Lot validation custom terminé: validation structurée agents/workflows custom, commandes `cortex validate` et `/validate`, blocage pré-exécution des workflows invalides. Lacune terminée: 8.
