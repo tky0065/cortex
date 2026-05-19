@@ -340,6 +340,7 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/continue` | Resume an interactive pause |
 | `/approve` | Confirm a plan or resume a Review-mode pause (alias for `/continue`) |
 | `/mode [<name>]` | Show or set the execution mode (`normal`, `plan`, `auto`, `review`) |
+| `/validate` | Validate custom agents and workflows |
 | `/config` | Display active config values |
 | `/model [<role> <model>]` | Show or change a role's model |
 | `/provider [<name>]` | Show or change the default provider |
@@ -399,6 +400,9 @@ cortex run --workflow code-review ./my-project
 
 # Initialize project context for future Cortex agents
 cortex init
+
+# Validate custom agent/workflow definitions
+cortex validate
 
 # Verbose (writes all agent I/O to cortex.log)
 cortex -v start "build a todo app" --auto
