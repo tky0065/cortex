@@ -166,7 +166,16 @@ fn push_missing_frontmatter_fields(report: &mut ValidationReport, path: &Path, c
 fn frontmatter_yaml(content: &str) -> Option<&str> {
     let content = content.trim_start();
     let after_open = content.strip_prefix("---")?;
-    let close_pos = after_open.find("\n---")?;
+    let dash_pos = after_open.find("\n---");
+    let head_pos = after_open.find("\n##");
+
+    let close_pos = match (dash_pos, head_pos) {
+        (Some(dash), Some(head)) => dash.min(head),
+        (Some(dash), None) => dash,
+        (None, Some(head)) => head,
+        (None, None) => return None,
+    };
+
     Some(after_open[..close_pos].trim())
 }
 
@@ -247,7 +256,7 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
     }
 
     for tool in &agent.tools {
-        if !KNOWN_TOOLS.contains(&tool.as_str()) {
+        let Some(normalized_tool) = normalize_tool(tool) else {
             push_error(
                 report,
                 path,
@@ -255,9 +264,10 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
                 "unknown-tool",
                 format!("agent references unknown tool '{tool}'"),
             );
-        }
+            continue;
+        };
 
-        if SENSITIVE_TOOLS.contains(&tool.as_str()) {
+        if SENSITIVE_TOOLS.contains(&normalized_tool) {
             push_warning(
                 report,
                 path,
@@ -266,6 +276,19 @@ fn validate_agent(path: &Path, agent: &CustomAgentDef, report: &mut ValidationRe
                 format!("agent uses sensitive tool '{tool}'"),
             );
         }
+    }
+}
+
+fn normalize_tool(tool: &str) -> Option<&'static str> {
+    match tool {
+        "filesystem" | "Read" | "Write" | "Edit" | "Glob" | "Grep" => Some("filesystem"),
+        "terminal" | "Bash" => Some("terminal"),
+        "web_search" | "WebFetch" | "WebSearch" => Some("web_search"),
+        "email" => Some("email"),
+        _ => KNOWN_TOOLS
+            .iter()
+            .copied()
+            .find(|known_tool| *known_tool == tool),
     }
 }
 
@@ -463,6 +486,40 @@ mod tests {
         }
 
         #[test]
+        fn agent_with_generated_tool_aliases_has_no_unknown_tool_errors() {
+            let path = write_agent_file(
+                "agent_with_generated_tool_aliases_has_no_unknown_tool_errors",
+                "designer.md",
+                "---\nname: designer\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [Read, Write, Edit, Glob, Grep, WebFetch, WebSearch]\n---\nYou are a designer.\n",
+            );
+
+            let report = validate_agent_file(&path);
+
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code != "unknown-tool"),
+                "unexpected unknown tool diagnostic in {:?}",
+                report.diagnostics
+            );
+        }
+
+        #[test]
+        fn agent_with_bash_alias_warns_as_sensitive_tool() {
+            let path = write_agent_file(
+                "agent_with_bash_alias_warns_as_sensitive_tool",
+                "designer.md",
+                "---\nname: designer\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [Bash]\n---\nYou are a designer.\n",
+            );
+
+            let report = validate_agent_file(&path);
+
+            assert_eq!(report.error_count(), 0);
+            assert_diagnostic(&report, "sensitive-tool", ValidationSeverity::Warning);
+        }
+
+        #[test]
         fn agent_with_sensitive_tool_is_warning() {
             let path = write_agent_file(
                 "agent_with_sensitive_tool_is_warning",
@@ -521,6 +578,19 @@ mod tests {
                 "agent_with_omitted_model_is_error",
                 "designer.md",
                 "---\nname: designer\ndescription: Creates practical interface designs\ntools: [filesystem]\n---\nYou are a designer.\n",
+            );
+
+            let report = validate_agent_file(&path);
+
+            assert_diagnostic(&report, "missing-model", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn agent_with_heading_separator_and_omitted_field_reports_missing_code() {
+            let path = write_agent_file(
+                "agent_with_heading_separator_and_omitted_field_reports_missing_code",
+                "designer.md",
+                "---\nname: designer\ndescription: Creates practical interface designs\ntools: [filesystem]\n## Agent\nYou are a designer.\n",
             );
 
             let report = validate_agent_file(&path);
