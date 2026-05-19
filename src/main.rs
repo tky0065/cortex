@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod context;
 mod custom_defs;
+mod custom_validation;
 mod mentions;
 mod orchestrator;
 mod project_context;
