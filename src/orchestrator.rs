@@ -149,6 +149,7 @@ impl Orchestrator {
         // When verbose, tap a clone of the sender into a logging task.
         if verbose {
             let (log_tx, mut log_rx) = channel();
+            let log_redactor = crate::secrets::SecretRedactor::from_config_and_env(&self.config);
             // We'll forward from a clone of the main sender.
             // Spawn the file-writer that drains log_rx.
             tokio::spawn(async move {
@@ -170,7 +171,11 @@ impl Orchestrator {
                                 ref chunk,
                             } = ev
                             {
-                                let _ = writeln!(f, "[{}] {}", agent, chunk);
+                                let _ = writeln!(
+                                    f,
+                                    "{}",
+                                    format_verbose_log_line(agent, chunk, &log_redactor)
+                                );
                             }
                         }
                     }
@@ -270,6 +275,14 @@ fn default_project_dir(workflow_name: &str, cwd: std::path::PathBuf) -> std::pat
     }
 }
 
+fn format_verbose_log_line(
+    agent: &str,
+    chunk: &str,
+    redactor: &crate::secrets::SecretRedactor,
+) -> String {
+    format!("[{}] {}", agent, redactor.redact_text(chunk))
+}
+
 /// Write a `cortex.manifest.json` to the project directory on successful run completion.
 /// Failures are non-fatal and silently ignored — the manifest is informational only.
 fn write_manifest(project_dir: &std::path::Path, workflow: &str, prompt: &str, config: &Config) {
@@ -286,12 +299,15 @@ fn write_manifest(project_dir: &std::path::Path, workflow: &str, prompt: &str, c
     models.insert("developer", &cfg_models.developer);
     models.insert("qa", &cfg_models.qa);
 
+    let redactor = crate::secrets::SecretRedactor::from_config_and_env(config);
+    let redacted_prompt = redactor.redact_text(prompt);
+
     let manifest = serde_json::json!({
         "cortex_version": env!("CARGO_PKG_VERSION"),
         "workflow": workflow,
         "provider": config.provider.default,
         "models": models,
-        "prompt": prompt,
+        "prompt": redacted_prompt,
         "timestamp_unix": timestamp,
         "verification": [
             "cargo build",
@@ -362,7 +378,8 @@ fn parse_tasks(content: &str) -> Vec<Task> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::default_project_dir;
+    use super::{default_project_dir, write_manifest};
+    use crate::config::Config;
     use crate::tui::events::{TuiEvent, channel};
 
     #[test]
@@ -378,6 +395,39 @@ mod tests {
             default_project_dir("marketing", cwd.clone()),
             cwd.join("cortex-output")
         );
+    }
+
+    #[test]
+    fn manifest_redacts_prompt_secrets() {
+        let dir =
+            std::env::temp_dir().join(format!("cortex_manifest_redact_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut config = Config::default();
+        config.api_keys.openai = Some("sk-test-manifest-secret".to_string());
+
+        write_manifest(
+            &dir,
+            "dev",
+            "build a tool with key sk-test-manifest-secret",
+            &config,
+        );
+
+        let content = std::fs::read_to_string(dir.join("cortex.manifest.json")).unwrap();
+        assert!(content.contains("[REDACTED]"));
+        assert!(!content.contains("sk-test-manifest-secret"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verbose_log_line_redacts_secrets() {
+        let redactor = crate::secrets::SecretRedactor::from_values(["log-secret-123456"]);
+        let line =
+            super::format_verbose_log_line("developer", "received log-secret-123456", &redactor);
+
+        assert_eq!(line, "[developer] received [REDACTED]");
+        assert!(!line.contains("log-secret-123456"));
     }
 
     /// Phase events sent in sequence must arrive in the same order.
