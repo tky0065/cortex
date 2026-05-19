@@ -264,10 +264,9 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 4. Ajouter un mode de run avec budget: tokens, cout estime, limites et rapport final.
 5. Generer un `cortex.manifest.json` par run pour audit, reprise et debogage.
 6. Choisir le workflow phare de la beta publique et marquer les autres comme experimentaux si necessaire.
-7. Ajouter une validation stricte pour agents/workflows custom.
-8. Durcir l'ecriture dans les repertoires non vides avec confirmation ou sous-dossier par defaut.
-9. Ajouter templates GitHub Issues et guide "How to report a failed run".
-10. Introduire `cargo audit` / `cargo deny` dans la CI.
+7. Durcir l'ecriture dans les repertoires non vides avec confirmation ou sous-dossier par defaut.
+8. Ajouter templates GitHub Issues et guide "How to report a failed run".
+9. Introduire `cargo audit` / `cargo deny` dans la CI.
 
 ## Suivi des lots
 
