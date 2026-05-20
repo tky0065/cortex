@@ -380,15 +380,30 @@ impl RunReportCollector {
         self.report.metrics.duration_ms =
             duration_between(Some(self.report.started_at_unix_ms), Some(finished_at));
 
-        if status == RunStatus::Success {
-            for agent in &mut self.report.agents {
-                if agent.status == AgentRunStatus::Running {
-                    agent.status = AgentRunStatus::Done;
+        for agent in &mut self.report.agents {
+            if agent.status == AgentRunStatus::Running {
+                match status {
+                    RunStatus::Success => {
+                        agent.status = AgentRunStatus::Done;
+                    }
+                    RunStatus::Failed => {
+                        agent.status = AgentRunStatus::Error;
+                    }
+                    RunStatus::Interrupted => {
+                        agent.status = AgentRunStatus::Interrupted;
+                    }
+                    RunStatus::Running => {}
+                }
+
+                if status != RunStatus::Running {
                     agent.finished_at_unix_ms = Some(finished_at);
                     agent.duration_ms =
                         duration_between(agent.started_at_unix_ms, Some(finished_at));
                 }
             }
+        }
+
+        if status == RunStatus::Success {
             self.report.failure = None;
         } else if let Some(message) = message {
             self.report.failure = Some(RunFailure {
@@ -400,20 +415,29 @@ impl RunReportCollector {
             });
         }
 
-        self.push_timeline(
-            match status {
-                RunStatus::Running => "workflow_running",
-                RunStatus::Success => "workflow_success",
-                RunStatus::Failed => "workflow_failed",
-                RunStatus::Interrupted => "workflow_interrupted",
-            },
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        self.push_finish_timeline(status);
         self.refresh_counts();
+    }
+
+    fn push_finish_timeline(&mut self, status: RunStatus) {
+        let event_type = match status {
+            RunStatus::Running => "workflow_running",
+            RunStatus::Success => "workflow_success",
+            RunStatus::Failed => "workflow_failed",
+            RunStatus::Interrupted => "workflow_interrupted",
+        };
+
+        if status == RunStatus::Interrupted
+            && self
+                .report
+                .timeline
+                .last()
+                .is_some_and(|event| event.event_type == event_type)
+        {
+            return;
+        }
+
+        self.push_timeline(event_type, None, None, None, None, None);
     }
 
     fn refresh_counts(&mut self) {
@@ -451,11 +475,19 @@ impl RunReportCollector {
 
     fn last_error_agent(&self) -> Option<String> {
         self.report
-            .agents
+            .timeline
             .iter()
             .rev()
-            .find(|agent| !agent.errors.is_empty() || agent.status == AgentRunStatus::Error)
-            .map(|agent| agent.agent.clone())
+            .find(|event| event.event_type == "error" && event.agent.is_some())
+            .and_then(|event| event.agent.clone())
+            .or_else(|| {
+                self.report
+                    .agents
+                    .iter()
+                    .rev()
+                    .find(|agent| !agent.errors.is_empty() || agent.status == AgentRunStatus::Error)
+                    .map(|agent| agent.agent.clone())
+            })
     }
 
     fn last_phase(&self) -> Option<String> {
@@ -504,6 +536,7 @@ fn model_map(config: &Config) -> BTreeMap<String, String> {
         ("qa".to_string(), config.models.qa.clone()),
         ("devops".to_string(), config.models.devops.clone()),
         ("assistant".to_string(), config.models.assistant.clone()),
+        ("cortex".to_string(), config.models.assistant.clone()),
         ("planner".to_string(), config.models.ceo.clone()),
         ("reviewer".to_string(), config.models.qa.clone()),
         ("security".to_string(), config.models.qa.clone()),
@@ -712,5 +745,99 @@ mod tests {
                 .iter()
                 .all(|event| event.event_type != "token_chunk")
         );
+    }
+
+    #[test]
+    fn finish_error_marks_running_agents_error() {
+        let config = Config::default();
+        let mut collector = RunReportCollector::new("dev", "build", &config);
+
+        collector.record_event(&TuiEvent::AgentStarted {
+            agent: "developer".to_string(),
+        });
+        collector.finish_error("provider failed");
+
+        let developer = collector
+            .report()
+            .agents
+            .iter()
+            .find(|agent| agent.agent == "developer")
+            .unwrap();
+        assert_eq!(developer.status, AgentRunStatus::Error);
+        assert!(developer.finished_at_unix_ms.is_some());
+        assert!(developer.duration_ms.is_some());
+    }
+
+    #[test]
+    fn failure_uses_most_recent_error_event_agent() {
+        let config = Config::default();
+        let mut collector = RunReportCollector::new("dev", "build", &config);
+
+        collector.record_event(&TuiEvent::AgentStarted {
+            agent: "developer".to_string(),
+        });
+        collector.record_event(&TuiEvent::AgentStarted {
+            agent: "qa".to_string(),
+        });
+        collector.record_event(&TuiEvent::Error {
+            agent: "qa".to_string(),
+            message: "tests failed".to_string(),
+        });
+        collector.record_event(&TuiEvent::Error {
+            agent: "developer".to_string(),
+            message: "fix failed".to_string(),
+        });
+        collector.finish_error("workflow failed");
+
+        assert_eq!(
+            collector
+                .report()
+                .failure
+                .as_ref()
+                .unwrap()
+                .agent
+                .as_deref(),
+            Some("developer")
+        );
+    }
+
+    #[test]
+    fn model_map_includes_cortex_alias() {
+        let config = Config::default();
+        let mut collector = RunReportCollector::new("dev", "build", &config);
+
+        collector.record_event(&TuiEvent::AgentStarted {
+            agent: "cortex".to_string(),
+        });
+
+        let cortex = collector
+            .report()
+            .agents
+            .iter()
+            .find(|agent| agent.agent == "cortex")
+            .unwrap();
+        assert_eq!(
+            cortex.model.as_deref(),
+            Some(config.models.assistant.as_str())
+        );
+    }
+
+    #[test]
+    fn finish_interrupted_does_not_duplicate_interruption_event() {
+        let config = Config::default();
+        let mut collector = RunReportCollector::new("dev", "build", &config);
+
+        collector.record_event(&TuiEvent::WorkflowInterrupted {
+            message: "Interrupted by user".to_string(),
+        });
+        collector.finish_interrupted("Workflow aborted.");
+
+        let interruption_count = collector
+            .report()
+            .timeline
+            .iter()
+            .filter(|event| event.event_type == "workflow_interrupted")
+            .count();
+        assert_eq!(interruption_count, 1);
     }
 }
