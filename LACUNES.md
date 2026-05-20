@@ -61,8 +61,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter une matrice providers/modeles: qualite attendue par workflow, streaming, tool calling, cout approximatif, local/remote, configuration minimale, limitations connues.
 
 ### 6. Observabilite et debogage encore trop orientes developpeur
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `cortex.run.json`, écrit pour les runs réussis, échoués et interrompus. Le rapport contient timeline, agents, erreurs, fichiers, outils observables, métriques de base et résumé d'échec.
 
 **Constat:** Il existe du verbose logging et des evenements TUI, mais il manque une vue claire pour diagnostiquer pourquoi un run a echoue: provider, prompt, outil, fichier, test, timeout, budget contexte.
 
@@ -71,8 +71,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter un rapport de run structure: timeline, agents executes, prompts tronques ou non, outils appeles, erreurs, fichiers modifies, commandes lancees, cause probable d'echec.
 
 ### 7. Gestion des couts et quotas absente
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** En cours
+**Preuve:** `cortex.run.json` expose les champs `metrics`, `tokens_total` quand disponible et `cost_status`, mais les limites de budget et l'estimation provider précise ne sont pas encore implémentées.
 
 **Constat:** Cortex peut appeler plusieurs agents, workers paralleles, web search et providers distants, mais ne semble pas exposer un budget clair par run.
 
@@ -275,3 +275,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-18 — Lot docs/supply chain/evals/isolation terminé: PRIVACY.md, PROMPT_CHANGELOG.md, RELEASE.md, COMPARISON.md, ICP ajouté dans BETA.md, templates GitHub Issues (security_report, quality_report), cargo audit/deny dans CI (deny.toml), run_campaign.sh + evals/runs/, cortex.manifest.json généré par run, avertissement répertoire non vide. Lacunes terminées: 3, 11, 12, 13, 14, 16, 17, 18, 21, 24.
 - 2026-05-19 — Lot sécurité/secrets terminé: modèle de menace, redaction centrale, logs/manifests/email/web search redacted, premiers tests adversariaux et durcissement symlink filesystem. Lacunes terminées: 22. Lacunes partiellement traitées: 2, 20.
 - 2026-05-19 — Lot validation custom terminé: validation structurée agents/workflows custom, commandes `cortex validate` et `/validate`, blocage pré-exécution des workflows invalides. Lacune terminée: 8.
+- 2026-05-20 — Lot observabilité complète terminé: `cortex.run.json` généré pour succès/échec/interruption, timeline structurée, résumés agents, fichiers, outils observables, métriques de base, redaction secrets et documentation de partage. Lacune terminée: 6. Lacune partiellement traitée: 7.
