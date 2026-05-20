@@ -53,6 +53,11 @@ impl Workflow for DevWorkflow {
             project_dir: project_dir.clone(),
             ..options.clone()
         };
+        let mut checkpoint = checkpoint_from_options(&opts, &prompt);
+        checkpoint.status = crate::checkpoint::CheckpointStatus::Running;
+        checkpoint.record_phase_complete("started", "run_ceo");
+        save_checkpoint(&opts, &checkpoint)?;
+
         send_phase_tasks(&opts, DEV_TASKS, 0);
 
         // ── Plan Mode: run planner only, then wait for /approve ──────────
@@ -107,6 +112,10 @@ impl Workflow for DevWorkflow {
                 }
             }
         };
+        checkpoint.set_dev_brief(brief.clone());
+        checkpoint.record_phase_complete("brief-ready", "run_pm");
+        save_checkpoint(&opts, &checkpoint)?;
+
         send_phase_tasks(&opts, DEV_TASKS, 1);
 
         // Early exit if cancelled
@@ -173,6 +182,14 @@ impl Workflow for DevWorkflow {
             }
         }
 
+        checkpoint.set_dev_specs_path("specs.md");
+        checkpoint.record_file("pm", "specs-ready", "specs.md", "created", &project_dir)?;
+        if project_dir.join("TASKS.md").exists() {
+            checkpoint.record_file("pm", "specs-ready", "TASKS.md", "created", &project_dir)?;
+        }
+        checkpoint.record_phase_complete("specs-ready", "run_tech_lead");
+        save_checkpoint(&opts, &checkpoint)?;
+
         send_phase_tasks(&opts, DEV_TASKS, 2);
 
         if opts.cancel.is_cancelled() {
@@ -219,6 +236,17 @@ impl Workflow for DevWorkflow {
             }
         }
 
+        checkpoint.set_dev_architecture_path("architecture.md");
+        checkpoint.record_file(
+            "tech_lead",
+            "architecture-ready",
+            "architecture.md",
+            "created",
+            &project_dir,
+        )?;
+        checkpoint.record_phase_complete("architecture-ready", "run_developer");
+        save_checkpoint(&opts, &checkpoint)?;
+
         send_phase_tasks(&opts, DEV_TASKS, 3);
 
         if opts.cancel.is_cancelled() {
@@ -229,6 +257,7 @@ impl Workflow for DevWorkflow {
         pause_if_review("Developer: code generation", &opts).await?;
         drain_and_log_directives(&opts, "before-development").await;
         let files = parse_files_to_create(&arch);
+        let files_for_checkpoint = files.clone();
         let sem = Arc::new(Semaphore::new(
             opts.config.limits.max_parallel_workers as usize,
         ));
@@ -276,6 +305,20 @@ impl Workflow for DevWorkflow {
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
             phase: "development-done".into(),
         });
+        checkpoint.set_dev_expected_files(files_for_checkpoint.clone());
+        for path in files_for_checkpoint {
+            if project_dir.join(&path).exists() {
+                checkpoint.record_file(
+                    "developer",
+                    "development-done",
+                    path,
+                    "created",
+                    &project_dir,
+                )?;
+            }
+        }
+        checkpoint.record_phase_complete("development-done", "run_qa");
+        save_checkpoint(&opts, &checkpoint)?;
 
         // Inter-agent review: Developer phase (summary of files written)
         let dev_summary = format!(
@@ -319,11 +362,15 @@ impl Workflow for DevWorkflow {
 
             drain_and_log_directives(&opts, &format!("qa-iteration-{}", iteration)).await;
             let report = agents::qa::run(&arch, &opts, &fs).await?;
+            checkpoint.set_dev_qa_iteration((iteration + 1) as usize);
+            save_checkpoint(&opts, &checkpoint)?;
 
             if report.contains("RECOMMENDATION: APPROVE") {
                 let _ = opts.tx.send(TuiEvent::PhaseComplete {
                     phase: "qa-approved".into(),
                 });
+                checkpoint.record_phase_complete("qa-approved", "run_devops");
+                save_checkpoint(&opts, &checkpoint)?;
                 break;
             }
 
@@ -335,6 +382,8 @@ impl Workflow for DevWorkflow {
                         max_iterations
                     ),
                 });
+                checkpoint.record_phase_complete("qa-max-iterations", "run_devops");
+                save_checkpoint(&opts, &checkpoint)?;
                 break;
             }
 
@@ -377,6 +426,13 @@ impl Workflow for DevWorkflow {
                 }
             }
         }
+        for path in ["Dockerfile", "docker-compose.yml", "README.md"] {
+            if project_dir.join(path).exists() {
+                checkpoint.record_file("devops", "devops-done", path, "created", &project_dir)?;
+            }
+        }
+        checkpoint.record_phase_complete("devops-done", "finish");
+        save_checkpoint(&opts, &checkpoint)?;
 
         send_phase_tasks(&opts, DEV_TASKS, DEV_TASKS.len());
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
@@ -388,11 +444,32 @@ impl Workflow for DevWorkflow {
             chunk: format!("Project created at: {}", project_dir.display()),
         });
 
+        checkpoint.mark_completed();
+        save_checkpoint(&opts, &checkpoint)?;
+
         Ok(())
     }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn save_checkpoint(opts: &RunOptions, checkpoint: &crate::checkpoint::Checkpoint) -> Result<()> {
+    checkpoint.write_to(&opts.project_dir, &opts.config)
+}
+
+fn checkpoint_from_options(opts: &RunOptions, prompt: &str) -> crate::checkpoint::Checkpoint {
+    opts.resume
+        .as_ref()
+        .map(|resume| resume.checkpoint.clone())
+        .unwrap_or_else(|| {
+            crate::checkpoint::Checkpoint::new(
+                uuid::Uuid::new_v4().to_string(),
+                "dev",
+                prompt.to_string(),
+                &opts.config,
+            )
+        })
+}
 
 /// In Review mode, pause before the named phase and wait for the user to press C (continue).
 async fn pause_if_review(phase: &str, opts: &RunOptions) -> Result<()> {

@@ -140,7 +140,6 @@ impl Checkpoint {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn record_phase_complete(
         &mut self,
         phase: impl Into<String>,
@@ -157,6 +156,48 @@ impl Checkpoint {
         }
         self.next_action = next_action.into();
         self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    pub fn set_dev_brief(&mut self, brief: impl Into<String>) {
+        self.dev.brief = Some(brief.into());
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    pub fn set_dev_specs_path(&mut self, path: impl Into<String>) {
+        self.dev.specs_path = Some(path.into());
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    pub fn set_dev_architecture_path(&mut self, path: impl Into<String>) {
+        self.dev.architecture_path = Some(path.into());
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    pub fn set_dev_expected_files(&mut self, files: Vec<String>) {
+        self.dev.expected_files = files;
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    pub fn set_dev_qa_iteration(&mut self, iteration: usize) {
+        self.dev.qa_iteration = iteration;
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    #[allow(dead_code)]
+    pub fn mark_interrupted(&mut self) {
+        self.status = CheckpointStatus::Interrupted;
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    #[allow(dead_code)]
+    pub fn mark_failed(&mut self) {
+        self.status = CheckpointStatus::Failed;
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    pub fn mark_completed(&mut self) {
+        self.status = CheckpointStatus::Completed;
+        self.record_phase_complete("done", "none");
     }
 
     pub fn record_file(
@@ -553,5 +594,38 @@ mod tests {
         assert!(err.contains("Failed to parse checkpoint"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dev_checkpoint_helpers_update_state_status_and_timestamp() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+
+        checkpoint.set_dev_brief("brief");
+        checkpoint.set_dev_specs_path("specs.md");
+        checkpoint.set_dev_architecture_path("architecture.md");
+        checkpoint.set_dev_expected_files(vec!["src/main.rs".to_string()]);
+        checkpoint.set_dev_qa_iteration(2);
+
+        assert_eq!(checkpoint.dev.brief.as_deref(), Some("brief"));
+        assert_eq!(checkpoint.dev.specs_path.as_deref(), Some("specs.md"));
+        assert_eq!(
+            checkpoint.dev.architecture_path.as_deref(),
+            Some("architecture.md")
+        );
+        assert_eq!(checkpoint.dev.expected_files, vec!["src/main.rs"]);
+        assert_eq!(checkpoint.dev.qa_iteration, 2);
+
+        checkpoint.mark_interrupted();
+        assert_eq!(checkpoint.status, CheckpointStatus::Interrupted);
+
+        checkpoint.mark_failed();
+        assert_eq!(checkpoint.status, CheckpointStatus::Failed);
+
+        checkpoint.mark_completed();
+        assert_eq!(checkpoint.status, CheckpointStatus::Completed);
+        assert_eq!(checkpoint.current_phase, "done");
+        assert_eq!(checkpoint.next_action, "none");
+        assert!(checkpoint.completed_phases.contains(&"done".to_string()));
     }
 }
