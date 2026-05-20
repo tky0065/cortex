@@ -101,6 +101,16 @@ impl Checkpoint {
         workflow == "dev"
     }
 
+    pub fn has_completed_phase(&self, phase: &str) -> bool {
+        self.completed_phases
+            .iter()
+            .any(|completed| completed == phase)
+    }
+
+    pub fn is_resuming(&self) -> bool {
+        self.status != CheckpointStatus::Completed && self.completed_phases.len() > 1
+    }
+
     pub fn checkpoint_path(project_dir: &Path) -> PathBuf {
         project_dir.join("cortex.checkpoint.json")
     }
@@ -365,6 +375,19 @@ mod tests {
         assert!(!Checkpoint::is_resume_supported_for("marketing"));
         assert!(!Checkpoint::is_resume_supported_for("prospecting"));
         assert!(!Checkpoint::is_resume_supported_for("code-review"));
+    }
+
+    #[test]
+    fn completed_phase_helpers_report_resume_state() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        assert!(!checkpoint.is_resuming());
+        assert!(checkpoint.has_completed_phase("started"));
+
+        checkpoint.record_phase_complete("specs-ready", "run_tech_lead");
+        assert!(checkpoint.is_resuming());
+        assert!(checkpoint.has_completed_phase("specs-ready"));
+        assert!(!checkpoint.has_completed_phase("architecture-ready"));
     }
 
     #[test]

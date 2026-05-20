@@ -54,6 +54,7 @@ impl Workflow for DevWorkflow {
             ..options.clone()
         };
         let mut checkpoint = checkpoint_from_options(&opts, &prompt);
+        let is_resuming = opts.resume.is_some() || checkpoint.is_resuming();
         checkpoint.status = crate::checkpoint::CheckpointStatus::Running;
         checkpoint.record_phase_complete("started", "run_ceo");
         save_checkpoint(&opts, &checkpoint)?;
@@ -81,40 +82,50 @@ impl Workflow for DevWorkflow {
         // The CEO may output `CLARIFICATION_NEEDED: <question>` when the prompt
         // is genuinely ambiguous. We ask the user once, then re-run CEO with
         // the enriched context. For clear prompts CEO proceeds directly.
-        let brief = {
-            let first = agents::ceo::run(&prompt, &opts).await?;
-            if let Some(question) = parse_clarification_needed(&first) {
-                let answer = ask_user("ceo", &question, &opts).await?;
-                if answer.trim().is_empty() {
-                    first
+        let brief = if is_resuming && checkpoint.has_completed_phase("brief-ready") {
+            checkpoint
+                .dev
+                .brief
+                .clone()
+                .context("Checkpoint phase brief-ready is missing dev.brief")?
+        } else {
+            let brief = {
+                let first = agents::ceo::run(&prompt, &opts).await?;
+                if let Some(question) = parse_clarification_needed(&first) {
+                    let answer = ask_user("ceo", &question, &opts).await?;
+                    if answer.trim().is_empty() {
+                        first
+                    } else {
+                        let enriched =
+                            format!("{}\n\nAdditional context: {}", prompt, answer.trim());
+                        agents::ceo::run(&enriched, &opts).await?
+                    }
                 } else {
-                    let enriched = format!("{}\n\nAdditional context: {}", prompt, answer.trim());
-                    agents::ceo::run(&enriched, &opts).await?
+                    first
                 }
-            } else {
-                first
-            }
-        };
+            };
 
-        // Inter-agent review: CEO output
-        let brief = {
-            let mut current = brief;
-            loop {
-                if opts.cancel.is_cancelled() {
-                    return Ok(());
-                }
-                match request_agent_review("CEO", &current, &opts).await? {
-                    None => break current,
-                    Some(feedback) => {
-                        let enriched = format!("{}\n\n## User feedback\n{}", prompt, feedback);
-                        current = agents::ceo::run(&enriched, &opts).await?;
+            // Inter-agent review: CEO output
+            let brief = {
+                let mut current = brief;
+                loop {
+                    if opts.cancel.is_cancelled() {
+                        return Ok(());
+                    }
+                    match request_agent_review("CEO", &current, &opts).await? {
+                        None => break current,
+                        Some(feedback) => {
+                            let enriched = format!("{}\n\n## User feedback\n{}", prompt, feedback);
+                            current = agents::ceo::run(&enriched, &opts).await?;
+                        }
                     }
                 }
-            }
+            };
+            checkpoint.set_dev_brief(brief.clone());
+            checkpoint.record_phase_complete("brief-ready", "run_pm");
+            save_checkpoint(&opts, &checkpoint)?;
+            brief
         };
-        checkpoint.set_dev_brief(brief.clone());
-        checkpoint.record_phase_complete("brief-ready", "run_pm");
-        save_checkpoint(&opts, &checkpoint)?;
 
         send_phase_tasks(&opts, DEV_TASKS, 1);
 
@@ -124,71 +135,78 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
-        pause_if_review("PM: specs.md", &opts).await?;
-        drain_and_log_directives(&opts, "before-pm").await;
-        let pm_output = agents::pm::run(&brief, &opts).await?;
+        let specs = if is_resuming && checkpoint.has_completed_phase("specs-ready") {
+            let specs_path = checkpoint.dev.specs_path.as_deref().unwrap_or("specs.md");
+            fs.read(specs_path)
+                .with_context(|| format!("Failed to read resumed specs from {specs_path}"))?
+        } else {
+            pause_if_review("PM: specs.md", &opts).await?;
+            drain_and_log_directives(&opts, "before-pm").await;
+            let pm_output = agents::pm::run(&brief, &opts).await?;
 
-        // Extract specs and tasks from PM output
-        let (mut specs, tasks_content) = parse_pm_output(&pm_output);
+            // Extract specs and tasks from PM output
+            let (mut specs, tasks_content) = parse_pm_output(&pm_output);
 
-        // Save specs.md
-        send_tool_action(&opts, "pm", "write_file", "specs.md");
-        let old_specs = fs.read("specs.md").ok();
-        fs.write("specs.md", &specs)?;
-        let _ = opts.tx.send(TuiEvent::FileWritten {
-            agent: "pm".to_string(),
-            path: "specs.md".to_string(),
-            old_content: old_specs,
-            new_content: specs.clone(),
-        });
-
-        // Save TASKS.md if present
-        if let Some(tasks) = tasks_content {
-            let old_tasks = fs.read("TASKS.md").ok();
-            fs.write("TASKS.md", &tasks)?;
+            // Save specs.md
+            send_tool_action(&opts, "pm", "write_file", "specs.md");
+            let old_specs = fs.read("specs.md").ok();
+            fs.write("specs.md", &specs)?;
             let _ = opts.tx.send(TuiEvent::FileWritten {
                 agent: "pm".to_string(),
-                path: "TASKS.md".to_string(),
-                old_content: old_tasks,
-                new_content: tasks,
+                path: "specs.md".to_string(),
+                old_content: old_specs,
+                new_content: specs.clone(),
             });
-        }
 
-        let _ = opts.tx.send(TuiEvent::PhaseComplete {
-            phase: "specs-ready".into(),
-        });
-
-        // Inter-agent review: PM output
-        let mut pm_input = brief.clone();
-        loop {
-            if opts.cancel.is_cancelled() {
-                return Ok(());
+            // Save TASKS.md if present
+            if let Some(tasks) = tasks_content {
+                let old_tasks = fs.read("TASKS.md").ok();
+                fs.write("TASKS.md", &tasks)?;
+                let _ = opts.tx.send(TuiEvent::FileWritten {
+                    agent: "pm".to_string(),
+                    path: "TASKS.md".to_string(),
+                    old_content: old_tasks,
+                    new_content: tasks,
+                });
             }
-            match request_agent_review("PM", &specs, &opts).await? {
-                None => break,
-                Some(feedback) => {
-                    pm_input = format!("{}\n\n## User feedback\n{}", pm_input, feedback);
-                    let new_pm = agents::pm::run(&pm_input, &opts).await?;
-                    let (new_specs, _) = parse_pm_output(&new_pm);
-                    fs.write("specs.md", &new_specs)?;
-                    let _ = opts.tx.send(TuiEvent::FileWritten {
-                        agent: "pm".to_string(),
-                        path: "specs.md".to_string(),
-                        old_content: Some(specs.clone()),
-                        new_content: new_specs.clone(),
-                    });
-                    specs = new_specs;
+
+            let _ = opts.tx.send(TuiEvent::PhaseComplete {
+                phase: "specs-ready".into(),
+            });
+
+            // Inter-agent review: PM output
+            let mut pm_input = brief.clone();
+            loop {
+                if opts.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                match request_agent_review("PM", &specs, &opts).await? {
+                    None => break,
+                    Some(feedback) => {
+                        pm_input = format!("{}\n\n## User feedback\n{}", pm_input, feedback);
+                        let new_pm = agents::pm::run(&pm_input, &opts).await?;
+                        let (new_specs, _) = parse_pm_output(&new_pm);
+                        fs.write("specs.md", &new_specs)?;
+                        let _ = opts.tx.send(TuiEvent::FileWritten {
+                            agent: "pm".to_string(),
+                            path: "specs.md".to_string(),
+                            old_content: Some(specs.clone()),
+                            new_content: new_specs.clone(),
+                        });
+                        specs = new_specs;
+                    }
                 }
             }
-        }
 
-        checkpoint.set_dev_specs_path("specs.md");
-        checkpoint.record_file("pm", "specs-ready", "specs.md", "created", &project_dir)?;
-        if project_dir.join("TASKS.md").exists() {
-            checkpoint.record_file("pm", "specs-ready", "TASKS.md", "created", &project_dir)?;
-        }
-        checkpoint.record_phase_complete("specs-ready", "run_tech_lead");
-        save_checkpoint(&opts, &checkpoint)?;
+            checkpoint.set_dev_specs_path("specs.md");
+            checkpoint.record_file("pm", "specs-ready", "specs.md", "created", &project_dir)?;
+            if project_dir.join("TASKS.md").exists() {
+                checkpoint.record_file("pm", "specs-ready", "TASKS.md", "created", &project_dir)?;
+            }
+            checkpoint.record_phase_complete("specs-ready", "run_tech_lead");
+            save_checkpoint(&opts, &checkpoint)?;
+            specs
+        };
 
         send_phase_tasks(&opts, DEV_TASKS, 2);
 
@@ -197,55 +215,67 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 3: Tech Lead → architecture.md ─────────────────────────
-        pause_if_review("Tech Lead: architecture.md", &opts).await?;
-        drain_and_log_directives(&opts, "before-tech-lead").await;
-        let mut arch = agents::tech_lead::run(&specs, &opts).await?;
-        send_tool_action(&opts, "tech_lead", "write_file", "architecture.md");
-        let old_arch = fs.read("architecture.md").ok();
-        fs.write("architecture.md", &arch)?;
-        let _ = opts.tx.send(TuiEvent::FileWritten {
-            agent: "tech_lead".to_string(),
-            path: "architecture.md".to_string(),
-            old_content: old_arch,
-            new_content: arch.clone(),
-        });
-        let _ = opts.tx.send(TuiEvent::PhaseComplete {
-            phase: "architecture-ready".into(),
-        });
+        let arch = if is_resuming && checkpoint.has_completed_phase("architecture-ready") {
+            let architecture_path = checkpoint
+                .dev
+                .architecture_path
+                .as_deref()
+                .unwrap_or("architecture.md");
+            fs.read(architecture_path).with_context(|| {
+                format!("Failed to read resumed architecture from {architecture_path}")
+            })?
+        } else {
+            pause_if_review("Tech Lead: architecture.md", &opts).await?;
+            drain_and_log_directives(&opts, "before-tech-lead").await;
+            let mut arch = agents::tech_lead::run(&specs, &opts).await?;
+            send_tool_action(&opts, "tech_lead", "write_file", "architecture.md");
+            let old_arch = fs.read("architecture.md").ok();
+            fs.write("architecture.md", &arch)?;
+            let _ = opts.tx.send(TuiEvent::FileWritten {
+                agent: "tech_lead".to_string(),
+                path: "architecture.md".to_string(),
+                old_content: old_arch,
+                new_content: arch.clone(),
+            });
+            let _ = opts.tx.send(TuiEvent::PhaseComplete {
+                phase: "architecture-ready".into(),
+            });
 
-        // Inter-agent review: Tech Lead output
-        let mut tl_input = specs.clone();
-        loop {
-            if opts.cancel.is_cancelled() {
-                return Ok(());
-            }
-            match request_agent_review("Tech Lead", &arch, &opts).await? {
-                None => break,
-                Some(feedback) => {
-                    tl_input = format!("{}\n\n## User feedback\n{}", tl_input, feedback);
-                    let new_arch = agents::tech_lead::run(&tl_input, &opts).await?;
-                    fs.write("architecture.md", &new_arch)?;
-                    let _ = opts.tx.send(TuiEvent::FileWritten {
-                        agent: "tech_lead".to_string(),
-                        path: "architecture.md".to_string(),
-                        old_content: Some(arch.clone()),
-                        new_content: new_arch.clone(),
-                    });
-                    arch = new_arch;
+            // Inter-agent review: Tech Lead output
+            let mut tl_input = specs.clone();
+            loop {
+                if opts.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                match request_agent_review("Tech Lead", &arch, &opts).await? {
+                    None => break,
+                    Some(feedback) => {
+                        tl_input = format!("{}\n\n## User feedback\n{}", tl_input, feedback);
+                        let new_arch = agents::tech_lead::run(&tl_input, &opts).await?;
+                        fs.write("architecture.md", &new_arch)?;
+                        let _ = opts.tx.send(TuiEvent::FileWritten {
+                            agent: "tech_lead".to_string(),
+                            path: "architecture.md".to_string(),
+                            old_content: Some(arch.clone()),
+                            new_content: new_arch.clone(),
+                        });
+                        arch = new_arch;
+                    }
                 }
             }
-        }
 
-        checkpoint.set_dev_architecture_path("architecture.md");
-        checkpoint.record_file(
-            "tech_lead",
-            "architecture-ready",
-            "architecture.md",
-            "created",
-            &project_dir,
-        )?;
-        checkpoint.record_phase_complete("architecture-ready", "run_developer");
-        save_checkpoint(&opts, &checkpoint)?;
+            checkpoint.set_dev_architecture_path("architecture.md");
+            checkpoint.record_file(
+                "tech_lead",
+                "architecture-ready",
+                "architecture.md",
+                "created",
+                &project_dir,
+            )?;
+            checkpoint.record_phase_complete("architecture-ready", "run_developer");
+            save_checkpoint(&opts, &checkpoint)?;
+            arch
+        };
 
         send_phase_tasks(&opts, DEV_TASKS, 3);
 
@@ -254,100 +284,108 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 4: Developer workers (parallel, semaphore-bounded) ──────
-        pause_if_review("Developer: code generation", &opts).await?;
-        drain_and_log_directives(&opts, "before-development").await;
-        let files = parse_files_to_create(&arch);
-        let files_for_checkpoint = files.clone();
-        let sem = Arc::new(Semaphore::new(
-            opts.config.limits.max_parallel_workers as usize,
-        ));
-        let mut dev_handles = Vec::new();
-
-        for file_path in files {
-            // Stop spawning new tasks if already cancelled
-            if opts.cancel.is_cancelled() {
-                return Ok(());
-            }
-
-            let permit = Arc::clone(&sem).acquire_owned().await?;
-            let opts_clone = opts.clone();
-            let arch_clone = arch.clone();
-            let project_dir_clone = project_dir.clone();
-
-            let handle = tokio::spawn(async move {
-                let _permit = permit;
-                // Honour cancellation inside each worker
-                if opts_clone.cancel.is_cancelled() {
-                    return Ok::<(), anyhow::Error>(());
-                }
-                let local_fs = FileSystem::new(&project_dir_clone);
-                let agent_label = format!("developer:{}", file_path);
-                let code = agents::developer::run(&file_path, &arch_clone, &opts_clone).await?;
-                let old_code = local_fs.read(&file_path).ok();
-                send_tool_action(&opts_clone, &agent_label, "write_file", &file_path);
-                local_fs.write(&file_path, &code)?;
-                let _ = opts_clone.tx.send(TuiEvent::FileWritten {
-                    agent: "developer".to_string(),
-                    path: file_path.clone(),
-                    old_content: old_code,
-                    new_content: code.clone(),
-                });
-                Ok::<(), anyhow::Error>(())
+        if is_resuming && checkpoint.has_completed_phase("development-done") {
+            let _ = opts.tx.send(TuiEvent::TokenChunk {
+                agent: "orchestrator".into(),
+                chunk: "Resume checkpoint already completed development; skipping Developer"
+                    .to_string(),
             });
-            dev_handles.push(handle);
-        }
+        } else {
+            pause_if_review("Developer: code generation", &opts).await?;
+            drain_and_log_directives(&opts, "before-development").await;
+            let files = parse_files_to_create(&arch);
+            let files_for_checkpoint = files.clone();
+            let sem = Arc::new(Semaphore::new(
+                opts.config.limits.max_parallel_workers as usize,
+            ));
+            let mut dev_handles = Vec::new();
 
-        for handle in dev_handles {
-            handle
-                .await
-                .map_err(|e| anyhow::anyhow!("Developer worker panicked: {e}"))??;
-        }
-        let _ = opts.tx.send(TuiEvent::PhaseComplete {
-            phase: "development-done".into(),
-        });
-        checkpoint.set_dev_expected_files(files_for_checkpoint.clone());
-        for path in files_for_checkpoint {
-            record_existing_checkpoint_file(
-                &mut checkpoint,
-                "developer",
-                "development-done",
-                path,
-                "created",
-                &project_dir,
-            )?;
-        }
-        checkpoint.record_phase_complete("development-done", "run_qa");
-        save_checkpoint(&opts, &checkpoint)?;
+            for file_path in files {
+                // Stop spawning new tasks if already cancelled
+                if opts.cancel.is_cancelled() {
+                    return Ok(());
+                }
 
-        // Inter-agent review: Developer phase (summary of files written)
-        let dev_summary = format!(
-            "Developer has written all files listed in architecture.md.\nProject directory: {}",
-            project_dir.display()
-        );
-        loop {
-            if opts.cancel.is_cancelled() {
-                return Ok(());
-            }
-            match request_agent_review("Developer", &dev_summary, &opts).await? {
-                None => break,
-                Some(feedback) => {
-                    let _ = opts.tx.send(TuiEvent::TokenChunk {
-                        agent: "orchestrator".into(),
-                        chunk: format!("Developer feedback noted: {}", feedback),
+                let permit = Arc::clone(&sem).acquire_owned().await?;
+                let opts_clone = opts.clone();
+                let arch_clone = arch.clone();
+                let project_dir_clone = project_dir.clone();
+
+                let handle = tokio::spawn(async move {
+                    let _permit = permit;
+                    // Honour cancellation inside each worker
+                    if opts_clone.cancel.is_cancelled() {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    let local_fs = FileSystem::new(&project_dir_clone);
+                    let agent_label = format!("developer:{}", file_path);
+                    let code = agents::developer::run(&file_path, &arch_clone, &opts_clone).await?;
+                    let old_code = local_fs.read(&file_path).ok();
+                    send_tool_action(&opts_clone, &agent_label, "write_file", &file_path);
+                    local_fs.write(&file_path, &code)?;
+                    let _ = opts_clone.tx.send(TuiEvent::FileWritten {
+                        agent: "developer".to_string(),
+                        path: file_path.clone(),
+                        old_content: old_code,
+                        new_content: code.clone(),
                     });
-                    // Re-run developer for any file mentioned in feedback
-                    for file_path in extract_files_from_report(&feedback) {
-                        if let Ok(current) = fs.read(&file_path) {
-                            agents::developer::fix(&file_path, &current, &feedback, &opts, &fs)
-                                .await?;
-                            record_existing_checkpoint_file_and_save(
-                                &opts,
-                                &mut checkpoint,
-                                "developer",
-                                "development-done",
-                                file_path,
-                                "modified",
-                            )?;
+                    Ok::<(), anyhow::Error>(())
+                });
+                dev_handles.push(handle);
+            }
+
+            for handle in dev_handles {
+                handle
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Developer worker panicked: {e}"))??;
+            }
+            let _ = opts.tx.send(TuiEvent::PhaseComplete {
+                phase: "development-done".into(),
+            });
+            checkpoint.set_dev_expected_files(files_for_checkpoint.clone());
+            for path in files_for_checkpoint {
+                record_existing_checkpoint_file(
+                    &mut checkpoint,
+                    "developer",
+                    "development-done",
+                    path,
+                    "created",
+                    &project_dir,
+                )?;
+            }
+            checkpoint.record_phase_complete("development-done", "run_qa");
+            save_checkpoint(&opts, &checkpoint)?;
+
+            // Inter-agent review: Developer phase (summary of files written)
+            let dev_summary = format!(
+                "Developer has written all files listed in architecture.md.\nProject directory: {}",
+                project_dir.display()
+            );
+            loop {
+                if opts.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                match request_agent_review("Developer", &dev_summary, &opts).await? {
+                    None => break,
+                    Some(feedback) => {
+                        let _ = opts.tx.send(TuiEvent::TokenChunk {
+                            agent: "orchestrator".into(),
+                            chunk: format!("Developer feedback noted: {}", feedback),
+                        });
+                        // Re-run developer for any file mentioned in feedback
+                        for file_path in extract_files_from_report(&feedback) {
+                            if let Ok(current) = fs.read(&file_path) {
+                                agents::developer::fix(&file_path, &current, &feedback, &opts, &fs)
+                                    .await?;
+                                record_existing_checkpoint_file_and_save(
+                                    &opts,
+                                    &mut checkpoint,
+                                    "developer",
+                                    "development-done",
+                                    file_path,
+                                    "modified",
+                                )?;
+                            }
                         }
                     }
                 }
@@ -361,54 +399,64 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 5: QA ↔ Developer loop ─────────────────────────────────
-        let max_iterations = opts.config.limits.max_qa_iterations;
-        for iteration in 0..max_iterations {
-            if opts.cancel.is_cancelled() {
-                return Ok(());
-            }
-
-            drain_and_log_directives(&opts, &format!("qa-iteration-{}", iteration)).await;
-            let report = agents::qa::run(&arch, &opts, &fs).await?;
-            checkpoint.set_dev_qa_iteration((iteration + 1) as usize);
-            save_checkpoint(&opts, &checkpoint)?;
-
-            if report.contains("RECOMMENDATION: APPROVE") {
-                let _ = opts.tx.send(TuiEvent::PhaseComplete {
-                    phase: "qa-approved".into(),
-                });
-                checkpoint.record_phase_complete("qa-approved", "run_devops");
-                save_checkpoint(&opts, &checkpoint)?;
-                break;
-            }
-
-            if iteration + 1 >= max_iterations {
-                let _ = opts.tx.send(TuiEvent::TokenChunk {
-                    agent: "orchestrator".into(),
-                    chunk: format!(
-                        "QA max iterations ({}) reached — proceeding",
-                        max_iterations
-                    ),
-                });
-                checkpoint.record_phase_complete("qa-max-iterations", "run_devops");
-                save_checkpoint(&opts, &checkpoint)?;
-                break;
-            }
-
-            // Fix: re-run developer for each file mentioned in QA report
-            for file_path in extract_files_from_report(&report) {
+        if is_resuming
+            && (checkpoint.has_completed_phase("qa-approved")
+                || checkpoint.has_completed_phase("qa-max-iterations"))
+        {
+            let _ = opts.tx.send(TuiEvent::TokenChunk {
+                agent: "orchestrator".into(),
+                chunk: "Resume checkpoint already completed QA; skipping QA loop".to_string(),
+            });
+        } else {
+            let max_iterations = opts.config.limits.max_qa_iterations;
+            for iteration in 0..max_iterations {
                 if opts.cancel.is_cancelled() {
                     return Ok(());
                 }
-                if let Ok(current) = fs.read(&file_path) {
-                    agents::developer::fix(&file_path, &current, &report, &opts, &fs).await?;
-                    record_existing_checkpoint_file_and_save(
-                        &opts,
-                        &mut checkpoint,
-                        "developer",
-                        "development-done",
-                        file_path,
-                        "modified",
-                    )?;
+
+                drain_and_log_directives(&opts, &format!("qa-iteration-{}", iteration)).await;
+                let report = agents::qa::run(&arch, &opts, &fs).await?;
+                checkpoint.set_dev_qa_iteration((iteration + 1) as usize);
+                save_checkpoint(&opts, &checkpoint)?;
+
+                if report.contains("RECOMMENDATION: APPROVE") {
+                    let _ = opts.tx.send(TuiEvent::PhaseComplete {
+                        phase: "qa-approved".into(),
+                    });
+                    checkpoint.record_phase_complete("qa-approved", "run_devops");
+                    save_checkpoint(&opts, &checkpoint)?;
+                    break;
+                }
+
+                if iteration + 1 >= max_iterations {
+                    let _ = opts.tx.send(TuiEvent::TokenChunk {
+                        agent: "orchestrator".into(),
+                        chunk: format!(
+                            "QA max iterations ({}) reached — proceeding",
+                            max_iterations
+                        ),
+                    });
+                    checkpoint.record_phase_complete("qa-max-iterations", "run_devops");
+                    save_checkpoint(&opts, &checkpoint)?;
+                    break;
+                }
+
+                // Fix: re-run developer for each file mentioned in QA report
+                for file_path in extract_files_from_report(&report) {
+                    if opts.cancel.is_cancelled() {
+                        return Ok(());
+                    }
+                    if let Ok(current) = fs.read(&file_path) {
+                        agents::developer::fix(&file_path, &current, &report, &opts, &fs).await?;
+                        record_existing_checkpoint_file_and_save(
+                            &opts,
+                            &mut checkpoint,
+                            "developer",
+                            "development-done",
+                            file_path,
+                            "modified",
+                        )?;
+                    }
                 }
             }
         }
@@ -420,39 +468,46 @@ impl Workflow for DevWorkflow {
         }
 
         // ── Phase 6: DevOps ───────────────────────────────────────────────
-        pause_if_review("DevOps: deployment config", &opts).await?;
-        drain_and_log_directives(&opts, "before-devops").await;
-        agents::devops::run(&arch, &opts, &fs).await?;
+        if is_resuming && checkpoint.has_completed_phase("devops-done") {
+            let _ = opts.tx.send(TuiEvent::TokenChunk {
+                agent: "orchestrator".into(),
+                chunk: "Resume checkpoint already completed DevOps; skipping DevOps".to_string(),
+            });
+        } else {
+            pause_if_review("DevOps: deployment config", &opts).await?;
+            drain_and_log_directives(&opts, "before-devops").await;
+            agents::devops::run(&arch, &opts, &fs).await?;
 
-        // Inter-agent review: DevOps output
-        loop {
-            if opts.cancel.is_cancelled() {
-                return Ok(());
-            }
-            let devops_summary = format!(
-                "DevOps has generated deployment config (Dockerfile, docker-compose, git commit).\nProject: {}",
-                project_dir.display()
-            );
-            match request_agent_review("DevOps", &devops_summary, &opts).await? {
-                None => break,
-                Some(feedback) => {
-                    let feedback_input = format!("{}\n\n## User feedback\n{}", arch, feedback);
-                    agents::devops::run(&feedback_input, &opts, &fs).await?;
+            // Inter-agent review: DevOps output
+            loop {
+                if opts.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                let devops_summary = format!(
+                    "DevOps has generated deployment config (Dockerfile, docker-compose, git commit).\nProject: {}",
+                    project_dir.display()
+                );
+                match request_agent_review("DevOps", &devops_summary, &opts).await? {
+                    None => break,
+                    Some(feedback) => {
+                        let feedback_input = format!("{}\n\n## User feedback\n{}", arch, feedback);
+                        agents::devops::run(&feedback_input, &opts, &fs).await?;
+                    }
                 }
             }
+            for path in ["Dockerfile", "docker-compose.yml", "README.md"] {
+                record_existing_checkpoint_file(
+                    &mut checkpoint,
+                    "devops",
+                    "devops-done",
+                    path,
+                    "created",
+                    &project_dir,
+                )?;
+            }
+            checkpoint.record_phase_complete("devops-done", "finish");
+            save_checkpoint(&opts, &checkpoint)?;
         }
-        for path in ["Dockerfile", "docker-compose.yml", "README.md"] {
-            record_existing_checkpoint_file(
-                &mut checkpoint,
-                "devops",
-                "devops-done",
-                path,
-                "created",
-                &project_dir,
-            )?;
-        }
-        checkpoint.record_phase_complete("devops-done", "finish");
-        save_checkpoint(&opts, &checkpoint)?;
 
         send_phase_tasks(&opts, DEV_TASKS, DEV_TASKS.len());
         let _ = opts.tx.send(TuiEvent::PhaseComplete {
