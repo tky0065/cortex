@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::config::Config;
 
@@ -168,6 +168,7 @@ impl Checkpoint {
         project_dir: &Path,
     ) -> Result<()> {
         let path = path.into();
+        let path = normalize_checkpoint_path(&path)?;
         let file_path = project_dir.join(&path);
         let metadata = fs::metadata(&file_path)
             .with_context(|| format!("Failed to stat checkpoint file: {}", file_path.display()))?;
@@ -197,12 +198,13 @@ impl Checkpoint {
         let mut conflicts = Vec::new();
 
         for file in &self.files {
-            let file_path = project_dir.join(&file.path);
+            let normalized_path = normalize_checkpoint_path(&file.path)?;
+            let file_path = project_dir.join(&normalized_path);
             if !file_path.exists() {
                 conflicts.push(CheckpointConflict {
                     conflict_type: CheckpointConflictType::FileMissing,
-                    path: Some(file.path.clone()),
-                    message: format!("checkpoint file is missing: {}", file.path),
+                    path: Some(normalized_path.clone()),
+                    message: format!("checkpoint file is missing: {normalized_path}"),
                     expected_sha256: Some(file.sha256.clone()),
                     actual_sha256: None,
                 });
@@ -215,8 +217,8 @@ impl Checkpoint {
             if actual_sha256 != file.sha256 {
                 conflicts.push(CheckpointConflict {
                     conflict_type: CheckpointConflictType::FileModified,
-                    path: Some(file.path.clone()),
-                    message: format!("checkpoint file was modified: {}", file.path),
+                    path: Some(normalized_path.clone()),
+                    message: format!("checkpoint file was modified: {normalized_path}"),
                     expected_sha256: Some(file.sha256.clone()),
                     actual_sha256: Some(actual_sha256),
                 });
@@ -244,6 +246,27 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+fn normalize_checkpoint_path(path: &str) -> Result<String> {
+    let input = Path::new(path);
+    let mut normalized = Vec::new();
+
+    for component in input.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part.to_string_lossy().into_owned()),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                anyhow::bail!("Invalid checkpoint file path: {path}");
+            }
+        }
+    }
+
+    if normalized.is_empty() {
+        anyhow::bail!("Invalid checkpoint file path: {path}");
+    }
+
+    Ok(normalized.join("/"))
 }
 
 #[cfg(test)]
@@ -424,6 +447,96 @@ mod tests {
             conflicts[0].conflict_type,
             CheckpointConflictType::FileMissing
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_file_normalizes_dot_segments_and_replaces_equivalent_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_checkpoint_normalize_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("specs.md"), "initial specs").unwrap();
+
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint
+            .record_file("pm", "specs-ready", "./specs.md", "created", &dir)
+            .unwrap();
+
+        assert_eq!(checkpoint.files.len(), 1);
+        assert_eq!(checkpoint.files[0].path, "specs.md");
+
+        checkpoint
+            .record_file("pm", "specs-ready", "specs.md", "updated", &dir)
+            .unwrap();
+        checkpoint
+            .record_file("pm", "specs-ready", "./specs.md", "updated-again", &dir)
+            .unwrap();
+
+        assert_eq!(checkpoint.files.len(), 1);
+        assert_eq!(checkpoint.files[0].path, "specs.md");
+        assert_eq!(checkpoint.files[0].operation, "updated-again");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_file_rejects_parent_and_absolute_paths() {
+        let dir =
+            std::env::temp_dir().join(format!("cortex_checkpoint_reject_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+
+        assert!(
+            checkpoint
+                .record_file("pm", "specs-ready", "../outside.txt", "created", &dir)
+                .is_err()
+        );
+        assert!(
+            checkpoint
+                .record_file(
+                    "pm",
+                    "specs-ready",
+                    dir.join("specs.md").to_string_lossy().to_string(),
+                    "created",
+                    &dir
+                )
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_files_errors_for_invalid_tracked_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_checkpoint_invalid_path_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.files.push(CheckpointFile {
+            path: "../outside.txt".to_string(),
+            agent: "pm".to_string(),
+            phase: "specs-ready".to_string(),
+            operation: "created".to_string(),
+            bytes: 0,
+            sha256: sha256_bytes(b"outside"),
+            updated_at_unix_ms: now_unix_ms(),
+        });
+
+        let err = checkpoint.validate_files(&dir).unwrap_err().to_string();
+        assert!(err.contains("Invalid checkpoint file path"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
