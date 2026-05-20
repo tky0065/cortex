@@ -11,7 +11,7 @@ mod orchestrator;
 mod project_context;
 mod providers;
 mod repl;
-mod run_report;
+pub mod run_report;
 mod secrets;
 mod skills;
 mod tools;

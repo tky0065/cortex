@@ -118,10 +118,8 @@ pub struct RunReport {
 
 pub struct RunReportCollector {
     report: RunReport,
-    #[allow(dead_code)]
-    agent_index: BTreeMap<String, usize>,
-    #[allow(dead_code)]
-    model_by_role: BTreeMap<String, String>,
+    _agent_index: BTreeMap<String, usize>,
+    _model_by_role: BTreeMap<String, String>,
 }
 
 impl RunReportCollector {
@@ -157,8 +155,8 @@ impl RunReportCollector {
                 },
                 failure: None,
             },
-            agent_index: BTreeMap::new(),
-            model_by_role: model_map(config),
+            _agent_index: BTreeMap::new(),
+            _model_by_role: model_map(config),
         }
     }
 
