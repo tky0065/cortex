@@ -1,4 +1,7 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
@@ -101,6 +104,127 @@ impl Checkpoint {
     pub fn checkpoint_path(project_dir: &Path) -> PathBuf {
         project_dir.join("cortex.checkpoint.json")
     }
+
+    pub fn load(project_dir: &Path) -> Result<Self> {
+        let checkpoint_path = Self::checkpoint_path(project_dir);
+        let raw = fs::read_to_string(&checkpoint_path)
+            .with_context(|| format!("Failed to read checkpoint: {}", checkpoint_path.display()))?;
+
+        serde_json::from_str(&raw)
+            .with_context(|| format!("Failed to parse checkpoint: {}", checkpoint_path.display()))
+    }
+
+    pub fn write_to(&self, project_dir: &Path, config: &Config) -> Result<()> {
+        fs::create_dir_all(project_dir).with_context(|| {
+            format!(
+                "Failed to create project directory: {}",
+                project_dir.display()
+            )
+        })?;
+
+        let redactor = crate::secrets::SecretRedactor::from_config_and_env(config);
+        let mut checkpoint = self.clone();
+        checkpoint.prompt = redactor.redact_text(&checkpoint.prompt);
+        if let Some(brief) = checkpoint.dev.brief.as_mut() {
+            *brief = redactor.redact_text(brief);
+        }
+        checkpoint.updated_at_unix_ms = now_unix_ms();
+
+        let raw =
+            serde_json::to_string_pretty(&checkpoint).context("Failed to serialize checkpoint")?;
+        let checkpoint_path = Self::checkpoint_path(project_dir);
+        fs::write(&checkpoint_path, raw).with_context(|| {
+            format!("Failed to write checkpoint: {}", checkpoint_path.display())
+        })?;
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn record_phase_complete(
+        &mut self,
+        phase: impl Into<String>,
+        next_action: impl Into<String>,
+    ) {
+        let phase = phase.into();
+        self.current_phase = phase.clone();
+        if !self
+            .completed_phases
+            .iter()
+            .any(|completed| completed == &phase)
+        {
+            self.completed_phases.push(phase);
+        }
+        self.next_action = next_action.into();
+        self.updated_at_unix_ms = now_unix_ms();
+    }
+
+    pub fn record_file(
+        &mut self,
+        agent: impl Into<String>,
+        phase: impl Into<String>,
+        path: impl Into<String>,
+        operation: impl Into<String>,
+        project_dir: &Path,
+    ) -> Result<()> {
+        let path = path.into();
+        let file_path = project_dir.join(&path);
+        let metadata = fs::metadata(&file_path)
+            .with_context(|| format!("Failed to stat checkpoint file: {}", file_path.display()))?;
+        let sha256 = sha256_file(&file_path)
+            .with_context(|| format!("Failed to hash checkpoint file: {}", file_path.display()))?;
+        let file = CheckpointFile {
+            path: path.clone(),
+            agent: agent.into(),
+            phase: phase.into(),
+            operation: operation.into(),
+            bytes: metadata.len(),
+            sha256,
+            updated_at_unix_ms: now_unix_ms(),
+        };
+
+        if let Some(existing) = self.files.iter_mut().find(|record| record.path == path) {
+            *existing = file;
+        } else {
+            self.files.push(file);
+        }
+        self.updated_at_unix_ms = now_unix_ms();
+
+        Ok(())
+    }
+
+    pub fn validate_files(&self, project_dir: &Path) -> Result<Vec<CheckpointConflict>> {
+        let mut conflicts = Vec::new();
+
+        for file in &self.files {
+            let file_path = project_dir.join(&file.path);
+            if !file_path.exists() {
+                conflicts.push(CheckpointConflict {
+                    conflict_type: CheckpointConflictType::FileMissing,
+                    path: Some(file.path.clone()),
+                    message: format!("checkpoint file is missing: {}", file.path),
+                    expected_sha256: Some(file.sha256.clone()),
+                    actual_sha256: None,
+                });
+                continue;
+            }
+
+            let actual_sha256 = sha256_file(&file_path).with_context(|| {
+                format!("Failed to hash checkpoint file: {}", file_path.display())
+            })?;
+            if actual_sha256 != file.sha256 {
+                conflicts.push(CheckpointConflict {
+                    conflict_type: CheckpointConflictType::FileModified,
+                    path: Some(file.path.clone()),
+                    message: format!("checkpoint file was modified: {}", file.path),
+                    expected_sha256: Some(file.sha256.clone()),
+                    actual_sha256: Some(actual_sha256),
+                });
+            }
+        }
+
+        Ok(conflicts)
+    }
 }
 
 pub fn now_unix_ms() -> u64 {
@@ -108,6 +232,18 @@ pub fn now_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("Failed to read file for sha256: {}", path.display()))?;
+    Ok(sha256_bytes(&bytes))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
@@ -222,5 +358,87 @@ mod tests {
         for (conflict_type, expected) in cases {
             assert_eq!(serde_json::to_value(conflict_type).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn checkpoint_write_load_round_trips_and_redacts_prompt() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_checkpoint_roundtrip_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut config = Config::default();
+        config.api_keys.openai = Some("sk-test-checkpoint-secret".to_string());
+
+        let checkpoint = Checkpoint::new(
+            "run-1",
+            "dev",
+            "build with sk-test-checkpoint-secret",
+            &config,
+        );
+        checkpoint.write_to(&dir, &config).unwrap();
+
+        let raw = std::fs::read_to_string(Checkpoint::checkpoint_path(&dir)).unwrap();
+        assert!(!raw.contains("sk-test-checkpoint-secret"));
+
+        let loaded = Checkpoint::load(&dir).unwrap();
+        assert_eq!(loaded.run_id, "run-1");
+        assert_eq!(loaded.prompt, "build with [REDACTED]");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_file_and_validate_files_detects_unchanged_modified_and_missing() {
+        let dir =
+            std::env::temp_dir().join(format!("cortex_checkpoint_validate_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("specs.md"), "initial specs").unwrap();
+
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint
+            .record_file("pm", "specs-ready", "specs.md", "created", &dir)
+            .unwrap();
+
+        assert!(checkpoint.validate_files(&dir).unwrap().is_empty());
+
+        std::fs::write(dir.join("specs.md"), "changed specs").unwrap();
+        let conflicts = checkpoint.validate_files(&dir).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(
+            conflicts[0].conflict_type,
+            CheckpointConflictType::FileModified
+        );
+        assert_eq!(conflicts[0].path.as_deref(), Some("specs.md"));
+        assert!(conflicts[0].expected_sha256.is_some());
+        assert!(conflicts[0].actual_sha256.is_some());
+
+        std::fs::remove_file(dir.join("specs.md")).unwrap();
+        let conflicts = checkpoint.validate_files(&dir).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(
+            conflicts[0].conflict_type,
+            CheckpointConflictType::FileMissing
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_checkpoint_json_returns_readable_error() {
+        let dir =
+            std::env::temp_dir().join(format!("cortex_checkpoint_invalid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(Checkpoint::checkpoint_path(&dir), "{not-json").unwrap();
+
+        let err = Checkpoint::load(&dir).unwrap_err().to_string();
+        assert!(err.contains("Failed to parse checkpoint"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
