@@ -2,6 +2,7 @@ mod agent_bus;
 mod agent_loader;
 mod assistant;
 mod auth;
+mod checkpoint;
 mod config;
 mod context;
 mod custom_defs;
