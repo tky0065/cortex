@@ -197,7 +197,7 @@ impl Orchestrator {
         let (tee_tx, mut tee_rx) = channel();
         let real_tx = tx.clone();
         let report_collector_for_tee = Arc::clone(&run_report_collector);
-        tokio::spawn(async move {
+        let tee_handle = tokio::spawn(async move {
             while let Some(ev) = tee_rx.recv().await {
                 report_collector_for_tee.lock().await.record_event(&ev);
                 if let Some(log_tx) = &log_tx {
@@ -224,41 +224,46 @@ impl Orchestrator {
             agent_tools: None,
         };
 
-        tokio::select! {
-            result = self.workflow.run(prompt.clone(), options) => {
-                match result {
-                    Ok(()) => {
-                        {
-                            let mut collector = run_report_collector.lock().await;
-                            finalize_run_report(
-                                &mut collector,
-                                &project_dir,
-                                &self.config,
-                                RunReportOutcome::Success,
-                            );
-                        }
-                        write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
-                        Ok(())
-                    }
-                    Err(e) => {
-                        {
-                            let mut collector = run_report_collector.lock().await;
-                            finalize_run_report(
-                                &mut collector,
-                                &project_dir,
-                                &self.config,
-                                RunReportOutcome::Failed(e.to_string()),
-                            );
-                        }
-                        Err(e)
-                    }
-                }
-            },
+        let run_completion = tokio::select! {
+            result = self.workflow.run(prompt.clone(), options) => RunCompletion::Workflow(result),
             _ = self.cancel.cancelled() => {
                 let _ = tee_tx.send(TuiEvent::TokenChunk {
                     agent: "orchestrator".into(),
                     chunk: "Workflow aborted.".into(),
                 });
+                RunCompletion::Interrupted
+            }
+        };
+
+        flush_report_events(tee_tx, tee_handle).await;
+
+        match run_completion {
+            RunCompletion::Workflow(Ok(())) => {
+                {
+                    let mut collector = run_report_collector.lock().await;
+                    finalize_run_report(
+                        &mut collector,
+                        &project_dir,
+                        &self.config,
+                        RunReportOutcome::Success,
+                    );
+                }
+                write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
+                Ok(())
+            }
+            RunCompletion::Workflow(Err(e)) => {
+                {
+                    let mut collector = run_report_collector.lock().await;
+                    finalize_run_report(
+                        &mut collector,
+                        &project_dir,
+                        &self.config,
+                        RunReportOutcome::Failed(e.to_string()),
+                    );
+                }
+                Err(e)
+            }
+            RunCompletion::Interrupted => {
                 {
                     let mut collector = run_report_collector.lock().await;
                     finalize_run_report(
@@ -290,10 +295,24 @@ fn format_verbose_log_line(
     format!("[{}] {}", agent, redactor.redact_text(chunk))
 }
 
+enum RunCompletion {
+    Workflow(Result<()>),
+    Interrupted,
+}
+
 enum RunReportOutcome {
     Success,
     Failed(String),
     Interrupted(String),
+}
+
+async fn flush_report_events(tee_tx: TuiSender, tee_handle: tokio::task::JoinHandle<()>) {
+    drop(tee_tx);
+    match tokio::time::timeout(std::time::Duration::from_secs(2), tee_handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("warning: run report event tee failed: {e}"),
+        Err(_) => eprintln!("warning: timed out waiting for run report events to flush"),
+    }
 }
 
 fn finalize_run_report(
@@ -406,8 +425,12 @@ fn parse_tasks(content: &str) -> Vec<Task> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
-    use super::{RunReportOutcome, default_project_dir, finalize_run_report, write_manifest};
+    use super::{
+        RunReportOutcome, default_project_dir, finalize_run_report, flush_report_events,
+        write_manifest,
+    };
     use crate::config::Config;
     use crate::tui::events::{TuiEvent, channel};
 
@@ -499,6 +522,32 @@ mod tests {
         assert!(content.contains("provider failed"));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn flush_report_events_drains_queued_events_before_returning() {
+        let (tee_tx, mut tee_rx) = channel();
+        let recorded = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let recorded_for_tee = Arc::clone(&recorded);
+
+        let tee_handle = tokio::spawn(async move {
+            while let Some(ev) = tee_rx.recv().await {
+                if let TuiEvent::TokenChunk { chunk, .. } = ev {
+                    recorded_for_tee.lock().await.push(chunk);
+                }
+            }
+        });
+
+        tee_tx
+            .send(TuiEvent::TokenChunk {
+                agent: "sentinel".to_string(),
+                chunk: "queued-before-finalize".to_string(),
+            })
+            .unwrap();
+
+        flush_report_events(tee_tx, tee_handle).await;
+
+        assert_eq!(recorded.lock().await.as_slice(), ["queued-before-finalize"]);
     }
 
     /// Phase events sent in sequence must arrive in the same order.
