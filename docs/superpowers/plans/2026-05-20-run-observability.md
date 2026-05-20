@@ -1,0 +1,1183 @@
+# Run Observability Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Generate a redacted `cortex.run.json` diagnostic report for every Cortex run, including success, failure, and interruption.
+
+**Architecture:** Add a focused `src/run_report.rs` module that owns report data structures, event ingestion, aggregation, redaction, and JSON persistence. Wire it into `src/orchestrator.rs` through an event tee so existing workflows keep sending `TuiEvent`s while the collector records a structured report. Update docs and `LACUNES.md` after tests pass.
+
+**Tech Stack:** Rust, serde/serde_json, uuid, sha2, tokio, existing `TuiEvent`, `Config`, `SecretRedactor`, and Cargo tests.
+
+---
+
+## File Structure
+
+- Create `src/run_report.rs`: serializable report types, `RunReportCollector`, event ingestion, metrics aggregation, secret redaction, JSON writing, and unit tests.
+- Modify `src/main.rs`: register `mod run_report;`.
+- Modify `src/orchestrator.rs`: create a collector for each run, tee events into it, and write `cortex.run.json` in success, failure, and interruption paths.
+- Modify `README.md`: document `cortex.run.json`, how it differs from `cortex.manifest.json`, and how it relates to `cortex.log`.
+- Modify `.github/ISSUE_TEMPLATE/failed_run.md`: ask users to attach `cortex.run.json` when safe.
+- Modify `LACUNES.md`: mark lacune 6 complete, lacune 7 in progress, and add the dated observability lot.
+
+---
+
+### Task 1: Add Run Report Core Types
+
+**Files:**
+- Create: `src/run_report.rs`
+- Modify: `src/main.rs`
+
+- [ ] **Step 1: Register the module**
+
+In `src/main.rs`, add `mod run_report;` near the other module declarations:
+
+```rust
+mod repl;
+mod run_report;
+mod secrets;
+```
+
+- [ ] **Step 2: Write failing serialization and constructor tests**
+
+Create `src/run_report.rs` with these tests first:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn new_report_has_required_identity_fields() {
+        let config = Config::default();
+        let collector = RunReportCollector::new("dev", "build a todo app", &config);
+        let report = collector.report();
+
+        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.workflow, "dev");
+        assert_eq!(report.prompt, "build a todo app");
+        assert_eq!(report.provider, "ollama");
+        assert_eq!(report.status, RunStatus::Running);
+        assert!(report.finished_at_unix_ms.is_none());
+        assert!(!report.run_id.is_empty());
+        assert_eq!(report.metrics.cost_status, CostStatus::Unknown);
+        assert!(report.metrics.estimated_cost_usd.is_none());
+    }
+
+    #[test]
+    fn report_serializes_with_stable_top_level_keys() {
+        let config = Config::default();
+        let collector = RunReportCollector::new("dev", "build a todo app", &config);
+        let json = serde_json::to_value(collector.report()).unwrap();
+
+        assert!(json.get("schema_version").is_some());
+        assert!(json.get("run_id").is_some());
+        assert!(json.get("cortex_version").is_some());
+        assert!(json.get("workflow").is_some());
+        assert!(json.get("prompt").is_some());
+        assert!(json.get("provider").is_some());
+        assert!(json.get("started_at_unix_ms").is_some());
+        assert!(json.get("finished_at_unix_ms").is_some());
+        assert!(json.get("status").is_some());
+        assert!(json.get("timeline").is_some());
+        assert!(json.get("agents").is_some());
+        assert!(json.get("tools").is_some());
+        assert!(json.get("files").is_some());
+        assert!(json.get("metrics").is_some());
+        assert!(json.get("failure").is_some());
+    }
+}
+```
+
+- [ ] **Step 3: Run the focused tests and verify they fail**
+
+Run: `cargo test run_report::tests -- --nocapture`
+
+Expected: FAIL because `run_report` types do not exist yet.
+
+- [ ] **Step 4: Add the minimal report model**
+
+Implement `src/run_report.rs` with these public types and constructor:
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use crate::config::Config;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Running,
+    Success,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunStatus {
+    Pending,
+    Running,
+    Done,
+    Error,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostStatus {
+    Unknown,
+    Estimated,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTimelineEvent {
+    pub timestamp_unix_ms: u64,
+    pub event_type: String,
+    pub agent: Option<String>,
+    pub phase: Option<String>,
+    pub message: Option<String>,
+    pub path: Option<String>,
+    pub tool: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRunRecord {
+    pub agent: String,
+    pub model: Option<String>,
+    pub status: AgentRunStatus,
+    pub started_at_unix_ms: Option<u64>,
+    pub finished_at_unix_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub token_chunks: usize,
+    pub output_chars: usize,
+    pub last_progress: Option<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolRunRecord {
+    pub agent: String,
+    pub tool: String,
+    pub label: String,
+    pub timestamp_unix_ms: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRunRecord {
+    pub agent: String,
+    pub path: String,
+    pub operation: String,
+    pub bytes: usize,
+    pub sha256: String,
+    pub timestamp_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunMetrics {
+    pub duration_ms: Option<u64>,
+    pub tokens_total: Option<usize>,
+    pub token_chunks_total: usize,
+    pub output_chars_total: usize,
+    pub agent_count: usize,
+    pub file_count: usize,
+    pub tool_call_count: usize,
+    pub cost_status: CostStatus,
+    pub estimated_cost_usd: Option<f64>,
+    pub cost_notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunFailure {
+    pub failure_type: String,
+    pub message: String,
+    pub agent: Option<String>,
+    pub phase: Option<String>,
+    pub probable_cause: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunReport {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub cortex_version: String,
+    pub workflow: String,
+    pub prompt: String,
+    pub provider: String,
+    pub started_at_unix_ms: u64,
+    pub finished_at_unix_ms: Option<u64>,
+    pub status: RunStatus,
+    pub timeline: Vec<RunTimelineEvent>,
+    pub agents: Vec<AgentRunRecord>,
+    pub tools: Vec<ToolRunRecord>,
+    pub files: Vec<FileRunRecord>,
+    pub metrics: RunMetrics,
+    pub failure: Option<RunFailure>,
+}
+
+pub struct RunReportCollector {
+    report: RunReport,
+    agent_index: BTreeMap<String, usize>,
+    model_by_role: BTreeMap<String, String>,
+}
+
+impl RunReportCollector {
+    pub fn new(workflow: impl Into<String>, prompt: impl Into<String>, config: &Config) -> Self {
+        Self {
+            report: RunReport {
+                schema_version: 1,
+                run_id: uuid::Uuid::new_v4().to_string(),
+                cortex_version: env!("CARGO_PKG_VERSION").to_string(),
+                workflow: workflow.into(),
+                prompt: prompt.into(),
+                provider: config.provider.default.clone(),
+                started_at_unix_ms: now_unix_ms(),
+                finished_at_unix_ms: None,
+                status: RunStatus::Running,
+                timeline: Vec::new(),
+                agents: Vec::new(),
+                tools: Vec::new(),
+                files: Vec::new(),
+                metrics: RunMetrics {
+                    duration_ms: None,
+                    tokens_total: None,
+                    token_chunks_total: 0,
+                    output_chars_total: 0,
+                    agent_count: 0,
+                    file_count: 0,
+                    tool_call_count: 0,
+                    cost_status: CostStatus::Unknown,
+                    estimated_cost_usd: None,
+                    cost_notes: "Provider-specific token accounting and pricing are not enforced yet.".to_string(),
+                },
+                failure: None,
+            },
+            agent_index: BTreeMap::new(),
+            model_by_role: model_map(config),
+        }
+    }
+
+    pub fn report(&self) -> &RunReport {
+        &self.report
+    }
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn model_map(config: &Config) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("ceo".to_string(), config.models.ceo.clone()),
+        ("pm".to_string(), config.models.pm.clone()),
+        ("tech_lead".to_string(), config.models.tech_lead.clone()),
+        ("developer".to_string(), config.models.developer.clone()),
+        ("qa".to_string(), config.models.qa.clone()),
+        ("devops".to_string(), config.models.devops.clone()),
+        ("assistant".to_string(), config.models.assistant.clone()),
+        ("planner".to_string(), config.models.ceo.clone()),
+        ("reviewer".to_string(), config.models.qa.clone()),
+        ("security".to_string(), config.models.qa.clone()),
+        ("performance".to_string(), config.models.qa.clone()),
+        ("reporter".to_string(), config.models.qa.clone()),
+        ("strategist".to_string(), config.models.developer.clone()),
+        ("copywriter".to_string(), config.models.developer.clone()),
+        ("analyst".to_string(), config.models.developer.clone()),
+        ("social_media_manager".to_string(), config.models.developer.clone()),
+        ("researcher".to_string(), config.models.developer.clone()),
+        ("profiler".to_string(), config.models.developer.clone()),
+        ("outreach_manager".to_string(), config.models.developer.clone()),
+    ])
+}
+```
+
+- [ ] **Step 5: Run the focused tests and verify they pass**
+
+Run: `cargo test run_report::tests -- --nocapture`
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/main.rs src/run_report.rs
+git commit -m "feat: add run report model"
+```
+
+---
+
+### Task 2: Implement Event Ingestion And Aggregation
+
+**Files:**
+- Modify: `src/run_report.rs`
+
+- [ ] **Step 1: Add failing collector lifecycle tests**
+
+Append these tests inside `#[cfg(test)] mod tests`:
+
+```rust
+use crate::tui::events::TuiEvent;
+
+#[test]
+fn collector_records_agent_lifecycle_and_metrics() {
+    let config = Config::default();
+    let mut collector = RunReportCollector::new("dev", "build", &config);
+
+    collector.record_event(&TuiEvent::WorkflowStarted {
+        workflow: "dev".to_string(),
+        agents: vec!["ceo".to_string(), "developer".to_string()],
+    });
+    collector.record_event(&TuiEvent::AgentStarted {
+        agent: "developer".to_string(),
+    });
+    collector.record_event(&TuiEvent::AgentProgress {
+        agent: "developer".to_string(),
+        message: "Working ... (5s)".to_string(),
+    });
+    collector.record_event(&TuiEvent::TokenChunk {
+        agent: "developer".to_string(),
+        chunk: "hello ".to_string(),
+    });
+    collector.record_event(&TuiEvent::TokenChunk {
+        agent: "developer".to_string(),
+        chunk: "world".to_string(),
+    });
+    collector.record_event(&TuiEvent::AgentDone {
+        agent: "developer".to_string(),
+    });
+    collector.finish_success();
+
+    let report = collector.report();
+    assert_eq!(report.status, RunStatus::Success);
+    assert_eq!(report.agents.len(), 2);
+
+    let developer = report
+        .agents
+        .iter()
+        .find(|agent| agent.agent == "developer")
+        .unwrap();
+    assert_eq!(developer.status, AgentRunStatus::Done);
+    assert_eq!(developer.model.as_deref(), Some("qwen2.5-coder:32b"));
+    assert_eq!(developer.token_chunks, 2);
+    assert_eq!(developer.output_chars, "hello world".len());
+    assert_eq!(developer.last_progress.as_deref(), Some("Working ... (5s)"));
+    assert!(developer.duration_ms.is_some());
+    assert_eq!(report.metrics.token_chunks_total, 2);
+    assert_eq!(report.metrics.output_chars_total, "hello world".len());
+    assert_eq!(report.metrics.agent_count, 2);
+}
+
+#[test]
+fn collector_records_phase_error_stats_and_failure() {
+    let config = Config::default();
+    let mut collector = RunReportCollector::new("dev", "build", &config);
+
+    collector.record_event(&TuiEvent::AgentStarted {
+        agent: "qa".to_string(),
+    });
+    collector.record_event(&TuiEvent::PhaseComplete {
+        phase: "qa".to_string(),
+    });
+    collector.record_event(&TuiEvent::WorkflowStats { tokens_total: 1234 });
+    collector.record_event(&TuiEvent::Error {
+        agent: "qa".to_string(),
+        message: "tests failed".to_string(),
+    });
+    collector.finish_error("workflow failed: tests failed");
+
+    let report = collector.report();
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.metrics.tokens_total, Some(1234));
+    assert_eq!(report.failure.as_ref().unwrap().failure_type, "agent_error");
+    assert_eq!(report.failure.as_ref().unwrap().agent.as_deref(), Some("qa"));
+    assert!(report.timeline.iter().any(|event| event.event_type == "phase_complete"));
+}
+
+#[test]
+fn collector_records_interruption() {
+    let config = Config::default();
+    let mut collector = RunReportCollector::new("dev", "build", &config);
+
+    collector.record_event(&TuiEvent::WorkflowInterrupted {
+        message: "Interrupted by user".to_string(),
+    });
+    collector.finish_interrupted("Workflow aborted.");
+
+    let report = collector.report();
+    assert_eq!(report.status, RunStatus::Interrupted);
+    assert_eq!(report.failure.as_ref().unwrap().failure_type, "interrupted");
+    assert!(report.finished_at_unix_ms.is_some());
+}
+
+#[test]
+fn collector_does_not_store_raw_token_chunks_in_timeline() {
+    let config = Config::default();
+    let mut collector = RunReportCollector::new("dev", "build", &config);
+
+    for i in 0..100 {
+        collector.record_event(&TuiEvent::TokenChunk {
+            agent: "developer".to_string(),
+            chunk: format!("chunk-{i} "),
+        });
+    }
+
+    assert_eq!(collector.report().metrics.token_chunks_total, 100);
+    assert!(
+        collector
+            .report()
+            .timeline
+            .iter()
+            .all(|event| event.event_type != "token_chunk")
+    );
+}
+```
+
+- [ ] **Step 2: Run the tests and verify they fail**
+
+Run: `cargo test run_report::tests::collector_ -- --nocapture`
+
+Expected: FAIL because `record_event()`, `finish_success()`, `finish_error()`, and `finish_interrupted()` do not exist yet.
+
+- [ ] **Step 3: Implement event ingestion**
+
+Add these methods to `impl RunReportCollector`:
+
+```rust
+pub fn record_event(&mut self, event: &crate::tui::events::TuiEvent) {
+    use crate::tui::events::TuiEvent;
+
+    match event {
+        TuiEvent::WorkflowStarted { workflow, agents } => {
+            self.push_timeline("workflow_started", None, None, Some(workflow), None, None);
+            for agent in agents {
+                self.ensure_agent(agent);
+            }
+        }
+        TuiEvent::AgentStarted { agent } => {
+            let now = now_unix_ms();
+            let idx = self.ensure_agent(agent);
+            let record = &mut self.report.agents[idx];
+            record.status = AgentRunStatus::Running;
+            record.started_at_unix_ms.get_or_insert(now);
+            self.push_timeline("agent_started", Some(agent), None, None, None, None);
+        }
+        TuiEvent::AgentProgress { agent, message } => {
+            let idx = self.ensure_agent(agent);
+            self.report.agents[idx].last_progress = Some(message.clone());
+            self.push_timeline("agent_progress", Some(agent), None, Some(message), None, None);
+        }
+        TuiEvent::AgentSummary { agent, summary } => {
+            self.push_timeline("agent_summary", Some(agent), None, Some(summary), None, None);
+        }
+        TuiEvent::TokenChunk { agent, chunk } => {
+            let idx = self.ensure_agent(agent);
+            self.report.agents[idx].token_chunks += 1;
+            self.report.agents[idx].output_chars += chunk.len();
+            self.report.metrics.token_chunks_total += 1;
+            self.report.metrics.output_chars_total += chunk.len();
+        }
+        TuiEvent::AgentDone { agent } => {
+            let now = now_unix_ms();
+            let idx = self.ensure_agent(agent);
+            let record = &mut self.report.agents[idx];
+            record.status = AgentRunStatus::Done;
+            record.finished_at_unix_ms = Some(now);
+            record.duration_ms = duration_between(record.started_at_unix_ms, record.finished_at_unix_ms);
+            self.push_timeline("agent_done", Some(agent), None, None, None, None);
+        }
+        TuiEvent::PhaseComplete { phase } => {
+            self.push_timeline("phase_complete", None, Some(phase), Some(phase), None, None);
+        }
+        TuiEvent::Error { agent, message } => {
+            let idx = self.ensure_agent(agent);
+            let record = &mut self.report.agents[idx];
+            record.status = AgentRunStatus::Error;
+            record.errors.push(message.clone());
+            self.push_timeline("error", Some(agent), None, Some(message), None, None);
+        }
+        TuiEvent::AgentToolCall { agent, tool, label } => {
+            let now = now_unix_ms();
+            self.report.tools.push(ToolRunRecord {
+                agent: agent.clone(),
+                tool: tool.clone(),
+                label: label.clone(),
+                timestamp_unix_ms: now,
+                status: "observed".to_string(),
+            });
+            self.report.metrics.tool_call_count = self.report.tools.len();
+            self.push_timeline("tool_call", Some(agent), None, Some(label), None, Some(tool));
+        }
+        TuiEvent::WorkflowStats { tokens_total } => {
+            self.report.metrics.tokens_total = Some(*tokens_total);
+            self.push_timeline(
+                "workflow_stats",
+                None,
+                None,
+                Some(&format!("tokens_total={tokens_total}")),
+                None,
+                None,
+            );
+        }
+        TuiEvent::WorkflowComplete { output_dir, .. } => {
+            self.push_timeline("workflow_complete", None, None, Some(output_dir), None, None);
+        }
+        TuiEvent::FileWritten {
+            agent,
+            path,
+            old_content,
+            new_content,
+        } => {
+            self.record_file_written(agent, path, old_content.is_none(), new_content);
+        }
+        TuiEvent::WorkflowInterrupted { message } => {
+            self.push_timeline("workflow_interrupted", None, None, Some(message), None, None);
+        }
+        _ => {}
+    }
+    self.refresh_counts();
+}
+
+pub fn finish_success(&mut self) {
+    self.finish(RunStatus::Success, None);
+}
+
+pub fn finish_error(&mut self, message: impl Into<String>) {
+    let message = message.into();
+    let failure = RunFailure {
+        failure_type: self.infer_failure_type(),
+        agent: self.last_error_agent(),
+        phase: self.last_phase(),
+        probable_cause: message.clone(),
+        message,
+    };
+    self.finish(RunStatus::Failed, Some(failure));
+}
+
+pub fn finish_interrupted(&mut self, message: impl Into<String>) {
+    let message = message.into();
+    let failure = RunFailure {
+        failure_type: "interrupted".to_string(),
+        message: message.clone(),
+        agent: None,
+        phase: self.last_phase(),
+        probable_cause: message,
+    };
+    for agent in &mut self.report.agents {
+        if agent.status == AgentRunStatus::Running {
+            agent.status = AgentRunStatus::Interrupted;
+            agent.finished_at_unix_ms = Some(now_unix_ms());
+            agent.duration_ms = duration_between(agent.started_at_unix_ms, agent.finished_at_unix_ms);
+        }
+    }
+    self.finish(RunStatus::Interrupted, Some(failure));
+}
+```
+
+Also add private helpers:
+
+```rust
+fn ensure_agent(&mut self, agent: &str) -> usize {
+    if let Some(idx) = self.agent_index.get(agent) {
+        return *idx;
+    }
+    let idx = self.report.agents.len();
+    self.report.agents.push(AgentRunRecord {
+        agent: agent.to_string(),
+        model: model_for_agent_name(agent, &self.model_by_role),
+        status: AgentRunStatus::Pending,
+        started_at_unix_ms: None,
+        finished_at_unix_ms: None,
+        duration_ms: None,
+        token_chunks: 0,
+        output_chars: 0,
+        last_progress: None,
+        errors: Vec::new(),
+    });
+    self.agent_index.insert(agent.to_string(), idx);
+    idx
+}
+
+fn push_timeline(
+    &mut self,
+    event_type: &str,
+    agent: Option<&str>,
+    phase: Option<&str>,
+    message: Option<&str>,
+    path: Option<&str>,
+    tool: Option<&str>,
+) {
+    self.report.timeline.push(RunTimelineEvent {
+        timestamp_unix_ms: now_unix_ms(),
+        event_type: event_type.to_string(),
+        agent: agent.map(str::to_string),
+        phase: phase.map(str::to_string),
+        message: message.map(str::to_string),
+        path: path.map(str::to_string),
+        tool: tool.map(str::to_string),
+    });
+}
+
+fn finish(&mut self, status: RunStatus, failure: Option<RunFailure>) {
+    let now = now_unix_ms();
+    self.report.status = status;
+    self.report.finished_at_unix_ms = Some(now);
+    self.report.metrics.duration_ms = Some(now.saturating_sub(self.report.started_at_unix_ms));
+    self.report.failure = failure;
+    self.refresh_counts();
+}
+
+fn refresh_counts(&mut self) {
+    self.report.metrics.agent_count = self.report.agents.len();
+    self.report.metrics.file_count = self.report.files.len();
+    self.report.metrics.tool_call_count = self.report.tools.len();
+}
+
+fn infer_failure_type(&self) -> String {
+    if self.report.agents.iter().any(|agent| agent.status == AgentRunStatus::Error) {
+        "agent_error".to_string()
+    } else {
+        "workflow_error".to_string()
+    }
+}
+
+fn last_error_agent(&self) -> Option<String> {
+    self.report
+        .agents
+        .iter()
+        .rev()
+        .find(|agent| !agent.errors.is_empty())
+        .map(|agent| agent.agent.clone())
+}
+
+fn last_phase(&self) -> Option<String> {
+    self.report
+        .timeline
+        .iter()
+        .rev()
+        .find_map(|event| event.phase.clone())
+}
+
+fn duration_between(start: Option<u64>, end: Option<u64>) -> Option<u64> {
+    Some(end?.saturating_sub(start?))
+}
+
+fn model_for_agent_name(agent: &str, model_by_role: &BTreeMap<String, String>) -> Option<String> {
+    let role = agent.split(':').next().unwrap_or(agent);
+    model_by_role.get(role).cloned()
+}
+```
+
+- [ ] **Step 4: Run focused collector tests**
+
+Run: `cargo test run_report::tests::collector_ -- --nocapture`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/run_report.rs
+git commit -m "feat: collect run report events"
+```
+
+---
+
+### Task 3: Add File Metadata, Redaction, And JSON Writing
+
+**Files:**
+- Modify: `src/run_report.rs`
+
+- [ ] **Step 1: Add failing file and redaction tests**
+
+Append these tests:
+
+```rust
+#[test]
+fn collector_records_file_metadata_with_sha256() {
+    let config = Config::default();
+    let mut collector = RunReportCollector::new("dev", "build", &config);
+
+    collector.record_event(&TuiEvent::FileWritten {
+        agent: "developer".to_string(),
+        path: "src/main.rs".to_string(),
+        old_content: None,
+        new_content: "fn main() {}\n".to_string(),
+    });
+
+    let file = collector.report().files.first().unwrap();
+    assert_eq!(file.agent, "developer");
+    assert_eq!(file.path, "src/main.rs");
+    assert_eq!(file.operation, "created");
+    assert_eq!(file.bytes, "fn main() {}\n".len());
+    assert_eq!(
+        file.sha256,
+        "536e506bb90914c243a12b397b9a998f85ae2cbd9ba02dfd03a9e155ca5ca0f4"
+    );
+    assert_eq!(collector.report().metrics.file_count, 1);
+}
+
+#[test]
+fn write_to_redacts_prompt_and_event_text() {
+    let dir = std::env::temp_dir().join(format!(
+        "cortex-run-report-redact-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let mut config = Config::default();
+    config.api_keys.openai = Some("sk-test-run-report-secret".to_string());
+    let mut collector = RunReportCollector::new(
+        "dev",
+        "build with sk-test-run-report-secret",
+        &config,
+    );
+    collector.record_event(&TuiEvent::Error {
+        agent: "developer".to_string(),
+        message: "provider returned sk-test-run-report-secret".to_string(),
+    });
+    collector.finish_error("failed with sk-test-run-report-secret");
+    collector.write_to(&dir, &config).unwrap();
+
+    let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+    assert!(content.contains("[REDACTED]"));
+    assert!(!content.contains("sk-test-run-report-secret"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+```
+
+- [ ] **Step 2: Run the tests and verify they fail**
+
+Run: `cargo test run_report::tests -- --nocapture`
+
+Expected: FAIL because file hashing and `write_to()` are not implemented.
+
+- [ ] **Step 3: Implement file metadata and redacted writing**
+
+Add these imports:
+
+```rust
+use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
+use std::path::Path;
+```
+
+Add methods to `RunReportCollector`:
+
+```rust
+pub fn write_to(&self, project_dir: &Path, config: &Config) -> Result<()> {
+    std::fs::create_dir_all(project_dir)
+        .with_context(|| format!("Failed to create project dir: {}", project_dir.display()))?;
+    let redactor = crate::secrets::SecretRedactor::from_config_and_env(config);
+    let redacted = self.redacted_report(&redactor);
+    let json = serde_json::to_string_pretty(&redacted).context("Failed to serialize run report")?;
+    std::fs::write(project_dir.join("cortex.run.json"), json)
+        .with_context(|| format!("Failed to write {}", project_dir.join("cortex.run.json").display()))
+}
+
+fn record_file_written(
+    &mut self,
+    agent: &str,
+    path: &str,
+    created: bool,
+    new_content: &str,
+) {
+    let operation = if created { "created" } else { "modified" };
+    self.report.files.push(FileRunRecord {
+        agent: agent.to_string(),
+        path: path.to_string(),
+        operation: operation.to_string(),
+        bytes: new_content.len(),
+        sha256: sha256_hex(new_content.as_bytes()),
+        timestamp_unix_ms: now_unix_ms(),
+    });
+    self.push_timeline("file_written", Some(agent), None, Some(operation), Some(path), None);
+    self.refresh_counts();
+}
+```
+
+Add redaction helpers:
+
+```rust
+fn redacted_report(&self, redactor: &crate::secrets::SecretRedactor) -> RunReport {
+    let mut report = self.report.clone();
+    report.prompt = redactor.redact_text(&report.prompt);
+    for event in &mut report.timeline {
+        if let Some(message) = &event.message {
+            event.message = Some(redactor.redact_text(message));
+        }
+        if let Some(path) = &event.path {
+            event.path = Some(redactor.redact_text(path));
+        }
+    }
+    for agent in &mut report.agents {
+        agent.last_progress = agent
+            .last_progress
+            .as_ref()
+            .map(|message| redactor.redact_text(message));
+        agent.errors = agent
+            .errors
+            .iter()
+            .map(|message| redactor.redact_text(message))
+            .collect();
+    }
+    for tool in &mut report.tools {
+        tool.label = redactor.redact_text(&tool.label);
+    }
+    for file in &mut report.files {
+        file.path = redactor.redact_text(&file.path);
+    }
+    if let Some(failure) = &mut report.failure {
+        failure.message = redactor.redact_text(&failure.message);
+        failure.probable_cause = redactor.redact_text(&failure.probable_cause);
+    }
+    report
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+```
+
+- [ ] **Step 4: Run all run report tests**
+
+Run: `cargo test run_report::tests -- --nocapture`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/run_report.rs
+git commit -m "feat: persist redacted run reports"
+```
+
+---
+
+### Task 4: Wire Run Reports Into The Orchestrator
+
+**Files:**
+- Modify: `src/orchestrator.rs`
+- Modify: `src/run_report.rs`
+
+- [ ] **Step 1: Add a focused orchestrator helper test**
+
+In `src/orchestrator.rs` test module, add a test for a new helper that will finalize and write reports:
+
+```rust
+#[test]
+fn finalized_report_writes_success_status() {
+    let dir = std::env::temp_dir().join(format!(
+        "cortex_orchestrator_report_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let config = Config::default();
+    let mut collector = crate::run_report::RunReportCollector::new("dev", "build", &config);
+    finalize_run_report(
+        &mut collector,
+        &dir,
+        &config,
+        RunReportOutcome::Success,
+    );
+
+    let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+    assert!(content.contains("\"status\": \"success\""));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn finalized_report_writes_failed_status() {
+    let dir = std::env::temp_dir().join(format!(
+        "cortex_orchestrator_report_failed_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let config = Config::default();
+    let mut collector = crate::run_report::RunReportCollector::new("dev", "build", &config);
+    finalize_run_report(
+        &mut collector,
+        &dir,
+        &config,
+        RunReportOutcome::Failed("provider failed".to_string()),
+    );
+
+    let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+    assert!(content.contains("\"status\": \"failed\""));
+    assert!(content.contains("provider failed"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+```
+
+- [ ] **Step 2: Run the helper tests and verify they fail**
+
+Run: `cargo test orchestrator::tests::finalized_report_writes_ -- --nocapture`
+
+Expected: FAIL because `RunReportOutcome` and `finalize_run_report()` do not exist.
+
+- [ ] **Step 3: Add finalization helpers**
+
+In `src/orchestrator.rs`, near `write_manifest()`, add:
+
+```rust
+enum RunReportOutcome {
+    Success,
+    Failed(String),
+    Interrupted(String),
+}
+
+fn finalize_run_report(
+    collector: &mut crate::run_report::RunReportCollector,
+    project_dir: &std::path::Path,
+    config: &Config,
+    outcome: RunReportOutcome,
+) {
+    match outcome {
+        RunReportOutcome::Success => collector.finish_success(),
+        RunReportOutcome::Failed(message) => collector.finish_error(message),
+        RunReportOutcome::Interrupted(message) => collector.finish_interrupted(message),
+    }
+    if let Err(e) = collector.write_to(project_dir, config) {
+        eprintln!("warning: could not write cortex.run.json: {e}");
+    }
+}
+```
+
+- [ ] **Step 4: Add a report event tee for non-verbose and verbose runs**
+
+In `run_with_project_dir()`, create a shared collector before workflow options are built:
+
+```rust
+let report_collector = Arc::new(tokio::sync::Mutex::new(
+    crate::run_report::RunReportCollector::new(
+        self.workflow.name(),
+        prompt.clone(),
+        &self.config,
+    ),
+));
+```
+
+Create a tee channel that records events and forwards them to the real TUI sender:
+
+```rust
+let (report_tx, mut report_rx) = channel();
+let real_tx = tx.clone();
+let report_collector_for_task = Arc::clone(&report_collector);
+tokio::spawn(async move {
+    while let Some(ev) = report_rx.recv().await {
+        report_collector_for_task.lock().await.record_event(&ev);
+        let _ = real_tx.send(ev);
+    }
+});
+```
+
+Use `report_tx.clone()` as `RunOptions.tx` for both verbose and non-verbose paths. In verbose mode, keep the existing log tee by forwarding report tee events into the log tee or by recording before forwarding to the existing verbose tee. The final flow should preserve both outputs:
+
+```text
+workflow events -> report collector -> verbose logger when enabled -> TUI
+```
+
+- [ ] **Step 5: Finalize the report in every `tokio::select!` branch**
+
+In the workflow result branch:
+
+```rust
+result = self.workflow.run(prompt.clone(), options) => {
+    match &result {
+        Ok(()) => {
+            finalize_run_report(
+                &mut report_collector.lock().await,
+                &project_dir,
+                &self.config,
+                RunReportOutcome::Success,
+            );
+            write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
+        }
+        Err(e) => {
+            finalize_run_report(
+                &mut report_collector.lock().await,
+                &project_dir,
+                &self.config,
+                RunReportOutcome::Failed(e.to_string()),
+            );
+        }
+    }
+    result
+}
+```
+
+In the cancellation branch:
+
+```rust
+_ = self.cancel.cancelled() => {
+    let message = "Workflow aborted.".to_string();
+    let _ = report_tx.send(TuiEvent::TokenChunk {
+        agent: "orchestrator".into(),
+        chunk: message.clone(),
+    });
+    finalize_run_report(
+        &mut report_collector.lock().await,
+        &project_dir,
+        &self.config,
+        RunReportOutcome::Interrupted(message),
+    );
+    Ok(())
+}
+```
+
+- [ ] **Step 6: Run orchestrator helper tests**
+
+Run: `cargo test orchestrator::tests::finalized_report_writes_ -- --nocapture`
+
+Expected: PASS.
+
+- [ ] **Step 7: Run compile check**
+
+Run: `cargo check`
+
+Expected: PASS.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/orchestrator.rs src/run_report.rs
+git commit -m "feat: write run reports from orchestrator"
+```
+
+---
+
+### Task 5: Update Docs And Lacune Tracking
+
+**Files:**
+- Modify: `README.md`
+- Modify: `.github/ISSUE_TEMPLATE/failed_run.md`
+- Modify: `LACUNES.md`
+
+- [ ] **Step 1: Update README artifact documentation**
+
+In `README.md`, after the verbose logging section, add:
+
+```markdown
+## 16. Run Reports
+
+Every workflow run writes a structured diagnostic report to `cortex.run.json` in the output directory.
+
+- `cortex.manifest.json` identifies the generated project after a successful run.
+- `cortex.run.json` explains what happened during the run, including timeline events, agent status, files written, tool calls, basic metrics, and failure details.
+- `cortex.log` is optional verbose text output enabled with `-v`.
+
+Known secrets from Cortex config and environment are redacted before the report is written. Review `cortex.run.json` before sharing it publicly because prompts, file paths, and non-secret project details may still be sensitive.
+```
+
+Renumber the following README headings if needed so the sequence remains readable.
+
+- [ ] **Step 2: Update failed run issue template**
+
+In `.github/ISSUE_TEMPLATE/failed_run.md`, under “Safe to include”, add:
+
+```markdown
+- `cortex.run.json` after reviewing it for private project details.
+```
+
+Under “Do not include”, add:
+
+```markdown
+- Full `cortex.log` output unless you have reviewed and minimized it.
+```
+
+- [ ] **Step 3: Update `LACUNES.md` statuses**
+
+Change lacune 6 to:
+
+```markdown
+**Statut:** Terminé
+**Preuve:** Couvert par `cortex.run.json`, écrit pour les runs réussis, échoués et interrompus. Le rapport contient timeline, agents, erreurs, fichiers, outils observables, métriques de base et résumé d'échec.
+```
+
+Change lacune 7 to:
+
+```markdown
+**Statut:** En cours
+**Preuve:** `cortex.run.json` expose les champs `metrics`, `tokens_total` quand disponible et `cost_status`, mais les limites de budget et l'estimation provider précise ne sont pas encore implémentées.
+```
+
+Append to “Suivi des lots”:
+
+```markdown
+- 2026-05-20 — Lot observabilité complète terminé: `cortex.run.json` généré pour succès/échec/interruption, timeline structurée, résumés agents, fichiers, outils observables, métriques de base, redaction secrets et documentation de partage. Lacune terminée: 6. Lacune partiellement traitée: 7.
+```
+
+- [ ] **Step 4: Run documentation sanity checks**
+
+Run: `rg "cortex.run.json|observabilité complète|Statut:\\*\\* Terminé|Statut:\\*\\* En cours" README.md .github/ISSUE_TEMPLATE/failed_run.md LACUNES.md`
+
+Expected: output includes the new README section, issue template line, lacune 6 status, lacune 7 status, and the dated lot entry.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add README.md .github/ISSUE_TEMPLATE/failed_run.md LACUNES.md
+git commit -m "docs: document run reports"
+```
+
+---
+
+### Task 6: Final Verification
+
+**Files:**
+- Read/verify all changed files.
+
+- [ ] **Step 1: Format**
+
+Run: `cargo fmt`
+
+Expected: command exits successfully.
+
+- [ ] **Step 2: Run focused tests**
+
+Run: `cargo test run_report::tests -- --nocapture`
+
+Expected: PASS.
+
+Run: `cargo test orchestrator::tests::finalized_report_writes_ -- --nocapture`
+
+Expected: PASS.
+
+- [ ] **Step 3: Run full Rust tests**
+
+Run: `cargo test`
+
+Expected: PASS.
+
+- [ ] **Step 4: Run compile check**
+
+Run: `cargo check`
+
+Expected: PASS.
+
+- [ ] **Step 5: Inspect final status**
+
+Run: `git status --short`
+
+Expected: only intentional changes remain, plus pre-existing untracked local files such as `.DS_Store`, `.claude/`, and `.idea/` if they are still present.
+
+- [ ] **Step 6: Commit verification fixes if formatting changed files**
+
+If `cargo fmt` changed tracked files after Task 5, commit those tracked formatting changes:
+
+```bash
+git add src/main.rs src/run_report.rs src/orchestrator.rs README.md .github/ISSUE_TEMPLATE/failed_run.md LACUNES.md
+git commit -m "chore: format run observability changes"
+```
