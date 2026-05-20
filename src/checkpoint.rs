@@ -526,6 +526,37 @@ mod tests {
     }
 
     #[test]
+    fn record_file_replaces_existing_record_with_updated_hash_for_same_normalized_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_checkpoint_hash_refresh_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("src.rs"), "initial").unwrap();
+
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint
+            .record_file("developer", "development-done", "./src.rs", "created", &dir)
+            .unwrap();
+        let first_hash = checkpoint.files[0].sha256.clone();
+
+        std::fs::write(dir.join("src.rs"), "fixed").unwrap();
+        checkpoint
+            .record_file("developer", "development-done", "src.rs", "modified", &dir)
+            .unwrap();
+
+        assert_eq!(checkpoint.files.len(), 1);
+        assert_eq!(checkpoint.files[0].path, "src.rs");
+        assert_eq!(checkpoint.files[0].operation, "modified");
+        assert_ne!(checkpoint.files[0].sha256, first_hash);
+        assert!(checkpoint.validate_files(&dir).unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn record_file_rejects_parent_and_absolute_paths() {
         let dir =
             std::env::temp_dir().join(format!("cortex_checkpoint_reject_{}", std::process::id()));

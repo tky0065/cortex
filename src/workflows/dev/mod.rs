@@ -307,15 +307,14 @@ impl Workflow for DevWorkflow {
         });
         checkpoint.set_dev_expected_files(files_for_checkpoint.clone());
         for path in files_for_checkpoint {
-            if project_dir.join(&path).exists() {
-                checkpoint.record_file(
-                    "developer",
-                    "development-done",
-                    path,
-                    "created",
-                    &project_dir,
-                )?;
-            }
+            record_existing_checkpoint_file(
+                &mut checkpoint,
+                "developer",
+                "development-done",
+                path,
+                "created",
+                &project_dir,
+            )?;
         }
         checkpoint.record_phase_complete("development-done", "run_qa");
         save_checkpoint(&opts, &checkpoint)?;
@@ -341,6 +340,14 @@ impl Workflow for DevWorkflow {
                         if let Ok(current) = fs.read(&file_path) {
                             agents::developer::fix(&file_path, &current, &feedback, &opts, &fs)
                                 .await?;
+                            record_existing_checkpoint_file_and_save(
+                                &opts,
+                                &mut checkpoint,
+                                "developer",
+                                "development-done",
+                                file_path,
+                                "modified",
+                            )?;
                         }
                     }
                 }
@@ -394,6 +401,14 @@ impl Workflow for DevWorkflow {
                 }
                 if let Ok(current) = fs.read(&file_path) {
                     agents::developer::fix(&file_path, &current, &report, &opts, &fs).await?;
+                    record_existing_checkpoint_file_and_save(
+                        &opts,
+                        &mut checkpoint,
+                        "developer",
+                        "development-done",
+                        file_path,
+                        "modified",
+                    )?;
                 }
             }
         }
@@ -427,9 +442,14 @@ impl Workflow for DevWorkflow {
             }
         }
         for path in ["Dockerfile", "docker-compose.yml", "README.md"] {
-            if project_dir.join(path).exists() {
-                checkpoint.record_file("devops", "devops-done", path, "created", &project_dir)?;
-            }
+            record_existing_checkpoint_file(
+                &mut checkpoint,
+                "devops",
+                "devops-done",
+                path,
+                "created",
+                &project_dir,
+            )?;
         }
         checkpoint.record_phase_complete("devops-done", "finish");
         save_checkpoint(&opts, &checkpoint)?;
@@ -455,6 +475,45 @@ impl Workflow for DevWorkflow {
 
 fn save_checkpoint(opts: &RunOptions, checkpoint: &crate::checkpoint::Checkpoint) -> Result<()> {
     checkpoint.write_to(&opts.project_dir, &opts.config)
+}
+
+fn record_existing_checkpoint_file(
+    checkpoint: &mut crate::checkpoint::Checkpoint,
+    agent: &str,
+    phase: &str,
+    path: impl Into<String>,
+    operation: &str,
+    project_dir: &std::path::Path,
+) -> Result<bool> {
+    let path = path.into();
+    if !project_dir.join(&path).exists() {
+        return Ok(false);
+    }
+
+    checkpoint.record_file(agent, phase, path, operation, project_dir)?;
+    Ok(true)
+}
+
+fn record_existing_checkpoint_file_and_save(
+    opts: &RunOptions,
+    checkpoint: &mut crate::checkpoint::Checkpoint,
+    agent: &str,
+    phase: &str,
+    path: impl Into<String>,
+    operation: &str,
+) -> Result<()> {
+    if record_existing_checkpoint_file(
+        checkpoint,
+        agent,
+        phase,
+        path,
+        operation,
+        &opts.project_dir,
+    )? {
+        save_checkpoint(opts, checkpoint)?;
+    }
+
+    Ok(())
 }
 
 fn checkpoint_from_options(opts: &RunOptions, prompt: &str) -> crate::checkpoint::Checkpoint {
