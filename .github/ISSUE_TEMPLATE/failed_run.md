@@ -56,6 +56,7 @@ Safe to include:
 - Final summary.
 - Generated project tree.
 - Non-sensitive command output.
+- `cortex.run.json` after reviewing it for private project details.
 
 Do not include:
 
@@ -64,6 +65,7 @@ Do not include:
 - SMTP credentials.
 - Private customer data.
 - Proprietary source code unless you are allowed to share it.
+- Full `cortex.log` output unless you have reviewed and minimized it.
 
 ## Reproduction steps
 

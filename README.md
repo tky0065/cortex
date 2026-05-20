@@ -875,7 +875,19 @@ The log file is appended (not overwritten) and each session is marked with a Uni
 
 ---
 
-## 16. Running Tests
+## 16. Run Reports
+
+Every workflow run writes a structured diagnostic report to `cortex.run.json` in the output directory.
+
+- `cortex.manifest.json` identifies the generated project after a successful run.
+- `cortex.run.json` explains what happened during the run, including timeline events, agent status, files written, tool calls, basic metrics, and failure details.
+- `cortex.log` is optional verbose text output enabled with `-v`.
+
+Known secrets from Cortex config and environment are redacted before the report is written. Review `cortex.run.json` before sharing it publicly because prompts, file paths, and non-secret project details may still be sensitive.
+
+---
+
+## 17. Running Tests
 
 ```bash
 cargo test                          # all tests

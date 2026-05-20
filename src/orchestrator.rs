@@ -1,12 +1,16 @@
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 use anyhow::Result;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_bus::AgentBus;
 use crate::config::Config;
 use crate::tui::events::{Task, TuiEvent, TuiSender, channel};
 use crate::workflows::{ExecutionMode, RunOptions, Workflow};
+
+type FlushSender = mpsc::UnboundedSender<oneshot::Sender<()>>;
+type FlushReceiver = mpsc::UnboundedReceiver<oneshot::Sender<()>>;
 
 pub struct Orchestrator {
     workflow: Box<dyn Workflow>,
@@ -118,6 +122,13 @@ impl Orchestrator {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )
         });
+        let run_report_collector = Arc::new(tokio::sync::Mutex::new(
+            crate::run_report::RunReportCollector::new(
+                self.workflow.name(),
+                prompt.clone(),
+                &self.config,
+            ),
+        ));
 
         // Warn when the project directory is non-empty (except on explicit resume).
         if project_dir.exists() {
@@ -146,98 +157,52 @@ impl Orchestrator {
             *repl_state.agent_bus.write().await = Some(Arc::clone(&agent_bus));
         }
 
-        // When verbose, tap a clone of the sender into a logging task.
-        if verbose {
-            let (log_tx, mut log_rx) = channel();
-            let log_redactor = crate::secrets::SecretRedactor::from_config_and_env(&self.config);
-            // We'll forward from a clone of the main sender.
-            // Spawn the file-writer that drains log_rx.
-            tokio::spawn(async move {
-                use std::io::Write;
-                let file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("cortex.log");
-                match file {
-                    Ok(mut f) => {
-                        let ts = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
-                        let _ = writeln!(f, "=== cortex session (unix={}) ===", ts);
-                        while let Some(ev) = log_rx.recv().await {
-                            if let TuiEvent::TokenChunk {
-                                ref agent,
-                                ref chunk,
-                            } = ev
-                            {
-                                let _ = writeln!(
-                                    f,
-                                    "{}",
-                                    format_verbose_log_line(agent, chunk, &log_redactor)
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("warning: could not open cortex.log: {}", e);
-                    }
-                }
-            });
-            // Spawn a forwarder that clones events from the main tx into log_tx.
-            // Since UnboundedSender is Clone, clone tx and forward.
-            let tx_clone = tx.clone();
-            // We can't intercept sends directly; instead expose a "tee sender"
-            // by wrapping: create a new channel whose receiver forwards to both.
-            let (tee_tx, mut tee_rx) = channel();
-            let real_tx = tx_clone;
-            tokio::spawn(async move {
-                while let Some(ev) = tee_rx.recv().await {
-                    let _ = log_tx.send(ev.clone());
-                    let _ = real_tx.send(ev);
-                }
-            });
-            let is_auto = auto || self.execution_mode == ExecutionMode::Auto;
-            // Use the tee sender as the workflow sender.
-            let options = RunOptions {
-                auto: is_auto,
-                execution_mode: self.execution_mode.clone(),
-                config: Arc::clone(&self.config),
-                tx: tee_tx.clone(),
-                project_dir: project_dir.clone(),
-                cancel: self.cancel.clone(),
-                resume_tx: Arc::clone(&self.resume_tx),
-                resume_rx: Arc::clone(&self.resume_rx),
-                answer_tx: Arc::clone(&self.answer_tx),
-                answer_rx: Arc::clone(&self.answer_rx),
-                verbose,
-                agent_bus: Some(Arc::clone(&agent_bus)),
-                agent_tools: None,
-            };
+        let (log_tx, log_flush_tx) = if verbose {
+            let (log_tx, flush_tx) =
+                spawn_verbose_log_writer(&self.config, std::path::PathBuf::from("cortex.log"));
+            (Some(log_tx), Some(flush_tx))
+        } else {
+            (None, None)
+        };
 
-            return tokio::select! {
-                result = self.workflow.run(prompt.clone(), options) => {
-                    if result.is_ok() {
-                        write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
+        let (tee_tx, mut tee_rx) = channel();
+        let (report_flush_tx, mut report_flush_rx): (FlushSender, FlushReceiver) =
+            mpsc::unbounded_channel();
+        let real_tx = tx.clone();
+        let report_collector_for_tee = Arc::clone(&run_report_collector);
+        let _report_tee_handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(ev) = tee_rx.recv() => {
+                        handle_report_event(
+                            ev,
+                            &report_collector_for_tee,
+                            log_tx.as_ref(),
+                            &real_tx,
+                        ).await;
                     }
-                    result
-                },
-                _ = self.cancel.cancelled() => {
-                    let _ = tee_tx.send(TuiEvent::TokenChunk {
-                        agent: "orchestrator".into(),
-                        chunk: "Workflow aborted.".into(),
-                    });
-                    Ok(())
+                    Some(ack) = report_flush_rx.recv() => {
+                        while let Ok(ev) = tee_rx.try_recv() {
+                            handle_report_event(
+                                ev,
+                                &report_collector_for_tee,
+                                log_tx.as_ref(),
+                                &real_tx,
+                            ).await;
+                        }
+                        let _ = ack.send(());
+                    }
+                    else => break,
                 }
-            };
-        }
+            }
+        });
 
         let is_auto = auto || self.execution_mode == ExecutionMode::Auto;
         let options = RunOptions {
             auto: is_auto,
             execution_mode: self.execution_mode.clone(),
             config: Arc::clone(&self.config),
-            tx: tx.clone(),
+            tx: tee_tx.clone(),
             project_dir: project_dir.clone(),
             cancel: self.cancel.clone(),
             resume_tx: Arc::clone(&self.resume_tx),
@@ -249,18 +214,58 @@ impl Orchestrator {
             agent_tools: None,
         };
 
-        tokio::select! {
-            result = self.workflow.run(prompt.clone(), options) => {
-                if result.is_ok() {
-                    write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
-                }
-                result
-            },
+        let run_completion = tokio::select! {
+            result = self.workflow.run(prompt.clone(), options) => RunCompletion::Workflow(result),
             _ = self.cancel.cancelled() => {
-                let _ = tx.send(TuiEvent::TokenChunk {
+                let _ = tee_tx.send(TuiEvent::TokenChunk {
                     agent: "orchestrator".into(),
                     chunk: "Workflow aborted.".into(),
                 });
+                RunCompletion::Interrupted
+            }
+        };
+
+        flush_ack(&report_flush_tx, "run report events").await;
+        if let Some(log_flush_tx) = &log_flush_tx {
+            flush_ack(log_flush_tx, "verbose log").await;
+        }
+
+        match run_completion {
+            RunCompletion::Workflow(Ok(())) => {
+                {
+                    let mut collector = run_report_collector.lock().await;
+                    finalize_run_report(
+                        &mut collector,
+                        &project_dir,
+                        &self.config,
+                        RunReportOutcome::Success,
+                    );
+                }
+                write_manifest(&project_dir, self.workflow.name(), &prompt, &self.config);
+                Ok(())
+            }
+            RunCompletion::Workflow(Err(e)) => {
+                {
+                    let mut collector = run_report_collector.lock().await;
+                    finalize_run_report(
+                        &mut collector,
+                        &project_dir,
+                        &self.config,
+                        RunReportOutcome::Failed(e.to_string()),
+                    );
+                }
+                Err(e)
+            }
+            RunCompletion::Interrupted => {
+                {
+                    let mut collector = run_report_collector.lock().await;
+                    finalize_run_report(
+                        &mut collector,
+                        &project_dir,
+                        &self.config,
+                        RunReportOutcome::Interrupted("Workflow aborted.".to_string()),
+                    );
+                }
                 Ok(())
             }
         }
@@ -281,6 +286,115 @@ fn format_verbose_log_line(
     redactor: &crate::secrets::SecretRedactor,
 ) -> String {
     format!("[{}] {}", agent, redactor.redact_text(chunk))
+}
+
+fn spawn_verbose_log_writer(
+    config: &Config,
+    log_path: std::path::PathBuf,
+) -> (TuiSender, FlushSender) {
+    let (log_tx, mut log_rx) = channel();
+    let (log_flush_tx, mut log_flush_rx): (FlushSender, FlushReceiver) = mpsc::unbounded_channel();
+    let log_redactor = crate::secrets::SecretRedactor::from_config_and_env(config);
+
+    tokio::spawn(async move {
+        use std::io::Write;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path);
+        match file {
+            Ok(mut f) => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = writeln!(f, "=== cortex session (unix={}) ===", ts);
+
+                loop {
+                    tokio::select! {
+                        Some(ev) = log_rx.recv() => {
+                            write_verbose_log_event(&mut f, ev, &log_redactor);
+                        }
+                        Some(ack) = log_flush_rx.recv() => {
+                            while let Ok(ev) = log_rx.try_recv() {
+                                write_verbose_log_event(&mut f, ev, &log_redactor);
+                            }
+                            let _ = f.flush();
+                            let _ = ack.send(());
+                        }
+                        else => break,
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: could not open cortex.log: {}", e);
+            }
+        }
+    });
+
+    (log_tx, log_flush_tx)
+}
+
+fn write_verbose_log_event(
+    f: &mut std::fs::File,
+    ev: TuiEvent,
+    redactor: &crate::secrets::SecretRedactor,
+) {
+    if let TuiEvent::TokenChunk { agent, chunk } = ev {
+        let _ = writeln!(f, "{}", format_verbose_log_line(&agent, &chunk, redactor));
+    }
+}
+
+async fn handle_report_event(
+    ev: TuiEvent,
+    collector: &Arc<tokio::sync::Mutex<crate::run_report::RunReportCollector>>,
+    log_tx: Option<&TuiSender>,
+    real_tx: &TuiSender,
+) {
+    collector.lock().await.record_event(&ev);
+    if let Some(log_tx) = log_tx {
+        let _ = log_tx.send(ev.clone());
+    }
+    let _ = real_tx.send(ev);
+}
+
+enum RunCompletion {
+    Workflow(Result<()>),
+    Interrupted,
+}
+
+enum RunReportOutcome {
+    Success,
+    Failed(String),
+    Interrupted(String),
+}
+
+async fn flush_ack(flush_tx: &FlushSender, label: &str) {
+    let (ack_tx, ack_rx) = oneshot::channel();
+    if flush_tx.send(ack_tx).is_err() {
+        return;
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(2), ack_rx).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => eprintln!("warning: {label} flush channel closed"),
+        Err(_) => eprintln!("warning: timed out waiting for {label} to flush"),
+    }
+}
+
+fn finalize_run_report(
+    collector: &mut crate::run_report::RunReportCollector,
+    project_dir: &std::path::Path,
+    config: &Config,
+    outcome: RunReportOutcome,
+) {
+    match outcome {
+        RunReportOutcome::Success => collector.finish_success(),
+        RunReportOutcome::Failed(message) => collector.finish_error(message),
+        RunReportOutcome::Interrupted(message) => collector.finish_interrupted(message),
+    }
+    if let Err(e) = collector.write_to(project_dir, config) {
+        eprintln!("warning: could not write cortex.run.json: {e}");
+    }
 }
 
 /// Write a `cortex.manifest.json` to the project directory on successful run completion.
@@ -377,8 +491,13 @@ fn parse_tasks(content: &str) -> Vec<Task> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, oneshot};
 
-    use super::{default_project_dir, write_manifest};
+    use super::{
+        FlushSender, RunReportOutcome, default_project_dir, finalize_run_report, flush_ack,
+        spawn_verbose_log_writer, write_manifest,
+    };
     use crate::config::Config;
     use crate::tui::events::{TuiEvent, channel};
 
@@ -428,6 +547,151 @@ mod tests {
 
         assert_eq!(line, "[developer] received [REDACTED]");
         assert!(!line.contains("log-secret-123456"));
+    }
+
+    #[test]
+    fn finalized_report_writes_success_status() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_orchestrator_report_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Config::default();
+        let mut collector = crate::run_report::RunReportCollector::new("dev", "build", &config);
+        finalize_run_report(&mut collector, &dir, &config, RunReportOutcome::Success);
+
+        let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+        assert!(content.contains("\"status\": \"success\""));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finalized_report_writes_failed_status() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_orchestrator_report_failed_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Config::default();
+        let mut collector = crate::run_report::RunReportCollector::new("dev", "build", &config);
+        finalize_run_report(
+            &mut collector,
+            &dir,
+            &config,
+            RunReportOutcome::Failed("provider failed".to_string()),
+        );
+
+        let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+        assert!(content.contains("\"status\": \"failed\""));
+        assert!(content.contains("provider failed"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn flush_report_events_drains_queued_events_before_returning() {
+        let recorded = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let (tee_tx, flush_tx) = spawn_recording_report_tee(Arc::clone(&recorded));
+
+        tee_tx
+            .send(TuiEvent::TokenChunk {
+                agent: "sentinel".to_string(),
+                chunk: "queued-before-finalize".to_string(),
+            })
+            .unwrap();
+
+        flush_ack(&flush_tx, "test report events").await;
+
+        assert_eq!(recorded.lock().await.as_slice(), ["queued-before-finalize"]);
+    }
+
+    #[tokio::test]
+    async fn flush_report_events_does_not_wait_for_sender_clones_to_close() {
+        let recorded = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let (tee_tx, flush_tx) = spawn_recording_report_tee(Arc::clone(&recorded));
+        let held_sender = tee_tx.clone();
+
+        tee_tx
+            .send(TuiEvent::TokenChunk {
+                agent: "sentinel".to_string(),
+                chunk: "queued-with-held-sender".to_string(),
+            })
+            .unwrap();
+
+        flush_ack(&flush_tx, "test report events").await;
+
+        assert_eq!(
+            recorded.lock().await.as_slice(),
+            ["queued-with-held-sender"]
+        );
+        held_sender
+            .send(TuiEvent::TokenChunk {
+                agent: "sentinel".to_string(),
+                chunk: "held-sender-still-open".to_string(),
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn flush_log_events_writes_queued_events_before_returning() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_orchestrator_log_flush_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("cortex.log");
+
+        let config = Config::default();
+        let (log_tx, log_flush_tx) = spawn_verbose_log_writer(&config, log_path.clone());
+        log_tx
+            .send(TuiEvent::TokenChunk {
+                agent: "developer".to_string(),
+                chunk: "queued log line".to_string(),
+            })
+            .unwrap();
+
+        flush_ack(&log_flush_tx, "test verbose log").await;
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("[developer] queued log line"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn spawn_recording_report_tee(
+        recorded: Arc<tokio::sync::Mutex<Vec<String>>>,
+    ) -> (crate::tui::events::TuiSender, FlushSender) {
+        let (tee_tx, mut tee_rx) = channel();
+        let (flush_tx, mut flush_rx): (FlushSender, mpsc::UnboundedReceiver<oneshot::Sender<()>>) =
+            mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(ev) = tee_rx.recv() => {
+                        record_test_event(ev, &recorded).await;
+                    }
+                    Some(ack) = flush_rx.recv() => {
+                        while let Ok(ev) = tee_rx.try_recv() {
+                            record_test_event(ev, &recorded).await;
+                        }
+                        let _ = ack.send(());
+                    }
+                    else => break,
+                }
+            }
+        });
+
+        (tee_tx, flush_tx)
+    }
+
+    async fn record_test_event(ev: TuiEvent, recorded: &Arc<tokio::sync::Mutex<Vec<String>>>) {
+        if let TuiEvent::TokenChunk { chunk, .. } = ev {
+            recorded.lock().await.push(chunk);
+        }
     }
 
     /// Phase events sent in sequence must arrive in the same order.
