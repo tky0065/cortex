@@ -1185,6 +1185,7 @@ async fn execute_tool(
                 verbose: false,
                 agent_bus: agent_bus.clone(),
                 agent_tools: None,
+                resume: None,
             };
             drop(cfg2);
 

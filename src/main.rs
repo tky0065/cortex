@@ -209,12 +209,10 @@ async fn main() -> Result<()> {
                 );
                 std::process::exit(1);
             }
-            let orch = Orchestrator::new(workflows::get_workflow("dev")?, Arc::new(config));
-            let prompt = format!(
-                "Resume and complete the project in: {}",
-                project_dir.display()
-            );
-            orch.run_with_project_dir(prompt, true, verbose, None, Some(project_dir))
+            let checkpoint = checkpoint::Checkpoint::load(&project_dir)?;
+            let wf = workflows::get_workflow(&checkpoint.workflow)?;
+            let orch = Orchestrator::new(wf, Arc::new(config));
+            orch.resume_with_project_dir(verbose, None, project_dir)
                 .await?;
         }
         Some(Commands::Init { force }) => {

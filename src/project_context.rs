@@ -406,6 +406,7 @@ async fn generate_agents_md(
         verbose: false,
         agent_bus: None,
         agent_tools: None,
+        resume: None,
     };
     crate::providers::complete(&model, GENERATOR_PREAMBLE, &prompt, &options, "init").await
 }

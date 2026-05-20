@@ -1311,7 +1311,20 @@ pub async fn dispatch(
                 }
 
                 let config_snapshot = Arc::new(config.read().await.clone());
-                let wf = workflows::get_workflow("dev")?;
+                let checkpoint = match crate::checkpoint::Checkpoint::load(&project_dir) {
+                    Ok(checkpoint) => checkpoint,
+                    Err(e) => {
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "repl".to_string(),
+                                message: e.to_string(),
+                            },
+                        );
+                        return Ok(false);
+                    }
+                };
+                let wf = workflows::get_workflow(&checkpoint.workflow)?;
                 let tx_clone = tx.clone();
                 let tx_done = tx.clone();
                 let orch = Orchestrator::new(wf, config_snapshot);
@@ -1329,19 +1342,9 @@ pub async fn dispatch(
                     *answer_guard = Some(orch.answer_sender());
                 }
 
-                let prompt = format!(
-                    "Resume and complete the project in: {}",
-                    project_dir.display()
-                );
                 tokio::spawn(async move {
                     let result = orch
-                        .run_with_project_dir(
-                            prompt,
-                            true,
-                            false,
-                            Some(tx_clone),
-                            Some(project_dir.clone()),
-                        )
+                        .resume_with_project_dir(false, Some(tx_clone), project_dir.clone())
                         .await;
                     match result {
                         Ok(()) => {

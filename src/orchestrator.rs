@@ -114,14 +114,75 @@ impl Orchestrator {
         tx: Option<TuiSender>,
         project_dir: Option<std::path::PathBuf>,
     ) -> Result<()> {
-        // Resolve the primary event sender (TUI or throw-away).
-        let tx = tx.unwrap_or_else(|| channel().0);
         let project_dir = project_dir.unwrap_or_else(|| {
             default_project_dir(
                 self.workflow.name(),
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             )
         });
+        self.run_with_project_dir_and_resume(prompt, auto, verbose, tx, project_dir, None)
+            .await
+    }
+
+    pub async fn resume_with_project_dir(
+        &self,
+        verbose: bool,
+        tx: Option<TuiSender>,
+        project_dir: std::path::PathBuf,
+    ) -> Result<()> {
+        let checkpoint_path = crate::checkpoint::Checkpoint::checkpoint_path(&project_dir);
+        if !checkpoint_path.exists() {
+            anyhow::bail!(
+                "structured resume requires cortex.checkpoint.json in {}",
+                project_dir.display()
+            );
+        }
+
+        let checkpoint = crate::checkpoint::Checkpoint::load(&project_dir)?;
+        if !crate::checkpoint::Checkpoint::is_resume_supported_for(&checkpoint.workflow) {
+            anyhow::bail!(
+                "structured resume currently supports dev; checkpoint workflow was {}",
+                checkpoint.workflow
+            );
+        }
+        if checkpoint.workflow != self.workflow.name() {
+            anyhow::bail!(
+                "checkpoint workflow mismatch: checkpoint={}, requested={}",
+                checkpoint.workflow,
+                self.workflow.name()
+            );
+        }
+
+        let conflicts = checkpoint.validate_files(&project_dir)?;
+        if !conflicts.is_empty() {
+            anyhow::bail!("{}", format_checkpoint_conflicts(&conflicts));
+        }
+
+        self.run_with_project_dir_and_resume(
+            checkpoint.prompt.clone(),
+            true,
+            verbose,
+            tx,
+            project_dir,
+            Some(crate::workflows::ResumeContext {
+                checkpoint,
+                conflicts,
+            }),
+        )
+        .await
+    }
+
+    async fn run_with_project_dir_and_resume(
+        &self,
+        prompt: String,
+        auto: bool,
+        verbose: bool,
+        tx: Option<TuiSender>,
+        project_dir: std::path::PathBuf,
+        resume: Option<crate::workflows::ResumeContext>,
+    ) -> Result<()> {
+        // Resolve the primary event sender (TUI or throw-away).
+        let tx = tx.unwrap_or_else(|| channel().0);
         let run_report_collector = Arc::new(tokio::sync::Mutex::new(
             crate::run_report::RunReportCollector::new(
                 self.workflow.name(),
@@ -212,6 +273,7 @@ impl Orchestrator {
             verbose,
             agent_bus: Some(Arc::clone(&agent_bus)),
             agent_tools: None,
+            resume,
         };
 
         let run_completion = tokio::select! {
@@ -278,6 +340,37 @@ fn default_project_dir(workflow_name: &str, cwd: std::path::PathBuf) -> std::pat
     } else {
         cwd.join("cortex-output")
     }
+}
+
+fn format_checkpoint_conflicts(conflicts: &[crate::checkpoint::CheckpointConflict]) -> String {
+    let mut lines = vec!["checkpoint conflicts prevent structured resume:".to_string()];
+    for conflict in conflicts {
+        let message = match conflict.conflict_type {
+            crate::checkpoint::CheckpointConflictType::FileModified => {
+                format!(
+                    "tracked file was modified since checkpoint: {}",
+                    conflict.message
+                )
+            }
+            _ => conflict.message.clone(),
+        };
+        match (
+            &conflict.path,
+            &conflict.expected_sha256,
+            &conflict.actual_sha256,
+        ) {
+            (Some(path), Some(expected), Some(actual)) => lines.push(format!(
+                "- {}: {} (expected {}, found {})",
+                path, message, expected, actual
+            )),
+            (Some(path), Some(expected), None) => {
+                lines.push(format!("- {}: {} (expected {})", path, message, expected))
+            }
+            (Some(path), _, _) => lines.push(format!("- {}: {}", path, message)),
+            (None, _, _) => lines.push(format!("- {}", message)),
+        }
+    }
+    lines.join("\n")
 }
 
 fn format_verbose_log_line(
@@ -659,6 +752,60 @@ mod tests {
         assert!(content.contains("[developer] queued log line"));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resume_without_checkpoint_fails_before_workflow_execution() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_resume_missing_checkpoint_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(crate::workflows::get_workflow("dev").unwrap(), config);
+        let err = orch
+            .resume_with_project_dir(false, None, dir.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("structured resume requires cortex.checkpoint.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn resume_with_modified_tracked_file_fails_before_workflow_execution() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_resume_modified_checkpoint_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("specs.md"), "initial").unwrap();
+
+        let config = Config::default();
+        let mut checkpoint = crate::checkpoint::Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint
+            .record_file("pm", "specs-ready", "specs.md", "created", &dir)
+            .unwrap();
+        checkpoint.write_to(&dir, &config).unwrap();
+        std::fs::write(dir.join("specs.md"), "changed").unwrap();
+
+        let orch = super::Orchestrator::new(
+            crate::workflows::get_workflow("dev").unwrap(),
+            Arc::new(config),
+        );
+        let err = orch
+            .resume_with_project_dir(false, None, dir.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("tracked file was modified since checkpoint"));
+        assert!(err.contains("specs.md"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn spawn_recording_report_tee(

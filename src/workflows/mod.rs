@@ -56,6 +56,14 @@ pub struct WorkflowInfo {
     pub description: &'static str,
 }
 
+#[derive(Clone, Debug)]
+pub struct ResumeContext {
+    #[allow(dead_code)]
+    pub checkpoint: crate::checkpoint::Checkpoint,
+    #[allow(dead_code)]
+    pub conflicts: Vec<crate::checkpoint::CheckpointConflict>,
+}
+
 pub const AVAILABLE_WORKFLOWS: &[WorkflowInfo] = &[
     WorkflowInfo {
         name: "dev",
@@ -117,6 +125,8 @@ pub struct RunOptions {
     /// `None` = built-in agent (uses global web_search_enabled flag).
     /// `Some(tools)` = custom agent; web search only fires if "web_search" is in this list.
     pub agent_tools: Option<Vec<String>>,
+    #[allow(dead_code)]
+    pub resume: Option<ResumeContext>,
 }
 
 #[async_trait]
