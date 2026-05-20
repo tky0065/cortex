@@ -192,7 +192,7 @@ impl Orchestrator {
         ));
 
         // Warn when the project directory is non-empty (except on explicit resume).
-        if project_dir.exists() {
+        if resume.is_none() && project_dir.exists() {
             let is_nonempty = std::fs::read_dir(&project_dir)
                 .map(|mut d| d.next().is_some())
                 .unwrap_or(false);
@@ -354,20 +354,9 @@ fn format_checkpoint_conflicts(conflicts: &[crate::checkpoint::CheckpointConflic
             }
             _ => conflict.message.clone(),
         };
-        match (
-            &conflict.path,
-            &conflict.expected_sha256,
-            &conflict.actual_sha256,
-        ) {
-            (Some(path), Some(expected), Some(actual)) => lines.push(format!(
-                "- {}: {} (expected {}, found {})",
-                path, message, expected, actual
-            )),
-            (Some(path), Some(expected), None) => {
-                lines.push(format!("- {}: {} (expected {})", path, message, expected))
-            }
-            (Some(path), _, _) => lines.push(format!("- {}: {}", path, message)),
-            (None, _, _) => lines.push(format!("- {}", message)),
+        match &conflict.path {
+            Some(path) => lines.push(format!("- {}: {}", path, message)),
+            None => lines.push(format!("- {}", message)),
         }
     }
     lines.join("\n")
