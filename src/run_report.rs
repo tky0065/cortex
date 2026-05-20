@@ -1,5 +1,8 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::config::Config;
 
@@ -162,6 +165,17 @@ impl RunReportCollector {
 
     pub fn report(&self) -> &RunReport {
         &self.report
+    }
+
+    pub fn write_to(&self, project_dir: &Path, config: &Config) -> Result<()> {
+        std::fs::create_dir_all(project_dir)
+            .with_context(|| format!("Failed to create project dir: {}", project_dir.display()))?;
+        let redactor = crate::secrets::SecretRedactor::from_config_and_env(config);
+        let redacted = self.redacted_report(&redactor);
+        let json =
+            serde_json::to_string_pretty(&redacted).context("Failed to serialize run report")?;
+        let path = project_dir.join("cortex.run.json");
+        std::fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))
     }
 
     pub fn record_event(&mut self, event: &crate::tui::events::TuiEvent) {
@@ -505,7 +519,7 @@ impl RunReportCollector {
             path: path.to_string(),
             operation: operation.to_string(),
             bytes: new_content.len(),
-            sha256: String::new(),
+            sha256: sha256_hex(new_content.as_bytes()),
             timestamp_unix_ms: now_unix_ms(),
         });
         self.push_timeline(
@@ -518,6 +532,49 @@ impl RunReportCollector {
         );
         self.refresh_counts();
     }
+
+    fn redacted_report(&self, redactor: &crate::secrets::SecretRedactor) -> RunReport {
+        let mut report = self.report.clone();
+
+        report.prompt = redactor.redact_text(&report.prompt);
+        for event in &mut report.timeline {
+            event.message = redact_option(redactor, event.message.take());
+            event.path = redact_option(redactor, event.path.take());
+        }
+        for agent in &mut report.agents {
+            agent.last_progress = redact_option(redactor, agent.last_progress.take());
+            agent.errors = agent
+                .errors
+                .iter()
+                .map(|error| redactor.redact_text(error))
+                .collect();
+        }
+        for tool in &mut report.tools {
+            tool.label = redactor.redact_text(&tool.label);
+        }
+        for file in &mut report.files {
+            file.path = redactor.redact_text(&file.path);
+        }
+        if let Some(failure) = &mut report.failure {
+            failure.message = redactor.redact_text(&failure.message);
+            failure.probable_cause = redactor.redact_text(&failure.probable_cause);
+        }
+
+        report
+    }
+}
+
+fn redact_option(
+    redactor: &crate::secrets::SecretRedactor,
+    value: Option<String>,
+) -> Option<String> {
+    value.map(|value| redactor.redact_text(&value))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 fn now_unix_ms() -> u64 {
@@ -723,6 +780,54 @@ mod tests {
         assert_eq!(report.status, RunStatus::Interrupted);
         assert_eq!(report.failure.as_ref().unwrap().failure_type, "interrupted");
         assert!(report.finished_at_unix_ms.is_some());
+    }
+
+    #[test]
+    fn collector_records_file_metadata_with_sha256() {
+        let config = Config::default();
+        let mut collector = RunReportCollector::new("dev", "build", &config);
+
+        collector.record_event(&TuiEvent::FileWritten {
+            agent: "developer".to_string(),
+            path: "src/main.rs".to_string(),
+            old_content: None,
+            new_content: "fn main() {}\n".to_string(),
+        });
+
+        let file = collector.report().files.first().unwrap();
+        assert_eq!(file.agent, "developer");
+        assert_eq!(file.path, "src/main.rs");
+        assert_eq!(file.operation, "created");
+        assert_eq!(file.bytes, "fn main() {}\n".len());
+        assert_eq!(
+            file.sha256,
+            "536e506bb90914c243a12b397b9a998f85ae2cbd9ba02dfd03a9e155ca5ca0f4"
+        );
+        assert_eq!(collector.report().metrics.file_count, 1);
+    }
+
+    #[test]
+    fn write_to_redacts_prompt_and_event_text() {
+        let dir =
+            std::env::temp_dir().join(format!("cortex-run-report-redact-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut config = Config::default();
+        config.api_keys.openai = Some("sk-test-run-report-secret".to_string());
+        let mut collector =
+            RunReportCollector::new("dev", "build with sk-test-run-report-secret", &config);
+        collector.record_event(&TuiEvent::Error {
+            agent: "developer".to_string(),
+            message: "provider returned sk-test-run-report-secret".to_string(),
+        });
+        collector.finish_error("failed with sk-test-run-report-secret");
+        collector.write_to(&dir, &config).unwrap();
+
+        let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+        assert!(content.contains("[REDACTED]"));
+        assert!(!content.contains("sk-test-run-report-secret"));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
