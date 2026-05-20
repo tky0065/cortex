@@ -114,6 +114,7 @@ pub fn now_unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use std::path::Path;
 
     #[test]
     fn new_checkpoint_has_required_identity_fields() {
@@ -164,5 +165,62 @@ mod tests {
         assert!(!Checkpoint::is_resume_supported_for("marketing"));
         assert!(!Checkpoint::is_resume_supported_for("prospecting"));
         assert!(!Checkpoint::is_resume_supported_for("code-review"));
+    }
+
+    #[test]
+    fn checkpoint_path_uses_project_directory() {
+        let path = Checkpoint::checkpoint_path(Path::new("/tmp/project"));
+
+        assert_eq!(path, Path::new("/tmp/project/cortex.checkpoint.json"));
+        assert!(path.ends_with("cortex.checkpoint.json"));
+    }
+
+    #[test]
+    fn checkpoint_conflict_captures_file_mismatch_details() {
+        let conflict = CheckpointConflict {
+            conflict_type: CheckpointConflictType::FileModified,
+            path: Some("src/main.rs".to_string()),
+            message: "file changed after checkpoint".to_string(),
+            expected_sha256: Some("expected".to_string()),
+            actual_sha256: Some("actual".to_string()),
+        };
+
+        assert_eq!(conflict.conflict_type, CheckpointConflictType::FileModified);
+        assert_eq!(conflict.path.as_deref(), Some("src/main.rs"));
+        assert_eq!(conflict.message, "file changed after checkpoint");
+        assert_eq!(conflict.expected_sha256.as_deref(), Some("expected"));
+        assert_eq!(conflict.actual_sha256.as_deref(), Some("actual"));
+    }
+
+    #[test]
+    fn checkpoint_conflict_types_serialize_as_snake_case() {
+        let cases = [
+            (
+                CheckpointConflictType::CheckpointMissing,
+                "checkpoint_missing",
+            ),
+            (
+                CheckpointConflictType::UnsupportedWorkflow,
+                "unsupported_workflow",
+            ),
+            (
+                CheckpointConflictType::WorkflowMismatch,
+                "workflow_mismatch",
+            ),
+            (
+                CheckpointConflictType::InvalidCheckpoint,
+                "invalid_checkpoint",
+            ),
+            (CheckpointConflictType::FileMissing, "file_missing"),
+            (CheckpointConflictType::FileModified, "file_modified"),
+            (
+                CheckpointConflictType::PhaseInconsistent,
+                "phase_inconsistent",
+            ),
+        ];
+
+        for (conflict_type, expected) in cases {
+            assert_eq!(serde_json::to_value(conflict_type).unwrap(), expected);
+        }
     }
 }
