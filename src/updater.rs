@@ -222,12 +222,36 @@ fn extract_archive(archive_path: &Path, destination: &Path) -> Result<()> {
 }
 
 fn verify_checksum(path: &Path, archive: &str, sums: &str) -> Result<()> {
-    let expected = checksum_for_archive(archive, sums)
-        .ok_or_else(|| anyhow::anyhow!("SHA256SUMS did not contain {archive}"))?;
+    let expected = validate_checksum_entry(archive, sums)?;
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let actual = format!("{:x}", Sha256::digest(bytes));
     if actual != expected {
         bail!("checksum verification failed for {archive}");
+    }
+    Ok(())
+}
+
+fn validate_checksum_entry(archive: &str, sums: &str) -> Result<String> {
+    validate_archive_name(archive)?;
+    let checksum = checksum_for_archive(archive, sums)
+        .ok_or_else(|| anyhow::anyhow!("SHA256SUMS did not contain {archive}"))?;
+    if checksum.len() != 64 || !checksum.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("invalid SHA256 checksum for {archive}");
+    }
+    Ok(checksum.to_ascii_lowercase())
+}
+
+fn validate_archive_name(archive: &str) -> Result<()> {
+    let path = Path::new(archive);
+    if path.components().count() != 1 || path.is_absolute() {
+        bail!("suspicious archive name: {archive}");
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        bail!("suspicious archive name: {archive}");
+    };
+    if name != archive || archive.contains("..") || archive.contains('/') || archive.contains('\\')
+    {
+        bail!("suspicious archive name: {archive}");
     }
     Ok(())
 }
@@ -361,5 +385,46 @@ mod tests {
             Some("abc123".to_string())
         );
         assert_eq!(checksum_for_archive("missing.tar.gz", sums), None);
+    }
+
+    #[test]
+    fn rejects_missing_checksum_for_archive() {
+        let sums = "abc123  other-archive.tar.gz\n";
+        let err = validate_checksum_entry("cortex-v0.1.3-x86_64-apple-darwin.tar.gz", sums)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("SHA256SUMS did not contain cortex-v0.1.3-x86_64-apple-darwin.tar.gz")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_checksum_for_archive() {
+        let sums = "not-a-sha256  cortex-v0.1.3-x86_64-apple-darwin.tar.gz\n";
+        let err = validate_checksum_entry("cortex-v0.1.3-x86_64-apple-darwin.tar.gz", sums)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("invalid SHA256 checksum"));
+    }
+
+    #[test]
+    fn accepts_lowercase_sha256_checksum_for_archive() {
+        let checksum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let sums = format!("{checksum}  cortex-v0.1.3-x86_64-apple-darwin.tar.gz\n");
+
+        assert_eq!(
+            validate_checksum_entry("cortex-v0.1.3-x86_64-apple-darwin.tar.gz", &sums).unwrap(),
+            checksum
+        );
+    }
+
+    #[test]
+    fn rejects_suspicious_archive_names() {
+        assert!(validate_archive_name("../cortex.tar.gz").is_err());
+        assert!(validate_archive_name("/tmp/cortex.tar.gz").is_err());
+        assert!(validate_archive_name("nested/cortex.tar.gz").is_err());
+        assert!(validate_archive_name("cortex-v0.1.3-x86_64-apple-darwin.tar.gz").is_ok());
     }
 }
