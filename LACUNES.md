@@ -91,14 +91,14 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action réalisée:** Validation structurée ajoutée pour les agents et workflows custom: schéma, agents manquants, outils inconnus, YAML invalide, collisions avec workflows intégrés, commande `cortex validate`, commande `/validate`, blocage pré-exécution, et tests dédiés. Les raffinements futurs peuvent couvrir permissions fines, cycles de dépendances, taille de prompts et exemples enrichis.
 
 ### 9. Experience de reprise de session a durcir
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par `cortex.checkpoint.json`, qui stocke l'état de reprise du workflow `dev`: phase courante, phases terminées, prochaine action, prompt d'origine, fichiers suivis, hashes SHA-256 et détection de conflits avant reprise.
 
 **Constat:** La reprise apres interruption est une fonctionnalite forte, mais elle depend de l'etat disque, de l'historique de session et de la coherence des fichiers deja generes.
 
 **Pourquoi c'est important:** Reprendre un run dans un etat partiellement modifie peut creer des incoherences ou ecraser du travail utilisateur.
 
-**Action recommandee:** Ajouter des checkpoints explicites avec manifest: phase courante, fichiers crees, hash des fichiers, agent responsable, prochaines actions, conflits detectes.
+**Action réalisée:** Checkpoints explicites ajoutés avec état de reprise: phase courante, fichiers créés, hash des fichiers, agent responsable, prochaines actions, conflits détectés.
 
 ### 10. Documentation d'utilisation avancee incomplete
 **Statut:** Terminé
@@ -276,3 +276,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-19 — Lot sécurité/secrets terminé: modèle de menace, redaction centrale, logs/manifests/email/web search redacted, premiers tests adversariaux et durcissement symlink filesystem. Lacunes terminées: 22. Lacunes partiellement traitées: 2, 20.
 - 2026-05-19 — Lot validation custom terminé: validation structurée agents/workflows custom, commandes `cortex validate` et `/validate`, blocage pré-exécution des workflows invalides. Lacune terminée: 8.
 - 2026-05-20 — Lot observabilité complète terminé: `cortex.run.json` généré pour succès/échec/interruption, timeline structurée, résumés agents, fichiers, outils observables, métriques de base, redaction secrets et documentation de partage. Lacune terminée: 6. Lacune partiellement traitée: 7.
+- 2026-05-20 — Lot reprise robuste terminé: `cortex.checkpoint.json`, reprise structurée du workflow `dev`, validation des hashes, refus des reprises ambiguës et documentation des artefacts. Lacune terminée: 9.

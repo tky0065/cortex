@@ -430,7 +430,15 @@ cortex resume ./demo
 /resume ./demo
 ```
 
-Cortex re-runs the dev workflow with a prompt that asks the agents to continue from the existing files in the directory. Best used when a run was aborted mid-way.
+`cortex resume <project-dir>` uses `cortex.checkpoint.json` to continue a structured `dev` workflow run. The checkpoint stores the original prompt, completed phases, next action, and hashes for files Cortex already wrote.
+
+Resume stops before running agents if the checkpoint is missing, invalid, belongs to an unsupported workflow, or if tracked files were changed or removed. Cortex does not overwrite local edits during structured resume.
+
+Run artifacts:
+
+- `cortex.checkpoint.json` controls safe resume for interrupted `dev` runs.
+- `cortex.run.json` is a diagnostic timeline for success, failure, and interruption.
+- `cortex.manifest.json` identifies a successfully generated project.
 
 ### 6.5 Execution modes
 
@@ -879,6 +887,7 @@ The log file is appended (not overwritten) and each session is marked with a Uni
 
 Every workflow run writes a structured diagnostic report to `cortex.run.json` in the output directory.
 
+- `cortex.checkpoint.json` controls safe resume for interrupted `dev` runs.
 - `cortex.manifest.json` identifies the generated project after a successful run.
 - `cortex.run.json` explains what happened during the run, including timeline events, agent status, files written, tool calls, basic metrics, and failure details.
 - `cortex.log` is optional verbose text output enabled with `-v`.
