@@ -286,6 +286,16 @@ impl Orchestrator {
                 RunCompletion::Interrupted
             }
         };
+        let run_completion = match run_completion {
+            RunCompletion::Workflow(Ok(())) if self.cancel.is_cancelled() => {
+                let _ = tee_tx.send(TuiEvent::TokenChunk {
+                    agent: "orchestrator".into(),
+                    chunk: "Workflow aborted.".into(),
+                });
+                RunCompletion::Interrupted
+            }
+            other => other,
+        };
 
         flush_ack(&report_flush_tx, "run report events").await;
         if let Some(log_flush_tx) = &log_flush_tx {
@@ -607,6 +617,9 @@ mod tests {
     };
     use crate::config::Config;
     use crate::tui::events::{TuiEvent, channel};
+    use crate::workflows::{RunOptions, Workflow};
+    use anyhow::Result;
+    use async_trait::async_trait;
 
     #[test]
     fn dev_workflow_defaults_to_current_directory() {
@@ -864,6 +877,55 @@ mod tests {
         assert!(err.contains("tracked file was modified since checkpoint"));
         assert!(err.contains("specs.md"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn workflow_ok_after_cancellation_marks_checkpoint_interrupted_without_manifest() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_cancelled_ok_checkpoint_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(Box::new(CancelThenOkWorkflow), Arc::clone(&config));
+        orch.run_with_project_dir("build".to_string(), true, false, None, Some(dir.clone()))
+            .await
+            .unwrap();
+
+        let checkpoint = crate::checkpoint::Checkpoint::load(&dir).unwrap();
+        assert_eq!(
+            checkpoint.status,
+            crate::checkpoint::CheckpointStatus::Interrupted
+        );
+        assert!(!dir.join("cortex.manifest.json").exists());
+
+        let run_report = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+        assert!(run_report.contains("\"status\": \"interrupted\""));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct CancelThenOkWorkflow;
+
+    #[async_trait]
+    impl Workflow for CancelThenOkWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "test workflow"
+        }
+
+        async fn run(&self, prompt: String, options: RunOptions) -> Result<()> {
+            let checkpoint =
+                crate::checkpoint::Checkpoint::new("run-1", self.name(), prompt, &options.config);
+            checkpoint.write_to(&options.project_dir, &options.config)?;
+            options.cancel.cancel();
+            Ok(())
+        }
     }
 
     fn spawn_recording_report_tee(

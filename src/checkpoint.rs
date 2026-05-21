@@ -188,6 +188,15 @@ impl Checkpoint {
         {
             anyhow::bail!("Invalid dev resume checkpoint: specs-ready requires dev.specs_path");
         }
+        if self.has_completed_phase("specs-ready") {
+            self.require_file_record(
+                "specs-ready",
+                self.dev
+                    .specs_path
+                    .as_deref()
+                    .expect("specs_path checked above"),
+            )?;
+        }
         if self.has_completed_phase("architecture-ready")
             && self
                 .dev
@@ -198,6 +207,20 @@ impl Checkpoint {
             anyhow::bail!(
                 "Invalid dev resume checkpoint: architecture-ready requires dev.architecture_path"
             );
+        }
+        if self.has_completed_phase("architecture-ready") {
+            self.require_file_record(
+                "architecture-ready",
+                self.dev
+                    .architecture_path
+                    .as_deref()
+                    .expect("architecture_path checked above"),
+            )?;
+        }
+        if self.has_completed_phase("development-done") && !self.dev.expected_files.is_empty() {
+            for path in &self.dev.expected_files {
+                self.require_file_record("development-done", path)?;
+            }
         }
 
         Ok(())
@@ -214,6 +237,25 @@ impl Checkpoint {
                     "Invalid dev resume checkpoint: {phase} requires completed phase {prerequisite}"
                 );
             }
+        }
+
+        Ok(())
+    }
+
+    fn require_file_record(&self, phase: &str, path: &str) -> Result<()> {
+        let normalized_path = normalize_checkpoint_path(path)?;
+        let mut has_record = false;
+        for file in &self.files {
+            if normalize_checkpoint_path(&file.path)? == normalized_path {
+                has_record = true;
+                break;
+            }
+        }
+
+        if !has_record {
+            anyhow::bail!(
+                "Invalid dev resume checkpoint: {phase} requires file record for {normalized_path}"
+            );
         }
 
         Ok(())
@@ -515,6 +557,24 @@ mod tests {
         checkpoint.set_dev_brief("brief");
         checkpoint.set_dev_specs_path("specs.md");
         checkpoint.set_dev_architecture_path("architecture.md");
+        checkpoint.files.push(CheckpointFile {
+            path: "specs.md".to_string(),
+            agent: "pm".to_string(),
+            phase: "specs-ready".to_string(),
+            operation: "created".to_string(),
+            bytes: 5,
+            sha256: sha256_bytes(b"specs"),
+            updated_at_unix_ms: now_unix_ms(),
+        });
+        checkpoint.files.push(CheckpointFile {
+            path: "architecture.md".to_string(),
+            agent: "tech_lead".to_string(),
+            phase: "architecture-ready".to_string(),
+            operation: "created".to_string(),
+            bytes: 4,
+            sha256: sha256_bytes(b"arch"),
+            updated_at_unix_ms: now_unix_ms(),
+        });
         checkpoint.completed_phases = vec![
             "started".to_string(),
             "brief-ready".to_string(),
@@ -541,6 +601,90 @@ mod tests {
 
         let err = checkpoint.validate_dev_resume_consistency().unwrap_err();
         assert!(err.to_string().contains("dev.specs_path"));
+    }
+
+    #[test]
+    fn dev_resume_consistency_requires_specs_file_record_for_completed_specs() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.set_dev_brief("brief");
+        checkpoint.set_dev_specs_path("specs.md");
+        checkpoint.completed_phases = vec![
+            "started".to_string(),
+            "brief-ready".to_string(),
+            "specs-ready".to_string(),
+        ];
+
+        let err = checkpoint.validate_dev_resume_consistency().unwrap_err();
+        assert!(err.to_string().contains("specs.md"));
+        assert!(err.to_string().contains("file record"));
+    }
+
+    #[test]
+    fn dev_resume_consistency_requires_architecture_file_record_for_completed_architecture() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.set_dev_brief("brief");
+        checkpoint.set_dev_specs_path("specs.md");
+        checkpoint.set_dev_architecture_path("./architecture.md");
+        checkpoint.files.push(CheckpointFile {
+            path: "specs.md".to_string(),
+            agent: "pm".to_string(),
+            phase: "specs-ready".to_string(),
+            operation: "created".to_string(),
+            bytes: 5,
+            sha256: sha256_bytes(b"specs"),
+            updated_at_unix_ms: now_unix_ms(),
+        });
+        checkpoint.completed_phases = vec![
+            "started".to_string(),
+            "brief-ready".to_string(),
+            "specs-ready".to_string(),
+            "architecture-ready".to_string(),
+        ];
+
+        let err = checkpoint.validate_dev_resume_consistency().unwrap_err();
+        assert!(err.to_string().contains("architecture.md"));
+        assert!(err.to_string().contains("file record"));
+    }
+
+    #[test]
+    fn dev_resume_consistency_requires_expected_file_records_for_completed_development() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.set_dev_brief("brief");
+        checkpoint.set_dev_specs_path("specs.md");
+        checkpoint.set_dev_architecture_path("architecture.md");
+        checkpoint.set_dev_expected_files(vec!["./src/main.rs".to_string()]);
+        checkpoint.files.push(CheckpointFile {
+            path: "specs.md".to_string(),
+            agent: "pm".to_string(),
+            phase: "specs-ready".to_string(),
+            operation: "created".to_string(),
+            bytes: 5,
+            sha256: sha256_bytes(b"specs"),
+            updated_at_unix_ms: now_unix_ms(),
+        });
+        checkpoint.files.push(CheckpointFile {
+            path: "architecture.md".to_string(),
+            agent: "tech_lead".to_string(),
+            phase: "architecture-ready".to_string(),
+            operation: "created".to_string(),
+            bytes: 4,
+            sha256: sha256_bytes(b"arch"),
+            updated_at_unix_ms: now_unix_ms(),
+        });
+        checkpoint.completed_phases = vec![
+            "started".to_string(),
+            "brief-ready".to_string(),
+            "specs-ready".to_string(),
+            "architecture-ready".to_string(),
+            "development-done".to_string(),
+        ];
+
+        let err = checkpoint.validate_dev_resume_consistency().unwrap_err();
+        assert!(err.to_string().contains("src/main.rs"));
+        assert!(err.to_string().contains("file record"));
     }
 
     #[test]
