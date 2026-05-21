@@ -260,7 +260,7 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 1. Etendre la matrice d'acceptation des outputs pour le workflow `dev` avec des resultats reels de beta.
 2. Completer le harness `evals/` avec scoring, historique de runs et campagnes reproductibles.
-3. Rediger un modele de menace couvrant tools, providers, custom workflows, web search, email et updater.
+3. Maintenir et etendre le modele de menace et la suite adversariale a mesure que les surfaces tools, providers, custom workflows, web search, email et updater evoluent.
 4. Ajouter un mode de run avec budget: tokens, cout estime, limites et rapport final.
 5. Generer un `cortex.manifest.json` par run pour audit, reprise et debogage.
 6. Choisir le workflow phare de la beta publique et marquer les autres comme experimentaux si necessaire.

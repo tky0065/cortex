@@ -54,6 +54,7 @@ This document tracks the beta security model for Cortex. It focuses on the surfa
 ## Remaining Gaps
 
 - Lacune 2 is closed for the beta threat model scope: tool boundaries, custom workflow validation, web-search prompt-injection labeling, email safeguards, secret redaction, and updater checksum/archive-name rejection are documented and tested. A future permission system could further reduce risk, but is outside the beta gap.
-- Lacune 8 remains open for strict custom workflow and custom agent validation.
+- Custom workflows and agents could still benefit from future fine-grained permission prompts and per-tool policy scopes beyond the current validation layer.
 - Lacune 20 is closed for the current adversarial suite: composed attacks now cover web search, custom agents/workflows, terminal, filesystem, email, updater, and secret redaction.
+- Web-search labeling and redaction reduce prompt-injection and secret-reflection risk, but they do not guarantee that a model will ignore malicious instructions embedded in search results.
 - Redaction is best-effort. It reduces accidental leakage in Cortex-owned output surfaces, but it does not prevent users from sending secrets to configured model providers.
