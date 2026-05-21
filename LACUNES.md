@@ -19,8 +19,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Definir une matrice d'acceptation par type de projet: build, tests, lint, README runnable, Docker valide, commandes de lancement, couverture minimale, absence de secrets, absence de TODO bloquants.
 
 ### 2. Risque de securite lie aux outils executes depuis des sorties LLM
-**Statut:** En cours
-**Preuve:** Modèle de menace ajouté dans `docs/SECURITY_THREAT_MODEL.md`; premières protections runtime couvertes par le lot sécurité/secrets (redaction logs, manifests, email, web search, et symlink sandbox). Reste à couvrir updater et prompt injection web avancée.
+**Statut:** Terminé
+**Preuve:** Couvert par `docs/SECURITY_THREAT_MODEL.md`, la redaction centrale, les garde-fous tools/email/web search/custom validation, et le lot sécurité adversariale avancée: labellisation des résultats web comme contenu externe non fiable, tests d'attaques composées, et rejets updater checksum/archive suspects.
 
 **Constat:** Le PRD mentionne l'allowlist terminal et le sandbox filesystem, mais le produit s'est elargi: web search, fetch URL, email SMTP, update binary, providers remote, custom agents, custom workflows, mentions, skills.
 
@@ -207,8 +207,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 ## Lacunes techniques transversales
 
 ### 20. Tests de securite adversariaux manquants
-**Statut:** En cours
-**Preuve:** Premiers tests adversariaux ajoutés pour redaction de secrets et frontières tools (`src/secrets.rs`, `src/tools/filesystem.rs`, `src/tools/terminal.rs`, `src/tools/email.rs`, `src/tools/web_search.rs`). Les attaques composées restent à couvrir.
+**Statut:** Terminé
+**Preuve:** Tests adversariaux ajoutés pour redaction de secrets, frontières tools (`filesystem`, `terminal`, `email`, `web_search`), validation custom, et updater. Les attaques composées couvrent prompt injection web, définitions custom dangereuses, symlink/traversal, payloads shell-like, email dry-run, et checksums updater suspects.
 
 **Constat:** Les tests couvrent des cas normaux et certains garde-fous, mais pas assez les attaques composees.
 
@@ -277,3 +277,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-19 — Lot validation custom terminé: validation structurée agents/workflows custom, commandes `cortex validate` et `/validate`, blocage pré-exécution des workflows invalides. Lacune terminée: 8.
 - 2026-05-20 — Lot observabilité complète terminé: `cortex.run.json` généré pour succès/échec/interruption, timeline structurée, résumés agents, fichiers, outils observables, métriques de base, redaction secrets et documentation de partage. Lacune terminée: 6. Lacune partiellement traitée: 7.
 - 2026-05-20 — Lot reprise robuste terminé: `cortex.checkpoint.json`, reprise structurée du workflow `dev`, validation des hashes, refus des reprises ambiguës et documentation des artefacts. Lacune terminée: 9.
+- 2026-05-21 — Lot sécurité adversariale avancée terminé: labellisation web search non fiable, tests d'attaques composées custom/tools/email/updater, et modèle de menace mis à jour. Lacunes terminées: 2, 20.
