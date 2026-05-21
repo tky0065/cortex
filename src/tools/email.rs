@@ -87,6 +87,10 @@ fn redact_error(redactor: &crate::secrets::SecretRedactor, message: String) -> a
     anyhow::anyhow!("{}", redactor.redact_text(&message))
 }
 
+pub fn default_send_mode() -> SendMode {
+    SendMode::DryRun
+}
+
 /// Validates a minimal email address (contains '@' and a '.').
 /// Used by agents before building an EmailMessage.
 pub fn validate_address(addr: &str) -> bool {
@@ -160,6 +164,30 @@ mod tests {
 
         assert!(result.contains("password=[REDACTED]"));
         assert!(!result.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn default_send_mode_is_dry_run() {
+        assert_eq!(default_send_mode(), SendMode::DryRun);
+    }
+
+    #[tokio::test]
+    async fn dry_run_redacts_secret_like_recipient_subject_and_body() {
+        let msg = EmailMessage {
+            to: "token=recipient-secret-123456@example.com".into(),
+            subject: "api_key=subject-secret-123456".into(),
+            body: "password=body-secret-123456".into(),
+        };
+
+        let result = send(&msg, SendMode::DryRun).await.unwrap();
+
+        assert!(result.contains("[DRY-RUN]"));
+        assert!(result.contains("token=[REDACTED]"));
+        assert!(result.contains("api_key=[REDACTED]"));
+        assert!(result.contains("password=[REDACTED]"));
+        assert!(!result.contains("recipient-secret-123456"));
+        assert!(!result.contains("subject-secret-123456"));
+        assert!(!result.contains("body-secret-123456"));
     }
 
     #[tokio::test]
