@@ -432,7 +432,7 @@ cortex resume ./demo
 
 `cortex resume <project-dir>` uses `cortex.checkpoint.json` to continue a structured `dev` workflow run. The checkpoint stores the original prompt, completed phases, next action, and hashes for files Cortex already wrote.
 
-Resume stops before running agents if the checkpoint is missing, invalid, belongs to an unsupported workflow, or if tracked files were changed or removed. Cortex does not overwrite local edits during structured resume.
+Resume stops before running agents if the checkpoint is missing, invalid, belongs to an unsupported workflow, or if tracked checkpoint files were changed or removed. Cortex does not overwrite local edits to tracked checkpoint files during structured resume.
 
 Run artifacts:
 
