@@ -91,6 +91,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shell_operators_in_arguments_are_not_executed_by_a_shell() {
+        let out = run(
+            "git",
+            &["--version", ";", "sh", "-c", "echo unsafe"],
+            None,
+            Some(5),
+        )
+        .await
+        .unwrap();
+
+        assert!(!out.stdout.contains("unsafe"));
+        assert!(!out.stderr.contains("unsafe"));
+    }
+
+    #[tokio::test]
     async fn research_cli_commands_are_allowlisted() {
         for command in ["gh", "curl", "jq", "rg"] {
             assert!(

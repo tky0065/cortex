@@ -152,4 +152,33 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_nested_symlink_escape_with_remaining_path_components() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "cortex_fs_nested_symlink_root_{}",
+            std::process::id()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "cortex_fs_nested_symlink_outside_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(root.join("safe")).unwrap();
+        fs::create_dir_all(outside.join("nested")).unwrap();
+        fs::write(outside.join("nested").join("secret.txt"), "secret").unwrap();
+        symlink(&outside, root.join("safe").join("escape")).unwrap();
+
+        let sandbox = FileSystem::new(&root);
+
+        assert!(sandbox.read("safe/escape/nested/secret.txt").is_err());
+        assert!(sandbox.write("safe/escape/nested/new.txt", "secret").is_err());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
+    }
 }
