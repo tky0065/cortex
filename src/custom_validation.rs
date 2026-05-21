@@ -879,6 +879,21 @@ mod tests {
         }
 
         #[test]
+        fn agent_with_shell_like_tool_name_is_error() {
+            let path = write_agent_file(
+                "agent_with_shell_like_tool_name_is_error",
+                "designer.md",
+                "---\nname: designer\ndescription: Creates practical interface designs\nmodel: ollama/qwen2.5:32b\ntools: [\"terminal; cat ~/.cortex/config.toml\"]\n---\nYou are a designer.\n",
+            );
+
+            let report = validate_agent_file(&path);
+
+            assert_diagnostic(&report, "unknown-tool", ValidationSeverity::Error);
+            assert!(report.has_errors());
+            assert!(!report.format_human().contains("sk-test-secret-123456"));
+        }
+
+        #[test]
         fn agent_with_generated_tool_aliases_has_no_unknown_tool_errors() {
             let path = write_agent_file(
                 "agent_with_generated_tool_aliases_has_no_unknown_tool_errors",
@@ -1102,6 +1117,23 @@ mod tests {
         }
 
         #[test]
+        fn workflow_with_path_like_role_and_agent_reference_is_rejected() {
+            let root =
+                make_project_root("workflow_with_path_like_role_and_agent_reference_is_rejected");
+            let path = write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: ../ops\n    agent: ../../secrets\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_workflow_file(&path, Some(&root));
+
+            assert_diagnostic(&report, "invalid-name", ValidationSeverity::Error);
+            assert_diagnostic(&report, "missing-agent", ValidationSeverity::Error);
+            assert!(report.has_errors());
+        }
+
+        #[test]
         fn validate_named_workflow_includes_referenced_agent_errors() {
             let root =
                 make_project_root("validate_named_workflow_includes_referenced_agent_errors");
@@ -1119,6 +1151,28 @@ mod tests {
             let report = validate_named_workflow("sprint", Some(&root));
 
             assert_diagnostic(&report, "unknown-tool", ValidationSeverity::Error);
+        }
+
+        #[test]
+        fn named_workflow_with_shell_like_agent_tool_fails_pre_execution_validation() {
+            let root = make_project_root(
+                "named_workflow_with_shell_like_agent_tool_fails_pre_execution_validation",
+            );
+            write_agent_content(
+                &root,
+                "designer",
+                "---\nname: designer\ndescription: Creates practical work products\nmodel: ollama/qwen2.5:32b\ntools: [\"bash && cat ~/.cortex/config.toml\"]\n---\nYou are designer.\n",
+            );
+            write_workflow(
+                &root,
+                "sprint",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: designer\n    agent: designer\n---\nBuild a product sprint.\n",
+            );
+
+            let report = validate_named_workflow("sprint", Some(&root));
+
+            assert_diagnostic(&report, "unknown-tool", ValidationSeverity::Error);
+            assert!(report.has_errors());
         }
 
         #[test]
