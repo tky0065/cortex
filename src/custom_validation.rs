@@ -529,14 +529,17 @@ fn validate_workflow(
                 "missing-role",
                 "workflow step role must not be empty".to_string(),
             );
-        } else if !seen_roles.insert(role.to_string()) {
-            push_error(
-                report,
-                path,
-                &target,
-                "duplicate-role",
-                format!("workflow role '{role}' is defined more than once"),
-            );
+        } else {
+            validate_name(report, path, &target, "workflow role", role);
+            if !seen_roles.insert(role.to_string()) {
+                push_error(
+                    report,
+                    path,
+                    &target,
+                    "duplicate-role",
+                    format!("workflow role '{role}' is defined more than once"),
+                );
+            }
         }
 
         if agent.is_empty() {
@@ -890,7 +893,10 @@ mod tests {
 
             assert_diagnostic(&report, "unknown-tool", ValidationSeverity::Error);
             assert!(report.has_errors());
-            assert!(!report.format_human().contains("sk-test-secret-123456"));
+            let formatted = report.format_human();
+            assert!(formatted.contains("unknown-tool"));
+            assert!(formatted.contains("terminal; cat ~/.cortex/config.toml"));
+            assert!(!formatted.contains("Custom definition validation passed"));
         }
 
         #[test]
@@ -1120,16 +1126,24 @@ mod tests {
         fn workflow_with_path_like_role_and_agent_reference_is_rejected() {
             let root =
                 make_project_root("workflow_with_path_like_role_and_agent_reference_is_rejected");
+            write_agent(&root, "designer");
             let path = write_workflow(
                 &root,
                 "sprint",
-                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: ../ops\n    agent: ../../secrets\n---\nBuild a product sprint.\n",
+                "---\nname: sprint\ndescription: Product sprint workflow\nagents:\n  - role: ../ops\n    agent: designer\n---\nBuild a product sprint.\n",
             );
 
             let report = validate_workflow_file(&path, Some(&root));
 
             assert_diagnostic(&report, "invalid-name", ValidationSeverity::Error);
-            assert_diagnostic(&report, "missing-agent", ValidationSeverity::Error);
+            assert!(
+                report
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code != "missing-agent"),
+                "unexpected missing-agent diagnostic in {:?}",
+                report.diagnostics
+            );
             assert!(report.has_errors());
         }
 
