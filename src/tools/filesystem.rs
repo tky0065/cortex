@@ -176,7 +176,11 @@ mod tests {
         let sandbox = FileSystem::new(&root);
 
         assert!(sandbox.read("safe/escape/nested/secret.txt").is_err());
-        assert!(sandbox.write("safe/escape/nested/new.txt", "secret").is_err());
+        assert!(
+            sandbox
+                .write("safe/escape/nested/new.txt", "secret")
+                .is_err()
+        );
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
