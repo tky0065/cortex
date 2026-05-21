@@ -55,6 +55,9 @@ impl Workflow for DevWorkflow {
         };
         let mut checkpoint = checkpoint_from_options(&opts, &prompt);
         let is_resuming = opts.resume.is_some() || checkpoint.is_resuming();
+        if is_resuming {
+            checkpoint.validate_dev_resume_consistency()?;
+        }
         checkpoint.status = crate::checkpoint::CheckpointStatus::Running;
         checkpoint.record_phase_complete("started", "run_ceo");
         save_checkpoint(&opts, &checkpoint)?;
@@ -136,7 +139,11 @@ impl Workflow for DevWorkflow {
 
         // ── Phase 2: PM → specs.md ───────────────────────────────────────
         let specs = if is_resuming && checkpoint.has_completed_phase("specs-ready") {
-            let specs_path = checkpoint.dev.specs_path.as_deref().unwrap_or("specs.md");
+            let specs_path = checkpoint
+                .dev
+                .specs_path
+                .as_deref()
+                .context("Checkpoint phase specs-ready is missing dev.specs_path")?;
             fs.read(specs_path)
                 .with_context(|| format!("Failed to read resumed specs from {specs_path}"))?
         } else {
@@ -216,11 +223,10 @@ impl Workflow for DevWorkflow {
 
         // ── Phase 3: Tech Lead → architecture.md ─────────────────────────
         let arch = if is_resuming && checkpoint.has_completed_phase("architecture-ready") {
-            let architecture_path = checkpoint
-                .dev
-                .architecture_path
-                .as_deref()
-                .unwrap_or("architecture.md");
+            let architecture_path =
+                checkpoint.dev.architecture_path.as_deref().context(
+                    "Checkpoint phase architecture-ready is missing dev.architecture_path",
+                )?;
             fs.read(architecture_path).with_context(|| {
                 format!("Failed to read resumed architecture from {architecture_path}")
             })?

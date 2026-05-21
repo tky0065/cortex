@@ -111,6 +111,114 @@ impl Checkpoint {
         self.status != CheckpointStatus::Completed && self.completed_phases.len() > 1
     }
 
+    pub fn validate_dev_resume_consistency(&self) -> Result<()> {
+        self.require_phase_chain("brief-ready", &["started"])?;
+        self.require_phase_chain("specs-ready", &["started", "brief-ready"])?;
+        self.require_phase_chain(
+            "architecture-ready",
+            &["started", "brief-ready", "specs-ready"],
+        )?;
+        self.require_phase_chain(
+            "development-done",
+            &[
+                "started",
+                "brief-ready",
+                "specs-ready",
+                "architecture-ready",
+            ],
+        )?;
+        self.require_phase_chain(
+            "qa-approved",
+            &[
+                "started",
+                "brief-ready",
+                "specs-ready",
+                "architecture-ready",
+                "development-done",
+            ],
+        )?;
+        self.require_phase_chain(
+            "qa-max-iterations",
+            &[
+                "started",
+                "brief-ready",
+                "specs-ready",
+                "architecture-ready",
+                "development-done",
+            ],
+        )?;
+
+        if self.has_completed_phase("devops-done") {
+            self.require_phase_chain(
+                "devops-done",
+                &[
+                    "started",
+                    "brief-ready",
+                    "specs-ready",
+                    "architecture-ready",
+                    "development-done",
+                ],
+            )?;
+            if !self.has_completed_phase("qa-approved")
+                && !self.has_completed_phase("qa-max-iterations")
+            {
+                anyhow::bail!(
+                    "Invalid dev resume checkpoint: devops-done requires qa-approved or qa-max-iterations"
+                );
+            }
+        }
+
+        self.require_phase_chain("done", &["devops-done"])?;
+
+        if self.has_completed_phase("brief-ready")
+            && self
+                .dev
+                .brief
+                .as_deref()
+                .is_none_or(|brief| brief.trim().is_empty())
+        {
+            anyhow::bail!("Invalid dev resume checkpoint: brief-ready requires dev.brief");
+        }
+        if self.has_completed_phase("specs-ready")
+            && self
+                .dev
+                .specs_path
+                .as_deref()
+                .is_none_or(|path| path.trim().is_empty())
+        {
+            anyhow::bail!("Invalid dev resume checkpoint: specs-ready requires dev.specs_path");
+        }
+        if self.has_completed_phase("architecture-ready")
+            && self
+                .dev
+                .architecture_path
+                .as_deref()
+                .is_none_or(|path| path.trim().is_empty())
+        {
+            anyhow::bail!(
+                "Invalid dev resume checkpoint: architecture-ready requires dev.architecture_path"
+            );
+        }
+
+        Ok(())
+    }
+
+    fn require_phase_chain(&self, phase: &str, required: &[&str]) -> Result<()> {
+        if !self.has_completed_phase(phase) {
+            return Ok(());
+        }
+
+        for prerequisite in required {
+            if !self.has_completed_phase(prerequisite) {
+                anyhow::bail!(
+                    "Invalid dev resume checkpoint: {phase} requires completed phase {prerequisite}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn checkpoint_path(project_dir: &Path) -> PathBuf {
         project_dir.join("cortex.checkpoint.json")
     }
@@ -388,6 +496,51 @@ mod tests {
         assert!(checkpoint.is_resuming());
         assert!(checkpoint.has_completed_phase("specs-ready"));
         assert!(!checkpoint.has_completed_phase("architecture-ready"));
+    }
+
+    #[test]
+    fn dev_resume_consistency_requires_phase_prerequisites() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.completed_phases = vec!["started".to_string(), "development-done".to_string()];
+
+        let err = checkpoint.validate_dev_resume_consistency().unwrap_err();
+        assert!(err.to_string().contains("brief-ready"));
+    }
+
+    #[test]
+    fn dev_resume_consistency_accepts_qa_terminal_alternatives() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.set_dev_brief("brief");
+        checkpoint.set_dev_specs_path("specs.md");
+        checkpoint.set_dev_architecture_path("architecture.md");
+        checkpoint.completed_phases = vec![
+            "started".to_string(),
+            "brief-ready".to_string(),
+            "specs-ready".to_string(),
+            "architecture-ready".to_string(),
+            "development-done".to_string(),
+            "qa-max-iterations".to_string(),
+            "devops-done".to_string(),
+        ];
+
+        checkpoint.validate_dev_resume_consistency().unwrap();
+    }
+
+    #[test]
+    fn dev_resume_consistency_requires_metadata_for_completed_phases() {
+        let config = Config::default();
+        let mut checkpoint = Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.set_dev_brief("brief");
+        checkpoint.completed_phases = vec![
+            "started".to_string(),
+            "brief-ready".to_string(),
+            "specs-ready".to_string(),
+        ];
+
+        let err = checkpoint.validate_dev_resume_consistency().unwrap_err();
+        assert!(err.to_string().contains("dev.specs_path"));
     }
 
     #[test]
