@@ -22,7 +22,7 @@ This document tracks the beta security model for Cortex. It focuses on the surfa
 | Web search result to agent prompt | Search result may contain prompt injection or reflected secrets | Web-search context is redacted and explicitly labeled as untrusted external content before injection |
 | Email tool output to user | Email body or SMTP errors may contain secrets | Dry-run previews and SMTP errors are redacted |
 | Run artifacts to disk | Logs and manifests may persist tokens from prompts or agent output | `cortex.log` and manifest prompt fields are redacted |
-| Custom agents and workflows | Custom definitions may request unsafe tools or malformed execution | Full validation remains tracked by lacune 8 |
+| Custom agents and workflows | Custom definitions may request unsafe tools or malformed execution | Structured custom agent/workflow validation in `src/custom_validation.rs`; future fine-grained permissions remain a possible hardening area |
 | Updater | Release/update path may be compromised | Release process exists; checksum entries, malformed checksums, and suspicious archive names are covered by deterministic tests |
 
 ## Adversaries And Abuse Cases
