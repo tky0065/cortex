@@ -307,6 +307,11 @@ impl Orchestrator {
                 Ok(())
             }
             RunCompletion::Workflow(Err(e)) => {
+                update_checkpoint_status(
+                    &project_dir,
+                    &self.config,
+                    crate::checkpoint::CheckpointStatus::Failed,
+                );
                 {
                     let mut collector = run_report_collector.lock().await;
                     finalize_run_report(
@@ -319,6 +324,11 @@ impl Orchestrator {
                 Err(e)
             }
             RunCompletion::Interrupted => {
+                update_checkpoint_status(
+                    &project_dir,
+                    &self.config,
+                    crate::checkpoint::CheckpointStatus::Interrupted,
+                );
                 {
                     let mut collector = run_report_collector.lock().await;
                     finalize_run_report(
@@ -360,6 +370,21 @@ fn format_checkpoint_conflicts(conflicts: &[crate::checkpoint::CheckpointConflic
         }
     }
     lines.join("\n")
+}
+
+fn update_checkpoint_status(
+    project_dir: &std::path::Path,
+    config: &Config,
+    status: crate::checkpoint::CheckpointStatus,
+) {
+    let Ok(mut checkpoint) = crate::checkpoint::Checkpoint::load(project_dir) else {
+        return;
+    };
+    checkpoint.status = status;
+    checkpoint.updated_at_unix_ms = crate::checkpoint::now_unix_ms();
+    if let Err(e) = checkpoint.write_to(project_dir, config) {
+        eprintln!("warning: could not update cortex.checkpoint.json: {e}");
+    }
 }
 
 fn format_verbose_log_line(
@@ -578,7 +603,7 @@ mod tests {
 
     use super::{
         FlushSender, RunReportOutcome, default_project_dir, finalize_run_report, flush_ack,
-        spawn_verbose_log_writer, write_manifest,
+        spawn_verbose_log_writer, update_checkpoint_status, write_manifest,
     };
     use crate::config::Config;
     use crate::tui::events::{TuiEvent, channel};
@@ -669,6 +694,50 @@ mod tests {
         let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
         assert!(content.contains("\"status\": \"failed\""));
         assert!(content.contains("provider failed"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn update_checkpoint_status_persists_terminal_status() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_checkpoint_status_update_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Config::default();
+        let checkpoint = crate::checkpoint::Checkpoint::new("run-1", "dev", "build", &config);
+        checkpoint.write_to(&dir, &config).unwrap();
+
+        update_checkpoint_status(&dir, &config, crate::checkpoint::CheckpointStatus::Failed);
+
+        let checkpoint = crate::checkpoint::Checkpoint::load(&dir).unwrap();
+        assert_eq!(
+            checkpoint.status,
+            crate::checkpoint::CheckpointStatus::Failed
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn update_checkpoint_status_ignores_missing_checkpoint() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex_checkpoint_status_missing_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = Config::default();
+        update_checkpoint_status(
+            &dir,
+            &config,
+            crate::checkpoint::CheckpointStatus::Interrupted,
+        );
+
+        assert!(!crate::checkpoint::Checkpoint::checkpoint_path(&dir).exists());
 
         let _ = std::fs::remove_dir_all(dir);
     }
