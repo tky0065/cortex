@@ -907,6 +907,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn stress_helpers_create_isolated_project_dir_and_parse_report_status() {
+        let dir = temp_test_dir("cortex_stress_helper");
+        let config = Config::default();
+        let mut collector = crate::run_report::RunReportCollector::new("dev", "build", &config);
+        finalize_run_report(
+            &mut collector,
+            &dir,
+            &config,
+            RunReportOutcome::Interrupted("stop".into()),
+        );
+
+        assert_eq!(read_run_report_status(&dir), "interrupted");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     struct CancelThenOkWorkflow;
 
     #[async_trait]
@@ -959,6 +976,33 @@ mod tests {
         if let TuiEvent::TokenChunk { chunk, .. } = ev {
             recorded.lock().await.push(chunk);
         }
+    }
+
+    fn temp_test_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("{}_{}", prefix, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn read_run_report_json(dir: &std::path::Path) -> serde_json::Value {
+        let content = std::fs::read_to_string(dir.join("cortex.run.json")).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
+
+    fn read_run_report_status(dir: &std::path::Path) -> String {
+        read_run_report_json(dir)["status"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[allow(dead_code)]
+    async fn drain_events_until_closed(mut rx: crate::tui::events::TuiReceiver) -> Vec<TuiEvent> {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
     }
 
     /// Phase events sent in sequence must arrive in the same order.
