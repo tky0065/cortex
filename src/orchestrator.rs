@@ -1039,22 +1039,58 @@ mod tests {
     #[tokio::test]
     async fn parallel_worker_failure_cancels_or_joins_siblings() {
         let dir = temp_test_dir("cortex_parallel_worker_failure");
+        let (tx, rx) = channel();
         let config = Arc::new(Config::default());
         let orch = super::Orchestrator::new(Box::new(ParallelWorkerFailureWorkflow), config);
 
         let err = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            orch.run_with_project_dir("build".to_string(), true, false, None, Some(dir.clone())),
+            orch.run_with_project_dir(
+                "build".to_string(),
+                true,
+                false,
+                Some(tx),
+                Some(dir.clone()),
+            ),
         )
         .await
         .expect("parallel workflow deadlocked after worker failure")
         .unwrap_err()
         .to_string();
 
+        let events = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            drain_events_until_closed(rx),
+        )
+        .await
+        .expect("event stream did not close after parallel worker failure");
+        assert!(events.iter().any(|event| matches!(event, TuiEvent::Error { agent, message } if agent == "worker-2" && message.contains("worker 2 failed"))));
+
         assert!(err.contains("worker 2 failed"));
         let report = read_run_report_json(&dir);
         assert_eq!(report["status"], "failed");
-        assert!(report["metrics"]["agent_count"].as_u64().unwrap() >= 3);
+        assert_eq!(report["metrics"]["agent_count"], 4);
+        assert_eq!(report["failure"]["failure_type"], "agent_error");
+        assert_eq!(report["failure"]["agent"], "worker-2");
+
+        let agents = report["agents"].as_array().unwrap();
+        for worker_id in 0..4 {
+            let agent_name = format!("worker-{worker_id}");
+            let agent = agents
+                .iter()
+                .find(|agent| agent["agent"] == agent_name)
+                .unwrap_or_else(|| panic!("missing report record for {agent_name}"));
+
+            if worker_id == 2 {
+                assert_eq!(agent["status"], "error");
+                assert_eq!(agent["errors"], serde_json::json!(["worker 2 failed"]));
+            } else {
+                assert_eq!(agent["status"], "done");
+                assert!(agent["errors"].as_array().unwrap().is_empty());
+            }
+            assert_eq!(agent["token_chunks"], 1);
+            assert!(agent["output_chars"].as_u64().unwrap() > 0);
+        }
 
         let _ = std::fs::remove_dir_all(dir);
     }
