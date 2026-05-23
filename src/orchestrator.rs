@@ -929,6 +929,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_run_artifacts_remain_readable() {
+        let dir = temp_test_dir("cortex_cancelled_artifacts");
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(Box::new(FileThenCancelWorkflow), config);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            orch.run_with_project_dir("build".to_string(), true, false, None, Some(dir.clone())),
+        )
+        .await
+        .expect("cancelled artifact workflow deadlocked")
+        .unwrap();
+
+        let report = read_run_report_json(&dir);
+        assert_eq!(report["status"], "interrupted");
+        assert_eq!(report["files"][0]["path"], "partial.txt");
+
+        let checkpoint = crate::checkpoint::Checkpoint::load(&dir).unwrap();
+        assert_eq!(
+            checkpoint.status,
+            crate::checkpoint::CheckpointStatus::Interrupted
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn stress_helpers_create_isolated_project_dir_and_parse_report_status() {
         let dir = temp_test_dir("cortex_stress_helper");
         let config = Config::default();
@@ -1418,6 +1445,40 @@ mod tests {
             let checkpoint =
                 crate::checkpoint::Checkpoint::new("run-1", self.name(), prompt, &options.config);
             checkpoint.write_to(&options.project_dir, &options.config)?;
+            options.cancel.cancel();
+            Ok(())
+        }
+    }
+
+    struct FileThenCancelWorkflow;
+
+    #[async_trait]
+    impl Workflow for FileThenCancelWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "file then cancel workflow"
+        }
+
+        async fn run(&self, prompt: String, options: RunOptions) -> Result<()> {
+            let checkpoint = crate::checkpoint::Checkpoint::new(
+                "run-artifact",
+                self.name(),
+                prompt,
+                &options.config,
+            );
+            checkpoint.write_to(&options.project_dir, &options.config)?;
+            options
+                .tx
+                .send(TuiEvent::FileWritten {
+                    agent: "artifact".to_string(),
+                    path: "partial.txt".to_string(),
+                    old_content: None,
+                    new_content: "partial content".to_string(),
+                })
+                .ok();
             options.cancel.cancel();
             Ok(())
         }
