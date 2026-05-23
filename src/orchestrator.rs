@@ -1037,6 +1037,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn orchestrator_survives_dropped_event_receiver() {
+        let dir = temp_test_dir("cortex_dropped_receiver");
+        let (tx, rx) = channel();
+        drop(rx);
+
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(Box::new(DroppedReceiverWorkflow), config);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            orch.run_with_project_dir(
+                "build".to_string(),
+                true,
+                false,
+                Some(tx),
+                Some(dir.clone()),
+            ),
+        )
+        .await
+        .expect("orchestrator deadlocked when event receiver was dropped");
+
+        result.unwrap();
+        assert_eq!(read_run_report_status(&dir), "success");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn orchestrator_emits_final_tasks_state_before_shutdown() {
         let dir = temp_test_dir("cortex_final_tasks_state");
         let (tx, rx) = channel();
@@ -1124,6 +1152,38 @@ mod tests {
                 options.project_dir.join("TASKS.md"),
                 "- [x] write final state\n- [ ] notify ui\n",
             )?;
+            Ok(())
+        }
+    }
+
+    struct DroppedReceiverWorkflow;
+
+    #[async_trait]
+    impl Workflow for DroppedReceiverWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "dropped receiver workflow"
+        }
+
+        async fn run(&self, _prompt: String, options: RunOptions) -> Result<()> {
+            for i in 0..25 {
+                options
+                    .tx
+                    .send(TuiEvent::TokenChunk {
+                        agent: "dropped_receiver".to_string(),
+                        chunk: format!("chunk-{i}"),
+                    })
+                    .ok();
+            }
+            options
+                .tx
+                .send(TuiEvent::AgentDone {
+                    agent: "dropped_receiver".to_string(),
+                })
+                .ok();
             Ok(())
         }
     }
