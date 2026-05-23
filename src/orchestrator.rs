@@ -1174,6 +1174,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn parallel_event_burst_preserves_final_state() {
+        let dir = temp_test_dir("cortex_parallel_event_burst");
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(Box::new(ParallelEventBurstWorkflow), config);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            orch.run_with_project_dir("build".to_string(), true, false, None, Some(dir.clone())),
+        )
+        .await
+        .expect("parallel event burst deadlocked")
+        .unwrap();
+
+        let report = read_run_report_json(&dir);
+        assert_eq!(report["status"], "success");
+        assert_eq!(report["metrics"]["token_chunks_total"], 100);
+        assert!(report["metrics"]["output_chars_total"].as_u64().unwrap() > 0);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct ParallelEventBurstWorkflow;
+
+    #[async_trait]
+    impl Workflow for ParallelEventBurstWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "parallel event burst workflow"
+        }
+
+        async fn run(&self, _prompt: String, options: RunOptions) -> Result<()> {
+            let mut handles = Vec::new();
+            for worker_id in 0..10 {
+                let tx = options.tx.clone();
+                handles.push(tokio::spawn(async move {
+                    let agent = format!("burst-{worker_id}");
+                    tx.send(TuiEvent::AgentStarted {
+                        agent: agent.clone(),
+                    })
+                    .ok();
+                    for chunk_id in 0..10 {
+                        tx.send(TuiEvent::TokenChunk {
+                            agent: agent.clone(),
+                            chunk: format!("worker={worker_id} chunk={chunk_id}"),
+                        })
+                        .ok();
+                    }
+                    tx.send(TuiEvent::AgentDone { agent }).ok();
+                }));
+            }
+
+            for handle in handles {
+                handle.await.expect("burst worker panicked");
+            }
+            Ok(())
+        }
+    }
+
     struct FailingWorkflow;
 
     #[async_trait]
