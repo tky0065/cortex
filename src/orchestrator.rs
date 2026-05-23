@@ -1190,8 +1190,34 @@ mod tests {
 
         let report = read_run_report_json(&dir);
         assert_eq!(report["status"], "success");
+        assert_eq!(report["metrics"]["agent_count"], 10);
         assert_eq!(report["metrics"]["token_chunks_total"], 100);
         assert!(report["metrics"]["output_chars_total"].as_u64().unwrap() > 0);
+
+        let agents = report["agents"].as_array().unwrap();
+        for worker_id in 0..10 {
+            let agent_name = format!("burst-{worker_id}");
+            let agent = agents
+                .iter()
+                .find(|agent| agent["agent"] == agent_name)
+                .unwrap_or_else(|| panic!("missing report record for {agent_name}"));
+            let expected_output_chars: usize = (0..10)
+                .map(|chunk_id| format!("worker={worker_id} chunk={chunk_id}").len())
+                .sum();
+
+            assert_eq!(agent["status"], "done");
+            assert_eq!(agent["token_chunks"], 10);
+            assert!(agent["errors"].as_array().unwrap().is_empty());
+            assert_eq!(agent["output_chars"], expected_output_chars);
+        }
+
+        let agent_done_count = report["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "agent_done")
+            .count();
+        assert_eq!(agent_done_count, 10);
 
         let _ = std::fs::remove_dir_all(dir);
     }
