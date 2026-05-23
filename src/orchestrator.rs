@@ -299,6 +299,7 @@ impl Orchestrator {
             other => other,
         };
 
+        emit_tasks_snapshot(&tx, &project_dir).await;
         task_watcher_cancel.cancel();
         let _ = task_watcher_handle.await;
 
@@ -589,6 +590,14 @@ fn spawn_task_watcher(
             }
         }
     })
+}
+
+async fn emit_tasks_snapshot(tx: &TuiSender, project_dir: &std::path::Path) {
+    let tasks_path = project_dir.join("TASKS.md");
+    if let Ok(content) = tokio::fs::read_to_string(&tasks_path).await {
+        let tasks = parse_tasks(&content);
+        let _ = tx.send(TuiEvent::TasksUpdated { tasks });
+    }
 }
 
 fn parse_tasks(content: &str) -> Vec<Task> {
@@ -1027,6 +1036,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn orchestrator_emits_final_tasks_state_before_shutdown() {
+        let dir = temp_test_dir("cortex_final_tasks_state");
+        let (tx, rx) = channel();
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(Box::new(WritesTasksWorkflow), config);
+
+        orch.run_with_project_dir(
+            "build".to_string(),
+            true,
+            false,
+            Some(tx),
+            Some(dir.clone()),
+        )
+        .await
+        .unwrap();
+
+        let events = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            drain_events_until_closed(rx),
+        )
+        .await
+        .expect("event stream did not close after task-writing workflow");
+
+        let final_tasks = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                TuiEvent::TasksUpdated { tasks } => Some(tasks),
+                _ => None,
+            })
+            .expect("missing final task state");
+        assert_eq!(final_tasks.len(), 2);
+        assert_eq!(final_tasks[0].description, "write final state");
+        assert!(final_tasks[0].is_done);
+        assert_eq!(final_tasks[1].description, "notify ui");
+        assert!(!final_tasks[1].is_done);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     struct FailingWorkflow;
 
     #[async_trait]
@@ -1054,6 +1104,27 @@ mod tests {
                 })
                 .ok();
             anyhow::bail!("intentional workflow failure")
+        }
+    }
+
+    struct WritesTasksWorkflow;
+
+    #[async_trait]
+    impl Workflow for WritesTasksWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "task-writing test workflow"
+        }
+
+        async fn run(&self, _prompt: String, options: RunOptions) -> Result<()> {
+            std::fs::write(
+                options.project_dir.join("TASKS.md"),
+                "- [x] write final state\n- [ ] notify ui\n",
+            )?;
+            Ok(())
         }
     }
 
