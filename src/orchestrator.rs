@@ -924,6 +924,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn orchestrator_cancellation_interrupts_slow_workflow() {
+        let dir = temp_test_dir("cortex_cancel_slow_workflow");
+        let in_flight = Arc::new(tokio::sync::Notify::new());
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(
+            Box::new(SlowUntilCancelledWorkflow {
+                in_flight: Arc::clone(&in_flight),
+            }),
+            config,
+        );
+        let cancel = orch.cancel_token();
+
+        let run = tokio::spawn({
+            let dir = dir.clone();
+            async move {
+                orch.run_with_project_dir("build".to_string(), true, false, None, Some(dir))
+                    .await
+            }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), in_flight.notified())
+            .await
+            .expect("workflow did not start");
+        cancel.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+            .await
+            .expect("orchestrator deadlocked after cancellation")
+            .expect("run task panicked");
+
+        result.unwrap();
+        assert_eq!(read_run_report_status(&dir), "interrupted");
+        let report = read_run_report_json(&dir);
+        assert_eq!(report["failure"]["failure_type"], "interrupted");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     struct CancelThenOkWorkflow;
 
     #[async_trait]
@@ -941,6 +980,39 @@ mod tests {
                 crate::checkpoint::Checkpoint::new("run-1", self.name(), prompt, &options.config);
             checkpoint.write_to(&options.project_dir, &options.config)?;
             options.cancel.cancel();
+            Ok(())
+        }
+    }
+
+    struct SlowUntilCancelledWorkflow {
+        in_flight: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Workflow for SlowUntilCancelledWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "slow cancellation test workflow"
+        }
+
+        async fn run(&self, _prompt: String, options: RunOptions) -> Result<()> {
+            options
+                .tx
+                .send(TuiEvent::AgentStarted {
+                    agent: "slow".to_string(),
+                })
+                .ok();
+            self.in_flight.notify_waiters();
+            options.cancel.cancelled().await;
+            options
+                .tx
+                .send(TuiEvent::WorkflowInterrupted {
+                    message: "slow workflow observed cancellation".to_string(),
+                })
+                .ok();
             Ok(())
         }
     }
