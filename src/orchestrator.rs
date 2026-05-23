@@ -1037,6 +1037,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parallel_worker_failure_cancels_or_joins_siblings() {
+        let dir = temp_test_dir("cortex_parallel_worker_failure");
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(Box::new(ParallelWorkerFailureWorkflow), config);
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            orch.run_with_project_dir("build".to_string(), true, false, None, Some(dir.clone())),
+        )
+        .await
+        .expect("parallel workflow deadlocked after worker failure")
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("worker 2 failed"));
+        let report = read_run_report_json(&dir);
+        assert_eq!(report["status"], "failed");
+        assert!(report["metrics"]["agent_count"].as_u64().unwrap() >= 3);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn orchestrator_survives_dropped_event_receiver() {
         let dir = temp_test_dir("cortex_dropped_receiver");
         let (tx, rx) = channel();
@@ -1142,6 +1165,63 @@ mod tests {
                 })
                 .ok();
             anyhow::bail!("intentional workflow failure")
+        }
+    }
+
+    struct ParallelWorkerFailureWorkflow;
+
+    #[async_trait]
+    impl Workflow for ParallelWorkerFailureWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "parallel worker failure workflow"
+        }
+
+        async fn run(&self, _prompt: String, options: RunOptions) -> Result<()> {
+            let mut handles = Vec::new();
+            for worker_id in 0..4 {
+                let tx = options.tx.clone();
+                handles.push(tokio::spawn(async move {
+                    let agent = format!("worker-{worker_id}");
+                    tx.send(TuiEvent::AgentStarted {
+                        agent: agent.clone(),
+                    })
+                    .ok();
+                    tx.send(TuiEvent::TokenChunk {
+                        agent: agent.clone(),
+                        chunk: format!("worker {worker_id} started"),
+                    })
+                    .ok();
+                    if worker_id == 2 {
+                        tx.send(TuiEvent::Error {
+                            agent,
+                            message: "worker 2 failed".to_string(),
+                        })
+                        .ok();
+                        anyhow::bail!("worker 2 failed");
+                    }
+                    tx.send(TuiEvent::AgentDone { agent }).ok();
+                    Ok::<(), anyhow::Error>(())
+                }));
+            }
+
+            let mut failure = None;
+            for handle in handles {
+                match handle.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => failure = Some(err),
+                    Err(err) => failure = Some(anyhow::anyhow!("worker join failed: {err}")),
+                }
+            }
+
+            if let Some(err) = failure {
+                Err(err)
+            } else {
+                Ok(())
+            }
         }
     }
 
