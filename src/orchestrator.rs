@@ -299,9 +299,9 @@ impl Orchestrator {
             other => other,
         };
 
-        emit_tasks_snapshot(&tx, &project_dir).await;
         task_watcher_cancel.cancel();
         let _ = task_watcher_handle.await;
+        emit_tasks_snapshot(&tx, &project_dir).await;
 
         flush_ack(&report_flush_tx, "run report events").await;
         if let Some(log_flush_tx) = &log_flush_tx {
