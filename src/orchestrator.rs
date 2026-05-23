@@ -1059,7 +1059,17 @@ mod tests {
         .expect("orchestrator deadlocked when event receiver was dropped");
 
         result.unwrap();
-        assert_eq!(read_run_report_status(&dir), "success");
+        let report = read_run_report_json(&dir);
+        assert_eq!(report["status"], "success");
+        let agent = report["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|agent| agent["agent"] == "dropped_receiver")
+            .expect("run report did not collect dropped_receiver events");
+        assert_eq!(agent["token_chunks"], 25);
+        assert!(agent["output_chars"].as_u64().unwrap() > 0);
+        assert_eq!(agent["status"], "done");
 
         let _ = std::fs::remove_dir_all(dir);
     }
