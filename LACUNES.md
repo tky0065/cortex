@@ -237,8 +237,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Centraliser le masquage des secrets, ajouter tests de non-regression, scanner les logs avant ecriture et exclure secrets du contexte agent.
 
 ### 23. Controle de concurrence et annulation a tester sous charge
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par les tests de stress orchestrateur dans `src/orchestrator.rs`: annulation d'un workflow lent, échec workflow sans deadlock event stream, receiver TUI fermé, échec worker parallèle, rafale d'événements concurrents et artefacts lisibles après annulation.
 
 **Constat:** Le projet utilise tokio, workers paralleles, cancellation tokens et event bus.
 
@@ -278,3 +278,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-20 — Lot observabilité complète terminé: `cortex.run.json` généré pour succès/échec/interruption, timeline structurée, résumés agents, fichiers, outils observables, métriques de base, redaction secrets et documentation de partage. Lacune terminée: 6. Lacune partiellement traitée: 7.
 - 2026-05-20 — Lot reprise robuste terminé: `cortex.checkpoint.json`, reprise structurée du workflow `dev`, validation des hashes, refus des reprises ambiguës et documentation des artefacts. Lacune terminée: 9.
 - 2026-05-21 — Lot sécurité adversariale avancée terminé: labellisation web search non fiable, tests d'attaques composées custom/tools/email/updater, et modèle de menace mis à jour. Lacunes terminées: 2, 20.
+- 2026-05-23 — Lot concurrence/annulation terminé: tests de stress orchestrateur pour annulation, échec, receivers fermés, workers parallèles, rafales d'événements et lisibilité des artefacts après interruption. Lacune terminée: 23.
