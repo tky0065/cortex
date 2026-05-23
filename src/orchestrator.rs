@@ -210,7 +210,9 @@ impl Orchestrator {
         }
 
         // Spawn a background task to watch TASKS.md for UI updates.
-        spawn_task_watcher(tx.clone(), project_dir.clone(), self.cancel.clone());
+        let task_watcher_cancel = self.cancel.child_token();
+        let task_watcher_handle =
+            spawn_task_watcher(tx.clone(), project_dir.clone(), task_watcher_cancel.clone());
 
         // Create a fresh AgentBus for this workflow run and share it with the REPL.
         let agent_bus = AgentBus::new();
@@ -296,6 +298,9 @@ impl Orchestrator {
             }
             other => other,
         };
+
+        task_watcher_cancel.cancel();
+        let _ = task_watcher_handle.await;
 
         flush_ack(&report_flush_tx, "run report events").await;
         if let Some(log_flush_tx) = &log_flush_tx {
@@ -554,7 +559,11 @@ fn write_manifest(project_dir: &std::path::Path, workflow: &str, prompt: &str, c
 }
 
 /// Polls for a TASKS.md file in the project directory and sends TasksUpdated events.
-fn spawn_task_watcher(tx: TuiSender, project_dir: std::path::PathBuf, cancel: CancellationToken) {
+fn spawn_task_watcher(
+    tx: TuiSender,
+    project_dir: std::path::PathBuf,
+    cancel: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let tasks_path = project_dir.join("TASKS.md");
         let mut last_content = String::new();
@@ -574,9 +583,12 @@ fn spawn_task_watcher(tx: TuiSender, project_dir: std::path::PathBuf, cancel: Ca
                 }
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {}
+            }
         }
-    });
+    })
 }
 
 fn parse_tasks(content: &str) -> Vec<Task> {
@@ -975,6 +987,74 @@ mod tests {
         assert_eq!(report["failure"]["failure_type"], "interrupted");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_failure_does_not_deadlock_event_stream() {
+        let dir = temp_test_dir("cortex_failure_event_stream");
+        let (tx, rx) = channel();
+        let config = Arc::new(Config::default());
+        let orch = super::Orchestrator::new(Box::new(FailingWorkflow), config);
+
+        let run = orch.run_with_project_dir(
+            "build".to_string(),
+            true,
+            false,
+            Some(tx),
+            Some(dir.clone()),
+        );
+
+        let err = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+            .await
+            .expect("orchestrator deadlocked on workflow failure")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("intentional workflow failure"));
+
+        let events = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            drain_events_until_closed(rx),
+        )
+        .await
+        .expect("event stream did not close after failure");
+        assert!(events.iter().any(|event| matches!(event, TuiEvent::Error { agent, message } if agent == "failing" && message.contains("intentional workflow failure"))));
+        assert_eq!(read_run_report_status(&dir), "failed");
+        assert_eq!(
+            read_run_report_json(&dir)["failure"]["failure_type"],
+            "agent_error"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct FailingWorkflow;
+
+    #[async_trait]
+    impl Workflow for FailingWorkflow {
+        fn name(&self) -> &str {
+            "dev"
+        }
+
+        fn description(&self) -> &str {
+            "failing test workflow"
+        }
+
+        async fn run(&self, _prompt: String, options: RunOptions) -> Result<()> {
+            options
+                .tx
+                .send(TuiEvent::AgentStarted {
+                    agent: "failing".to_string(),
+                })
+                .ok();
+            options
+                .tx
+                .send(TuiEvent::Error {
+                    agent: "failing".to_string(),
+                    message: "intentional workflow failure".to_string(),
+                })
+                .ok();
+            anyhow::bail!("intentional workflow failure")
+        }
     }
 
     struct CancelThenOkWorkflow;
