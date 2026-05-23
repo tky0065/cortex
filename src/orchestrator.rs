@@ -927,11 +927,11 @@ mod tests {
     #[tokio::test]
     async fn orchestrator_cancellation_interrupts_slow_workflow() {
         let dir = temp_test_dir("cortex_cancel_slow_workflow");
-        let in_flight = Arc::new(tokio::sync::Notify::new());
+        let (in_flight_tx, in_flight_rx) = oneshot::channel();
         let config = Arc::new(Config::default());
         let orch = super::Orchestrator::new(
             Box::new(SlowUntilCancelledWorkflow {
-                in_flight: Arc::clone(&in_flight),
+                in_flight: std::sync::Mutex::new(Some(in_flight_tx)),
             }),
             config,
         );
@@ -945,9 +945,23 @@ mod tests {
             }
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), in_flight.notified())
-            .await
-            .expect("workflow did not start");
+        match tokio::time::timeout(std::time::Duration::from_secs(1), in_flight_rx).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                cancel.cancel();
+                run.abort();
+                let _ = run.await;
+                let _ = std::fs::remove_dir_all(&dir);
+                panic!("workflow dropped startup signal");
+            }
+            Err(_) => {
+                cancel.cancel();
+                run.abort();
+                let _ = run.await;
+                let _ = std::fs::remove_dir_all(&dir);
+                panic!("workflow did not start");
+            }
+        }
         cancel.cancel();
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
@@ -985,7 +999,7 @@ mod tests {
     }
 
     struct SlowUntilCancelledWorkflow {
-        in_flight: Arc<tokio::sync::Notify>,
+        in_flight: std::sync::Mutex<Option<oneshot::Sender<()>>>,
     }
 
     #[async_trait]
@@ -1005,7 +1019,9 @@ mod tests {
                     agent: "slow".to_string(),
                 })
                 .ok();
-            self.in_flight.notify_waiters();
+            if let Some(in_flight) = self.in_flight.lock().unwrap().take() {
+                let _ = in_flight.send(());
+            }
             options.cancel.cancelled().await;
             options
                 .tx
