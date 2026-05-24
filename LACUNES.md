@@ -71,8 +71,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter un rapport de run structure: timeline, agents executes, prompts tronques ou non, outils appeles, erreurs, fichiers modifies, commandes lancees, cause probable d'echec.
 
 ### 7. Gestion des couts et quotas absente
-**Statut:** En cours
-**Preuve:** `cortex.run.json` expose les champs `metrics`, `tokens_total` quand disponible et `cost_status`, mais les limites de budget et l'estimation provider précise ne sont pas encore implémentées.
+**Statut:** Terminé
+**Preuve:** Couvert par les limites `max_tokens_per_run` et `max_estimated_cost_usd`, le module `src/budget.rs`, l'interruption propre des runs quand une limite évaluable est dépassée, les champs budget/coût dans `cortex.run.json`, les tests Rust dédiés et `docs/BUDGET_AND_TUI_SMOKE.md`.
 
 **Constat:** Cortex peut appeler plusieurs agents, workers paralleles, web search et providers distants, mais ne semble pas exposer un budget clair par run.
 
@@ -153,8 +153,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter `RELEASE.md`: tests requis, evals, generation checksums, smoke tests install Linux/macOS/Windows, rollback.
 
 ### 15. Tests TUI et UX terminal a completer par scenarios reels
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par des smoke tests TUI déterministes dans `cargo test`: saisie/submit de commande, historique clavier, menu interruption, bascule de mode, picker, status bar étroite et rendu headless complet à tailles normale et réduite. Documenté dans `docs/BUDGET_AND_TUI_SMOKE.md`.
 
 **Constat:** Les widgets ont des tests headless, mais les flux clavier longs restent probablement difficiles a couvrir.
 
@@ -279,3 +279,4 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-20 — Lot reprise robuste terminé: `cortex.checkpoint.json`, reprise structurée du workflow `dev`, validation des hashes, refus des reprises ambiguës et documentation des artefacts. Lacune terminée: 9.
 - 2026-05-21 — Lot sécurité adversariale avancée terminé: labellisation web search non fiable, tests d'attaques composées custom/tools/email/updater, et modèle de menace mis à jour. Lacunes terminées: 2, 20.
 - 2026-05-23 — Lot concurrence/annulation terminé: tests de stress orchestrateur pour annulation, échec, receivers fermés, workers parallèles, rafales d'événements et lisibilité des artefacts après interruption. Lacune terminée: 23.
+- 2026-05-24 — Lot budget + TUI smoke terminé: limites de tokens/coût estimé par run, reporting budget dans `cortex.run.json`, interruption propre sur dépassement évaluable, documentation budget, et smoke tests TUI scénarisés/headless. Lacunes terminées: 7, 15.
