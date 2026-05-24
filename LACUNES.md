@@ -256,17 +256,27 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 **Action recommandee:** Ajouter `cargo audit`, `cargo deny`, verification licenses et dependabot/renovate.
 
-## Prochaines etapes recommandees
+## Maintenance continue recommandee
 
-1. Etendre la matrice d'acceptation des outputs pour le workflow `dev` avec des resultats reels de beta.
-2. Completer le harness `evals/` avec scoring, historique de runs et campagnes reproductibles.
-3. Maintenir et etendre le modele de menace et la suite adversariale a mesure que les surfaces tools, providers, custom workflows, web search, email et updater evoluent.
-4. Ajouter un mode de run avec budget: tokens, cout estime, limites et rapport final.
-5. Generer un `cortex.manifest.json` par run pour audit, reprise et debogage.
-6. Choisir le workflow phare de la beta publique et marquer les autres comme experimentaux si necessaire.
-7. Durcir l'ecriture dans les repertoires non vides avec confirmation ou sous-dossier par defaut.
-8. Ajouter templates GitHub Issues et guide "How to report a failed run".
-9. Introduire `cargo audit` / `cargo deny` dans la CI.
+Les 24 lacunes identifiees dans ce document sont marquees traitees pour le perimetre beta actuel. Les sujets ci-dessous restent des pratiques de maintenance continue, pas des lacunes ouvertes:
+
+1. Etendre les evals avec des outputs reels de beta, un historique de campagnes et des tendances de qualite.
+2. Maintenir le modele de menace et les tests adversariaux quand de nouveaux tools, providers, workflows custom, surfaces web/email ou mecanismes d'update sont ajoutes.
+3. Revoir regulierement les recommandations providers/modeles, les limites connues et les estimations de cout.
+4. Garder la checklist release et les smoke tests install/update a jour sur Linux, macOS et Windows.
+5. Continuer a ameliorer la qualite des projets generes a partir des rapports utilisateurs et des echecs reels.
+6. Garder `LACUNES.md` comme registre de fermeture des risques beta; placer les nouveaux chantiers produit dans `TASKS.md`, `conductor/` ou une roadmap dediee.
+
+## Plans conductor traites
+
+| Plan | Statut | Preuve |
+|------|--------|--------|
+| `conductor/bare-tool-tags.md` | Terminé | `src/assistant.rs` parse les tags tools nus via `parse_tool_calls`/`parse_json_call` et couvre les cas `parses_bare_tool_tags_with_raw_text` et `parses_bare_tool_tags_without_wrapper`. |
+| `conductor/improve-ddg-parser.md` | Terminé | `src/tools/web_search.rs` expose `search_without_key()` et `parse_ddg_lite_html()`, avec extraction `result-link` et `result-snippet` pour formatter des resultats DuckDuckGo Lite structures. |
+| `conductor/phantom-assistant-fix.md` | Terminé | `src/assistant.rs`, `src/repl.rs` et `src/tui/mod.rs` emettent le label visible `cortex`; `strip_tool_calls_for_display()` masque le XML tool; `search_without_key()` fournit le fallback web search sans cle. |
+| `conductor/responsive-agents-grid.md` | Terminé | `src/tui/widgets/agent_panel.rs` calcule `min_col_width`, `max_cols`, `cols` et `rows` dans `AgentPanelWidget::render()`, avec des tests headless `TestBackend` pour les rendus agents. |
+| `conductor/task-management-general.md` | Terminé | `src/assistant.rs` demande et maintient `TASKS.md` pour les taches complexes, parse les checklists via `parse_checklist_tasks()`, et publie `TuiEvent::TasksUpdated`. |
+| `conductor/task-management-plan.md` | Terminé | `src/tui/events.rs` (`TuiEvent::TasksUpdated`), `src/tui/widgets/tasks.rs` (`TasksWidget::render()`), `src/tui/layout.rs` (`AppLayout.tasks`) et `src/tui/mod.rs` (`App::draw()`) definissent et rendent le panneau de taches. |
 
 ## Suivi des lots
 
