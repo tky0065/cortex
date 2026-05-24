@@ -3765,8 +3765,164 @@ fn draw_interrupt_menu(frame: &mut Frame, message: &str, has_resume: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{qualify_model_string, sync_models_for_provider};
+    use super::{App, LogEntry, PopupState, Tui, qualify_model_string, sync_models_for_provider};
     use crate::config::Config;
+    use crate::tui::events::channel;
+    use crate::workflows::ExecutionMode;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn modified_key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn test_app() -> App {
+        App::new(Arc::new(RwLock::new(Config::default())))
+    }
+
+    #[cfg(test)]
+    impl App {
+        fn set_input_for_test(&mut self, value: &str) {
+            self.input_bar.input = tui_input::Input::new(value.to_string());
+        }
+
+        fn input_value_for_test(&self) -> &str {
+            self.input_bar.input.value()
+        }
+
+        fn logs_contain_for_test(&self, needle: &str) -> bool {
+            self.logs.iter().any(|entry| entry.message.contains(needle))
+        }
+    }
+
+    #[tokio::test]
+    async fn smoke_submits_long_command_and_records_history() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+        let command = "/status this is a deliberately long command that should remain stable";
+        app.set_input_for_test(command);
+
+        let should_quit = Tui::handle_input(&mut app, &key(KeyCode::Enter), &tx).await;
+
+        assert!(!should_quit);
+        assert_eq!(app.input_value_for_test(), "");
+        assert!(app.logs_contain_for_test(command));
+    }
+
+    #[tokio::test]
+    async fn smoke_navigates_command_history() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+
+        app.set_input_for_test("/status now");
+        Tui::handle_input(&mut app, &key(KeyCode::Enter), &tx).await;
+        app.set_input_for_test("/help now");
+        Tui::handle_input(&mut app, &key(KeyCode::Enter), &tx).await;
+
+        Tui::handle_input(&mut app, &key(KeyCode::Up), &tx).await;
+        assert_eq!(app.input_value_for_test(), "/help now");
+
+        Tui::handle_input(&mut app, &key(KeyCode::Up), &tx).await;
+        assert_eq!(app.input_value_for_test(), "/status now");
+
+        Tui::handle_input(&mut app, &key(KeyCode::Down), &tx).await;
+        assert_eq!(app.input_value_for_test(), "/help now");
+    }
+
+    #[tokio::test]
+    async fn smoke_cycles_execution_mode_with_shift_tab() {
+        let mut app = test_app();
+        let (tx, mut rx) = channel();
+
+        assert_eq!(app.execution_mode, ExecutionMode::Normal);
+
+        Tui::handle_input(
+            &mut app,
+            &modified_key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            &tx,
+        )
+        .await;
+
+        assert_eq!(app.execution_mode, ExecutionMode::Plan);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            crate::tui::events::TuiEvent::ModeChanged(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn smoke_interrupt_menu_closes_with_escape() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+
+        app.popup = PopupState::InterruptMenu {
+            message: "interrupted".to_string(),
+            has_resume: false,
+        };
+
+        Tui::handle_input(&mut app, &key(KeyCode::Esc), &tx).await;
+
+        assert!(matches!(app.popup, PopupState::None));
+    }
+
+    #[tokio::test]
+    async fn smoke_provider_picker_search_navigation_and_escape() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+
+        app.popup = PopupState::ProviderPicker(crate::tui::widgets::picker::PickerState::new(
+            "Provider",
+            vec![crate::tui::widgets::picker::PickerGroup {
+                title: "Providers".to_string(),
+                items: vec![
+                    crate::tui::widgets::picker::PickerItem {
+                        id: "ollama".to_string(),
+                        label: "ollama".to_string(),
+                        description: Some("Local".to_string()),
+                        checked: true,
+                    },
+                    crate::tui::widgets::picker::PickerItem {
+                        id: "openai".to_string(),
+                        label: "openai".to_string(),
+                        description: Some("Remote".to_string()),
+                        checked: false,
+                    },
+                ],
+            }],
+        ));
+
+        Tui::handle_input(&mut app, &key(KeyCode::Char('o')), &tx).await;
+        Tui::handle_input(&mut app, &key(KeyCode::Down), &tx).await;
+        Tui::handle_input(&mut app, &key(KeyCode::Esc), &tx).await;
+
+        assert!(matches!(app.popup, PopupState::None));
+    }
+
+    #[tokio::test]
+    async fn smoke_renders_full_tui_frame_at_normal_and_small_sizes() {
+        fn render_once(width: u16, height: u16) {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let config = Arc::new(RwLock::new(Config::default()));
+            let mut app = App::new(config);
+            app.logs.push(LogEntry::system("render smoke"));
+
+            terminal
+                .draw(|frame| {
+                    app.draw(frame);
+                })
+                .unwrap();
+        }
+
+        render_once(80, 24);
+        render_once(40, 12);
+    }
 
     #[test]
     fn qualify_model_string_preserves_current_provider_prefix() {
