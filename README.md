@@ -10,6 +10,7 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 
 - [Beta guide](docs/BETA.md) — recommended workflow, support stance, limits, and good beta prompts.
 - [Providers guide](docs/PROVIDERS.md) — provider support levels, model expectations, cost/privacy notes, and troubleshooting.
+- [Budget limits and TUI smoke coverage](docs/BUDGET_AND_TUI_SMOKE.md) — token/cost budget behavior, run report fields, and terminal smoke-test coverage.
 - [Failed run report](.github/ISSUE_TEMPLATE/failed_run.md) — what to include when a run fails or produces unusable output.
 
 ## What's new in 0.2.3

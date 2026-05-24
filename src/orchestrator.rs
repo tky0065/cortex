@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_bus::AgentBus;
+use crate::budget::{BudgetLimits, BudgetState, BudgetStatus};
 use crate::config::Config;
 use crate::tui::events::{Task, TuiEvent, TuiSender, channel};
 use crate::workflows::{ExecutionMode, RunOptions, Workflow};
@@ -233,6 +234,16 @@ impl Orchestrator {
             mpsc::unbounded_channel();
         let real_tx = tx.clone();
         let report_collector_for_tee = Arc::clone(&run_report_collector);
+        let budget_state = Arc::new(tokio::sync::Mutex::new(BudgetState::new(
+            self.config.provider.default.clone(),
+            self.config.models.developer.clone(),
+            BudgetLimits {
+                max_tokens_per_run: self.config.limits.max_tokens_per_run,
+                max_estimated_cost_usd: self.config.limits.max_estimated_cost_usd,
+            },
+        )));
+        let budget_state_for_tee = Arc::clone(&budget_state);
+        let cancel_for_budget = self.cancel.clone();
         let _report_tee_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -240,6 +251,8 @@ impl Orchestrator {
                         handle_report_event(
                             ev,
                             &report_collector_for_tee,
+                            &budget_state_for_tee,
+                            &cancel_for_budget,
                             log_tx.as_ref(),
                             &real_tx,
                         ).await;
@@ -249,6 +262,8 @@ impl Orchestrator {
                             handle_report_event(
                                 ev,
                                 &report_collector_for_tee,
+                                &budget_state_for_tee,
+                                &cancel_for_budget,
                                 log_tx.as_ref(),
                                 &real_tx,
                             ).await;
@@ -312,6 +327,8 @@ impl Orchestrator {
             RunCompletion::Workflow(Ok(())) => {
                 {
                     let mut collector = run_report_collector.lock().await;
+                    let snapshot = budget_state.lock().await.snapshot();
+                    collector.apply_budget_snapshot(&snapshot);
                     finalize_run_report(
                         &mut collector,
                         &project_dir,
@@ -330,6 +347,8 @@ impl Orchestrator {
                 );
                 {
                     let mut collector = run_report_collector.lock().await;
+                    let snapshot = budget_state.lock().await.snapshot();
+                    collector.apply_budget_snapshot(&snapshot);
                     finalize_run_report(
                         &mut collector,
                         &project_dir,
@@ -347,6 +366,8 @@ impl Orchestrator {
                 );
                 {
                     let mut collector = run_report_collector.lock().await;
+                    let snapshot = budget_state.lock().await.snapshot();
+                    collector.apply_budget_snapshot(&snapshot);
                     finalize_run_report(
                         &mut collector,
                         &project_dir,
@@ -471,9 +492,29 @@ fn write_verbose_log_event(
 async fn handle_report_event(
     ev: TuiEvent,
     collector: &Arc<tokio::sync::Mutex<crate::run_report::RunReportCollector>>,
+    budget_state: &Arc<tokio::sync::Mutex<BudgetState>>,
+    cancel: &CancellationToken,
     log_tx: Option<&TuiSender>,
     real_tx: &TuiSender,
 ) {
+    if let TuiEvent::WorkflowStats { tokens_total } = &ev {
+        let snapshot = {
+            let mut budget = budget_state.lock().await;
+            budget.record_tokens_total(*tokens_total as u64);
+            budget.snapshot()
+        };
+        collector.lock().await.apply_budget_snapshot(&snapshot);
+        if snapshot.status == BudgetStatus::Exceeded {
+            let _ = real_tx.send(TuiEvent::WorkflowInterrupted {
+                message: snapshot
+                    .exceeded_reason
+                    .clone()
+                    .unwrap_or_else(|| "budget exceeded".to_string()),
+            });
+            cancel.cancel();
+        }
+    }
+
     collector.lock().await.record_event(&ev);
     if let Some(log_tx) = log_tx {
         let _ = log_tx.send(ev.clone());
@@ -1247,6 +1288,61 @@ mod tests {
         assert_eq!(agent_done_count, 10);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn token_budget_exceeded_interrupts_run_and_writes_report() {
+        let project_dir = temp_test_dir("cortex_budget_test");
+        let mut config = Config::default();
+        config.limits.max_tokens_per_run = 10;
+        config.limits.max_estimated_cost_usd = 0.0;
+
+        let orchestrator = super::Orchestrator::new(Box::new(StatsWorkflow), Arc::new(config));
+
+        orchestrator
+            .run_with_project_dir(
+                "budget test".to_string(),
+                true,
+                false,
+                None,
+                Some(project_dir.clone()),
+            )
+            .await
+            .unwrap();
+
+        let report = read_run_report_json(&project_dir);
+
+        assert_eq!(report["status"], "interrupted");
+        assert_eq!(report["metrics"]["budget_status"], "exceeded");
+        assert_eq!(
+            report["metrics"]["budget_exceeded_reason"],
+            "token budget exceeded: 11 > 10"
+        );
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    struct StatsWorkflow;
+
+    #[async_trait]
+    impl Workflow for StatsWorkflow {
+        fn name(&self) -> &str {
+            "stats"
+        }
+
+        fn description(&self) -> &str {
+            "stats workflow"
+        }
+
+        async fn run(&self, _prompt: String, opts: RunOptions) -> Result<()> {
+            let _ = opts.tx.send(TuiEvent::WorkflowStarted {
+                workflow: "stats".to_string(),
+                agents: vec!["developer".to_string()],
+            });
+            let _ = opts.tx.send(TuiEvent::WorkflowStats { tokens_total: 11 });
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(())
+        }
     }
 
     struct ParallelEventBurstWorkflow;
