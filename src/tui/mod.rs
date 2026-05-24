@@ -3898,7 +3898,20 @@ mod tests {
         ));
 
         Tui::handle_input(&mut app, &key(KeyCode::Char('o')), &tx).await;
+        match &app.popup {
+            PopupState::ProviderPicker(state) => {
+                assert_eq!(state.search, "o");
+                assert_eq!(state.selected_id().as_deref(), Some("ollama"));
+            }
+            _ => panic!("provider picker should remain open after search input"),
+        }
         Tui::handle_input(&mut app, &key(KeyCode::Down), &tx).await;
+        match &app.popup {
+            PopupState::ProviderPicker(state) => {
+                assert_eq!(state.selected_id().as_deref(), Some("openai"));
+            }
+            _ => panic!("provider picker should remain open after navigation"),
+        }
         Tui::handle_input(&mut app, &key(KeyCode::Esc), &tx).await;
 
         assert!(matches!(app.popup, PopupState::None));

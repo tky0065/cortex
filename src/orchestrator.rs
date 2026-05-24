@@ -303,7 +303,7 @@ impl Orchestrator {
                 RunCompletion::Interrupted
             }
         };
-        let run_completion = match run_completion {
+        let mut run_completion = match run_completion {
             RunCompletion::Workflow(Ok(())) if self.cancel.is_cancelled() => {
                 let _ = tee_tx.send(TuiEvent::TokenChunk {
                     agent: "orchestrator".into(),
@@ -321,6 +321,13 @@ impl Orchestrator {
         flush_ack(&report_flush_tx, "run report events").await;
         if let Some(log_flush_tx) = &log_flush_tx {
             flush_ack(log_flush_tx, "verbose log").await;
+        }
+
+        if matches!(run_completion, RunCompletion::Workflow(Ok(()))) {
+            let snapshot = budget_state.lock().await.snapshot();
+            if snapshot.status == BudgetStatus::Exceeded || self.cancel.is_cancelled() {
+                run_completion = RunCompletion::Interrupted;
+            }
         }
 
         match run_completion {
@@ -1322,6 +1329,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(project_dir);
     }
 
+    #[tokio::test]
+    async fn token_budget_exceeded_after_immediate_success_is_interrupted() {
+        let project_dir = temp_test_dir("cortex_budget_race_test");
+        let mut config = Config::default();
+        config.limits.max_tokens_per_run = 10;
+        config.limits.max_estimated_cost_usd = 0.0;
+
+        let orchestrator =
+            super::Orchestrator::new(Box::new(ImmediateStatsWorkflow), Arc::new(config));
+
+        orchestrator
+            .run_with_project_dir(
+                "budget race test".to_string(),
+                true,
+                false,
+                None,
+                Some(project_dir.clone()),
+            )
+            .await
+            .unwrap();
+
+        let report = read_run_report_json(&project_dir);
+
+        assert_eq!(report["status"], "interrupted");
+        assert_eq!(report["metrics"]["budget_status"], "exceeded");
+        assert_eq!(
+            report["metrics"]["budget_exceeded_reason"],
+            "token budget exceeded: 11 > 10"
+        );
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
     struct StatsWorkflow;
 
     #[async_trait]
@@ -1341,6 +1381,28 @@ mod tests {
             });
             let _ = opts.tx.send(TuiEvent::WorkflowStats { tokens_total: 11 });
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(())
+        }
+    }
+
+    struct ImmediateStatsWorkflow;
+
+    #[async_trait]
+    impl Workflow for ImmediateStatsWorkflow {
+        fn name(&self) -> &str {
+            "stats"
+        }
+
+        fn description(&self) -> &str {
+            "stats workflow"
+        }
+
+        async fn run(&self, _prompt: String, opts: RunOptions) -> Result<()> {
+            let _ = opts.tx.send(TuiEvent::WorkflowStarted {
+                workflow: "stats".to_string(),
+                agents: vec!["developer".to_string()],
+            });
+            let _ = opts.tx.send(TuiEvent::WorkflowStats { tokens_total: 11 });
             Ok(())
         }
     }

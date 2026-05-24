@@ -87,12 +87,17 @@ pub struct RunMetrics {
     pub agent_count: usize,
     pub file_count: usize,
     pub tool_call_count: usize,
+    #[serde(default = "default_max_tokens_per_run")]
     pub max_tokens_per_run: u64,
+    #[serde(default = "default_max_estimated_cost_usd")]
     pub max_estimated_cost_usd: f64,
+    #[serde(default = "default_budget_status")]
     pub budget_status: BudgetStatus,
+    #[serde(default)]
     pub budget_exceeded_reason: Option<String>,
     pub cost_status: CostStatus,
     pub estimated_cost_usd: Option<f64>,
+    #[serde(default = "default_cost_notes")]
     pub cost_notes: String,
 }
 
@@ -144,7 +149,7 @@ impl RunReportCollector {
 
         Self {
             report: RunReport {
-                schema_version: 1,
+                schema_version: 2,
                 run_id: uuid::Uuid::new_v4().to_string(),
                 cortex_version: env!("CARGO_PKG_VERSION").to_string(),
                 workflow: workflow.into(),
@@ -679,6 +684,22 @@ fn cost_status_for_budget_snapshot(snapshot: &BudgetSnapshot) -> CostStatus {
     }
 }
 
+fn default_max_tokens_per_run() -> u64 {
+    100_000
+}
+
+fn default_max_estimated_cost_usd() -> f64 {
+    5.0
+}
+
+fn default_budget_status() -> BudgetStatus {
+    BudgetStatus::Unknown
+}
+
+fn default_cost_notes() -> String {
+    "Provider-specific token accounting and pricing are not enforced yet.".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,7 +713,7 @@ mod tests {
         let collector = RunReportCollector::new("dev", "build a todo app", &config);
         let report = collector.report();
 
-        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.schema_version, 2);
         assert_eq!(report.workflow, "dev");
         assert_eq!(report.prompt, "build a todo app");
         assert_eq!(report.provider, "ollama");
@@ -761,6 +782,29 @@ mod tests {
         assert!(json.get("files").is_some());
         assert!(json.get("metrics").is_some());
         assert!(json.get("failure").is_some());
+    }
+
+    #[test]
+    fn old_run_report_metrics_deserialize_with_budget_defaults() {
+        let raw = r#"{
+          "duration_ms": 10,
+          "tokens_total": 123,
+          "token_chunks_total": 2,
+          "output_chars_total": 20,
+          "agent_count": 1,
+          "file_count": 0,
+          "tool_call_count": 0,
+          "cost_status": "unknown",
+          "estimated_cost_usd": null,
+          "cost_notes": "old report"
+        }"#;
+
+        let metrics: RunMetrics = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(metrics.max_tokens_per_run, 100_000);
+        assert_eq!(metrics.max_estimated_cost_usd, 5.0);
+        assert_eq!(metrics.budget_status, BudgetStatus::Unknown);
+        assert_eq!(metrics.budget_exceeded_reason, None);
     }
 
     #[test]

@@ -181,5 +181,15 @@ mod tests {
                 StatusBarWidget { state: &state }.render(frame, frame.area());
             })
             .unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("AUTO"));
+        assert!(rendered.trim().len() > 10);
     }
 }
