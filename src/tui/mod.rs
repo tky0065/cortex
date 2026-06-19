@@ -33,6 +33,7 @@ use crate::tui::{
     theme::THEME,
     widgets::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
+        cockpit::{CockpitPanel, CockpitTabDisplay},
         diff_viewer::{DiffViewerWidget, FileDiff},
         input::{InputBar, PaletteContext, ResumeSuggestion, default_provider_suggestions},
         launcher::{IdlePipelineWidget, LauncherData, LauncherWidget},
@@ -151,10 +152,31 @@ struct SkillPickerState {
 }
 
 // ---------------------------------------------------------------------------
+// App view mode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct CockpitData {
+    output_dir: String,
+    files: Vec<String>,
+    git_hash: Option<String>,
+    active_tab: crate::tui::widgets::cockpit::CockpitTabDisplay,
+    duration_secs: u64,
+    report: Option<crate::run_report::RunReport>,
+}
+
+#[derive(Debug)]
+enum AppView {
+    Running,
+    ShowingSummary(CockpitData),
+}
+
+// ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
 struct App {
+    view: AppView,
     input_bar: InputBar,
     logs: Vec<LogEntry>,
     tasks: Vec<Task>,
@@ -198,6 +220,7 @@ impl App {
             .map(|c| (c.provider.default.clone(), c.models.assistant.clone()))
             .unwrap_or_else(|_| ("ollama".to_string(), String::new()));
         Self {
+            view: AppView::Running,
             input_bar: InputBar::new(),
             logs: vec![LogEntry::system("cortex ready — type /help for commands.")],
             tasks: Vec::new(),
@@ -255,13 +278,30 @@ impl App {
             }
             .render(frame, layout.pipeline);
         } else {
+            let complete_duration_secs = if let AppView::ShowingSummary(ref data) = self.view {
+                Some(data.duration_secs)
+            } else {
+                None
+            };
             PipelineWidget {
                 agents: &self.pipeline,
+                complete_duration_secs,
             }
             .render(frame, layout.pipeline);
         }
 
-        if self.active_agents.is_empty() && self.pipeline.is_empty() {
+        if matches!(self.view, AppView::ShowingSummary(_)) {
+            if let AppView::ShowingSummary(ref data) = self.view {
+                CockpitPanel {
+                    files: &data.files,
+                    git_hash: &data.git_hash,
+                    active_tab: &data.active_tab,
+                    duration_secs: data.duration_secs,
+                    report: &data.report,
+                }
+                .render(frame, layout.agents);
+            }
+        } else if self.active_agents.is_empty() && self.pipeline.is_empty() {
             LauncherWidget {
                 data: &self.launcher,
             }
@@ -598,6 +638,29 @@ impl App {
                         .map(|h| format!(", git: {}", h))
                         .unwrap_or_default(),
                 )));
+                let output_path = std::path::Path::new(&output_dir);
+                let report = output_path
+                    .parent()
+                    .map(|p| p.join("cortex.run.json"))
+                    .filter(|p| p.exists())
+                    .or_else(|| {
+                        let candidate = output_path.join("cortex.run.json");
+                        candidate.exists().then_some(candidate)
+                    })
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .and_then(|s| serde_json::from_str::<crate::run_report::RunReport>(&s).ok());
+                let duration_secs = self
+                    .start_time
+                    .map(|t| t.elapsed().as_secs())
+                    .unwrap_or(0);
+                self.view = AppView::ShowingSummary(CockpitData {
+                    output_dir: output_dir.clone(),
+                    files: files.clone(),
+                    git_hash: git_hash.clone(),
+                    active_tab: CockpitTabDisplay::Summary,
+                    duration_secs,
+                    report,
+                });
             }
             TuiEvent::LauncherRefresh => {
                 self.launcher = LauncherData::load();
@@ -1223,6 +1286,11 @@ impl Tui {
                 return Self::handle_interrupt_menu(app, key, tx).await;
             }
             PopupState::None => {}
+        }
+
+        // --- Cockpit mode keyboard ---
+        if matches!(app.view, AppView::ShowingSummary(_)) {
+            return Self::handle_cockpit_keys(app, key);
         }
 
         // --- Pause popup ---
@@ -2789,6 +2857,55 @@ impl Tui {
         }
     }
 
+    fn handle_cockpit_keys(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
+        let AppView::ShowingSummary(ref mut data) = app.view else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Tab => {
+                let next = (data.active_tab.index() + 1) % 4;
+                data.active_tab = CockpitTabDisplay::from_index(next);
+            }
+            KeyCode::BackTab => {
+                let prev = (data.active_tab.index() + 3) % 4;
+                data.active_tab = CockpitTabDisplay::from_index(prev);
+            }
+            KeyCode::Char('1') => {
+                data.active_tab = CockpitTabDisplay::Summary;
+            }
+            KeyCode::Char('2') => {
+                data.active_tab = CockpitTabDisplay::Files;
+            }
+            KeyCode::Char('3') => {
+                data.active_tab = CockpitTabDisplay::Agents;
+            }
+            KeyCode::Char('4') => {
+                data.active_tab = CockpitTabDisplay::Timeline;
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                app.view = AppView::Running;
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                let output_path = std::path::Path::new(&data.output_dir);
+                let report = output_path
+                    .parent()
+                    .map(|p| p.join("cortex.run.json"))
+                    .filter(|p| p.exists())
+                    .or_else(|| {
+                        let candidate = output_path.join("cortex.run.json");
+                        candidate.exists().then_some(candidate)
+                    })
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .and_then(|s| serde_json::from_str::<crate::run_report::RunReport>(&s).ok());
+                data.report = report;
+                app.logs
+                    .push(LogEntry::system("cockpit report refreshed"));
+            }
+            _ => return false,
+        }
+        true
+    }
+
     async fn handle_plan_review(
         app: &mut App,
         key: &crossterm::event::KeyEvent,
@@ -3765,7 +3882,8 @@ fn draw_interrupt_menu(frame: &mut Frame, message: &str, has_resume: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, LogEntry, PopupState, Tui, qualify_model_string, sync_models_for_provider};
+    use super::{App, AppView, CockpitData, LogEntry, PopupState, Tui, qualify_model_string, sync_models_for_provider};
+    use crate::tui::widgets::cockpit::CockpitTabDisplay;
     use crate::config::Config;
     use crate::tui::events::channel;
     use crate::workflows::ExecutionMode;
@@ -3997,5 +4115,105 @@ mod tests {
         assert!(config.models.ceo.starts_with("openai_chatgpt/"));
         assert!(config.models.developer.starts_with("openai_chatgpt/"));
         assert!(config.models.assistant.starts_with("openai_chatgpt/"));
+    }
+
+    #[tokio::test]
+    async fn cockpit_tab_forward_with_tab() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+        app.view = AppView::ShowingSummary(CockpitData {
+            output_dir: "/tmp".to_string(),
+            files: vec![],
+            git_hash: None,
+            active_tab: CockpitTabDisplay::Summary,
+            duration_secs: 0,
+            report: None,
+        });
+
+        Tui::handle_input(&mut app, &key(KeyCode::Tab), &tx).await;
+        let AppView::ShowingSummary(ref data) = app.view else {
+            panic!("expected ShowingSummary");
+        };
+        assert_eq!(data.active_tab, CockpitTabDisplay::Files);
+    }
+
+    #[tokio::test]
+    async fn cockpit_tab_backward_with_backtab() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+        app.view = AppView::ShowingSummary(CockpitData {
+            output_dir: "/tmp".to_string(),
+            files: vec![],
+            git_hash: None,
+            active_tab: CockpitTabDisplay::Timeline,
+            duration_secs: 0,
+            report: None,
+        });
+
+        Tui::handle_input(&mut app, &key(KeyCode::BackTab), &tx).await;
+        let AppView::ShowingSummary(ref data) = app.view else {
+            panic!("expected ShowingSummary");
+        };
+        assert_eq!(
+            data.active_tab,
+            CockpitTabDisplay::Agents
+        );
+    }
+
+    #[tokio::test]
+    async fn cockpit_jumps_to_tab_with_number_keys() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+        app.view = AppView::ShowingSummary(CockpitData {
+            output_dir: "/tmp".to_string(),
+            files: vec![],
+            git_hash: None,
+            active_tab: CockpitTabDisplay::Summary,
+            duration_secs: 0,
+            report: None,
+        });
+
+        Tui::handle_input(&mut app, &key(KeyCode::Char('3')), &tx).await;
+        let AppView::ShowingSummary(ref data) = app.view else {
+            panic!("expected ShowingSummary");
+        };
+        assert_eq!(
+            data.active_tab,
+            CockpitTabDisplay::Agents
+        );
+    }
+
+    #[tokio::test]
+    async fn cockpit_exits_with_q() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+        app.view = AppView::ShowingSummary(CockpitData {
+            output_dir: "/tmp".to_string(),
+            files: vec![],
+            git_hash: None,
+            active_tab: CockpitTabDisplay::Summary,
+            duration_secs: 0,
+            report: None,
+        });
+
+        Tui::handle_input(&mut app, &key(KeyCode::Char('q')), &tx).await;
+        assert!(matches!(app.view, AppView::Running));
+    }
+
+    #[tokio::test]
+    async fn cockpit_exits_with_escape() {
+        let mut app = test_app();
+        let (tx, _rx) = channel();
+        app.view = AppView::ShowingSummary(CockpitData {
+            output_dir: "/tmp".to_string(),
+            files: vec![],
+            git_hash: None,
+            active_tab: CockpitTabDisplay::Summary,
+            duration_secs: 0,
+            report: None,
+        });
+
+        Tui::handle_input(&mut app, &key(KeyCode::Esc), &tx).await;
+        assert!(matches!(app.view, AppView::Running));
     }
 }

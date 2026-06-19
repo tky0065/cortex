@@ -718,6 +718,37 @@ fn build_content_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                 spans.extend(parse_inline_spans(&wl, Style::default().fg(THEME.text)));
                 lines.push(Line::from(spans));
             }
+        } else if let Some(rest) = line.strip_prefix("> ") {
+            let bq_w = width.saturating_sub(4);
+            let wrapped = wrap_prose(rest, bq_w.max(1));
+            for (idx, wl) in wrapped.into_iter().enumerate() {
+                let prefix = if idx == 0 { "▎ " } else { "  " };
+                let mut spans: Vec<Span<'static>> = vec![Span::styled(
+                    prefix,
+                    Style::default().fg(THEME.secondary),
+                )];
+                spans.extend(parse_inline_spans(
+                    &wl,
+                    Style::default().fg(THEME.muted),
+                ));
+                lines.push(Line::from(spans));
+            }
+        } else if is_ordered_list_item(line) {
+            let (num, rest) = parse_ordered_list_item(line);
+            let ol_w = width.saturating_sub(num.len() + 2);
+            let wrapped = wrap_prose(rest, ol_w.max(1));
+            for (idx, wl) in wrapped.into_iter().enumerate() {
+                let mut spans: Vec<Span<'static>> = if idx == 0 {
+                    vec![Span::styled(
+                        format!("{}. ", num),
+                        Style::default().fg(THEME.primary),
+                    )]
+                } else {
+                    vec![Span::raw("   ")]
+                };
+                spans.extend(parse_inline_spans(&wl, Style::default().fg(THEME.text)));
+                lines.push(Line::from(spans));
+            }
         } else {
             // Normal prose — word-wrap preserving indentation
             let leading = line.len() - line.trim_start().len();
@@ -815,6 +846,26 @@ fn render_markdown_lines(text: &str) -> Vec<Line<'static>> {
             continue;
         }
 
+        // Blockquote
+        if let Some(rest) = line.strip_prefix("> ") {
+            let mut spans = vec![Span::styled("▎ ", Style::default().fg(THEME.secondary))];
+            spans.extend(parse_inline_spans(rest, Style::default().fg(THEME.muted)));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        // Ordered list
+        if is_ordered_list_item(line) {
+            let (num, rest) = parse_ordered_list_item(line);
+            let mut spans = vec![Span::styled(
+                format!("{}. ", num),
+                Style::default().fg(THEME.primary),
+            )];
+            spans.extend(parse_inline_spans(rest, Style::default().fg(THEME.text)));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
         // Normal line — parse inline markers
         let spans = parse_inline_spans(line, Style::default().fg(THEME.text));
         lines.push(Line::from(spans));
@@ -879,6 +930,65 @@ fn parse_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
                 i += 1;
             }
         }
+        // Inline code: `code` — amber tint
+        else if chars[i] == '`' {
+            let inner_start = i + 1;
+            let mut j = inner_start;
+            while j < n && chars[j] != '`' {
+                j += 1;
+            }
+            if j < n {
+                flush!();
+                let code: String = chars[inner_start..j].iter().collect();
+                spans.push(Span::styled(
+                    code,
+                    Style::default()
+                        .fg(Color::Rgb(255, 200, 100))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                i = j + 1;
+            } else {
+                buf.push(chars[i]);
+                i += 1;
+            }
+        }
+        // Links: [text](url) — show text in secondary, url dimmed
+        else if chars[i] == '[' {
+            let text_start = i + 1;
+            let mut j = text_start;
+            while j < n && chars[j] != ']' {
+                j += 1;
+            }
+            if j + 1 < n && chars[j + 1] == '(' {
+                let url_start = j + 2;
+                let mut k = url_start;
+                while k < n && chars[k] != ')' {
+                    k += 1;
+                }
+                if k < n {
+                    flush!();
+                    let link_text: String = chars[text_start..j].iter().collect();
+                    let url: String = chars[url_start..k].iter().collect();
+                    spans.push(Span::styled(
+                        link_text,
+                        Style::default()
+                            .fg(THEME.secondary)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" ({})", url),
+                        Style::default().fg(THEME.muted),
+                    ));
+                    i = k + 1;
+                } else {
+                    buf.push(chars[i]);
+                    i += 1;
+                }
+            } else {
+                buf.push(chars[i]);
+                i += 1;
+            }
+        }
         // Citation markers 【…】 — render dimmed
         else if chars[i] == '【' {
             flush!();
@@ -901,6 +1011,20 @@ fn parse_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
 
     flush!();
     spans
+}
+
+/// Check if a line starts with an ordered list marker like "1. " or "1) ".
+fn is_ordered_list_item(line: &str) -> bool {
+    let digit_end = line.find(|c: char| !c.is_ascii_digit()).unwrap_or(line.len());
+    digit_end > 0 && digit_end < line.len() && (line[digit_end..].starts_with(". ") || line[digit_end..].starts_with(") "))
+}
+
+/// Split an ordered list line into (number, rest_of_content).
+fn parse_ordered_list_item(line: &str) -> (&str, &str) {
+    let digit_end = line.find(|c: char| !c.is_ascii_digit()).unwrap_or(line.len());
+    let num = &line[..digit_end];
+    let rest = &line[digit_end + 2..]; // skip ". " or ") "
+    (num, rest)
 }
 
 /// Simple word-wrapping: splits `text` into lines of at most `width` chars,
@@ -1129,5 +1253,57 @@ mod tests {
                 .map(|s| s.content.contains('•'))
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn parse_inline_code() {
+        let spans = parse_inline_spans("use `cargo build` to compile", Style::default());
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "use cargo build to compile");
+        assert!(spans.len() >= 3);
+    }
+
+    #[test]
+    fn parse_inline_link() {
+        let spans = parse_inline_spans("see [docs](https://docs.rs) for details", Style::default());
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("docs"));
+        assert!(text.contains("https://docs.rs"));
+    }
+
+    #[test]
+    fn render_markdown_ordered_list() {
+        let lines = render_markdown_lines("1. first\n2. second\n3. third");
+        assert_eq!(lines.len(), 3);
+        let first_line: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(first_line.contains("1."));
+        assert!(first_line.contains("first"));
+    }
+
+    #[test]
+    fn render_markdown_blockquote() {
+        let lines = render_markdown_lines("> citation text");
+        assert_eq!(lines.len(), 1);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("▎"));
+        assert!(text.contains("citation text"));
+    }
+
+    #[test]
+    fn render_markdown_combined_elements() {
+        let lines = render_markdown_lines(
+            "# Title\n## Sub\n- bullet\n1. ordered\n> quote\n`code` and **bold**",
+        );
+        assert!(lines.len() >= 6);
+        let rendered: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<&str>>()
+            .join("");
+        assert!(rendered.contains("bullet"));
+        assert!(rendered.contains("ordered"));
+        assert!(rendered.contains("quote"));
+        assert!(rendered.contains("code"));
+        assert!(rendered.contains("bold"));
     }
 }

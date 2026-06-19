@@ -35,9 +35,24 @@ impl AgentState {
 /// Symbols: ✓ done · ● running · ◌ idle · ✗ error
 pub struct PipelineWidget<'a> {
     pub agents: &'a [AgentState],
+    /// When set, shows a "ALL COMPLETE" line with the given duration in seconds.
+    pub complete_duration_secs: Option<u64>,
 }
 
 impl<'a> PipelineWidget<'a> {
+    fn duration_str(secs: u64) -> String {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        let s = secs % 60;
+        if h > 0 {
+            format!("{}h {}m {}s", h, m, s)
+        } else if m > 0 {
+            format!("{}m {}s", m, s)
+        } else {
+            format!("{}s", s)
+        }
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let mut spans: Vec<Span> = vec![Span::raw("  ")];
 
@@ -86,7 +101,20 @@ impl<'a> PipelineWidget<'a> {
             .borders(Borders::ALL)
             .border_style(THEME.border_style());
 
-        frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
+        let mut lines = vec![Line::from(spans)];
+        if let Some(secs) = self.complete_duration_secs {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  ✓ ALL COMPLETE — {}",
+                    Self::duration_str(secs)
+                ),
+                Style::default()
+                    .fg(THEME.success)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines).block(block), area);
     }
 }
 
@@ -105,7 +133,11 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                PipelineWidget { agents: &[] }.render(f, area);
+                PipelineWidget {
+                    agents: &[],
+                    complete_duration_secs: None,
+                }
+                .render(f, area);
             })
             .unwrap();
     }
@@ -134,7 +166,32 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                PipelineWidget { agents: &agents }.render(f, area);
+                PipelineWidget {
+                    agents: &agents,
+                    complete_duration_secs: None,
+                }
+                .render(f, area);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn renders_complete_line() {
+        let mut terminal = make_terminal();
+        let agents = vec![
+            AgentState {
+                name: "CEO".to_string(),
+                status: AgentStatus::Done,
+            },
+        ];
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                PipelineWidget {
+                    agents: &agents,
+                    complete_duration_secs: Some(125),
+                }
+                .render(f, area);
             })
             .unwrap();
     }
