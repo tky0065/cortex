@@ -210,6 +210,36 @@ fn explicit_provider_prefix<'a>(
     }
 }
 
+fn openrouter_native_namespace_prefix(prefix: &str) -> bool {
+    matches!(
+        prefix.to_ascii_lowercase().as_str(),
+        "openai" | "anthropic" | "google"
+    )
+}
+
+fn explicit_direct_provider_prefix<'a>(
+    model: &'a str,
+    config: &crate::config::Config,
+) -> Option<(&'a str, &'a str)> {
+    let (prefix, rest) = model.split_once('/')?;
+    if openrouter_native_namespace_prefix(prefix) {
+        return None;
+    }
+
+    let provider = super::registry::normalize_provider(prefix);
+    if provider == "openrouter" {
+        return None;
+    }
+
+    if super::registry::builtin(provider).is_some()
+        || config.custom_providers.contains_key(provider)
+    {
+        Some((provider, rest))
+    } else {
+        None
+    }
+}
+
 pub fn qualify_model_for_config(
     model: &str,
     provider: &str,
@@ -237,6 +267,9 @@ pub fn normalize_model_input_for_config(
 ) -> Result<String> {
     let active_provider = active_provider_for_config(config)?;
     if active_provider == "openrouter" {
+        if let Some((provider, model)) = explicit_direct_provider_prefix(model, config) {
+            return Ok(format!("{provider}/{model}"));
+        }
         return qualify_model_for_config(model, active_provider, config);
     }
     if let Some((provider, model)) = explicit_provider_prefix(model, config) {
@@ -260,6 +293,23 @@ pub fn resolve_model_for_config(
         {
             return Ok(ResolvedModel {
                 provider: active_provider.to_string(),
+                model: model.to_string(),
+            });
+        }
+        if openrouter_native_namespace_prefix(
+            model
+                .split_once('/')
+                .map(|(prefix, _)| prefix)
+                .unwrap_or_default(),
+        ) {
+            return Ok(ResolvedModel {
+                provider: active_provider.to_string(),
+                model: model.to_string(),
+            });
+        }
+        if let Some((provider, model)) = explicit_direct_provider_prefix(model, config) {
+            return Ok(ResolvedModel {
+                provider: provider.to_string(),
                 model: model.to_string(),
             });
         }
@@ -852,6 +902,84 @@ mod tests {
 
         assert_eq!(resolved.provider, "openrouter");
         assert_eq!(resolved.model, "openai/gpt-oss-120b:free");
+    }
+
+    #[test]
+    fn active_openrouter_preserves_explicit_ollama_models() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+
+        let normalized =
+            normalize_model_input_for_config("ollama/qwen2.5-coder:32b", &config).unwrap();
+        let resolved = resolve_model_for_config(&normalized, &config).unwrap();
+
+        assert_eq!(normalized, "ollama/qwen2.5-coder:32b");
+        assert_eq!(resolved.provider, "ollama");
+        assert_eq!(resolved.model, "qwen2.5-coder:32b");
+    }
+
+    #[test]
+    fn active_openrouter_preserves_explicit_groq_models() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+
+        let normalized =
+            normalize_model_input_for_config("groq/llama-3.1-8b-instant", &config).unwrap();
+        let resolved = resolve_model_for_config(&normalized, &config).unwrap();
+
+        assert_eq!(normalized, "groq/llama-3.1-8b-instant");
+        assert_eq!(resolved.provider, "groq");
+        assert_eq!(resolved.model, "llama-3.1-8b-instant");
+    }
+
+    #[test]
+    fn active_openrouter_preserves_explicit_custom_models() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+        config.custom_providers.insert(
+            "custom".to_string(),
+            crate::config::CustomProviderConfig::default(),
+        );
+
+        let normalized = normalize_model_input_for_config("custom/foo", &config).unwrap();
+        let resolved = resolve_model_for_config(&normalized, &config).unwrap();
+
+        assert_eq!(normalized, "custom/foo");
+        assert_eq!(resolved.provider, "custom");
+        assert_eq!(resolved.model, "foo");
+    }
+
+    #[test]
+    fn active_openrouter_keeps_documented_native_namespaces_on_openrouter() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+
+        for model in [
+            "openai/gpt-oss-120b:free",
+            "anthropic/claude-sonnet-4.5",
+            "google/gemini-2.0-flash",
+        ] {
+            let normalized = normalize_model_input_for_config(model, &config).unwrap();
+            let resolved = resolve_model_for_config(&normalized, &config).unwrap();
+
+            assert_eq!(normalized, format!("openrouter/{model}"));
+            assert_eq!(resolved.provider, "openrouter");
+            assert_eq!(resolved.model, model);
+        }
+    }
+
+    #[test]
+    fn active_openrouter_keeps_unknown_namespaces_on_openrouter() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+
+        let normalized =
+            normalize_model_input_for_config("nvidia/llama-3.1-nemotron", &config).unwrap();
+        let resolved = resolve_model_for_config(&normalized, &config).unwrap();
+
+        assert_eq!(normalized, "openrouter/nvidia/llama-3.1-nemotron");
+        assert_eq!(resolved.provider, "openrouter");
+        assert_eq!(resolved.model, "nvidia/llama-3.1-nemotron");
     }
 
     #[test]
