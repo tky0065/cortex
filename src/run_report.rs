@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::budget::{BudgetLimits, BudgetSnapshot, BudgetState, BudgetStatus};
 use crate::config::Config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,8 +87,17 @@ pub struct RunMetrics {
     pub agent_count: usize,
     pub file_count: usize,
     pub tool_call_count: usize,
+    #[serde(default = "default_max_tokens_per_run")]
+    pub max_tokens_per_run: u64,
+    #[serde(default = "default_max_estimated_cost_usd")]
+    pub max_estimated_cost_usd: f64,
+    #[serde(default = "default_budget_status")]
+    pub budget_status: BudgetStatus,
+    #[serde(default)]
+    pub budget_exceeded_reason: Option<String>,
     pub cost_status: CostStatus,
     pub estimated_cost_usd: Option<f64>,
+    #[serde(default = "default_cost_notes")]
     pub cost_notes: String,
 }
 
@@ -127,9 +137,19 @@ pub struct RunReportCollector {
 
 impl RunReportCollector {
     pub fn new(workflow: impl Into<String>, prompt: impl Into<String>, config: &Config) -> Self {
+        let budget_snapshot = BudgetState::new(
+            config.provider.default.clone(),
+            config.models.developer.clone(),
+            BudgetLimits {
+                max_tokens_per_run: config.limits.max_tokens_per_run,
+                max_estimated_cost_usd: config.limits.max_estimated_cost_usd,
+            },
+        )
+        .snapshot();
+
         Self {
             report: RunReport {
-                schema_version: 1,
+                schema_version: 2,
                 run_id: uuid::Uuid::new_v4().to_string(),
                 cortex_version: env!("CARGO_PKG_VERSION").to_string(),
                 workflow: workflow.into(),
@@ -150,11 +170,13 @@ impl RunReportCollector {
                     agent_count: 0,
                     file_count: 0,
                     tool_call_count: 0,
-                    cost_status: CostStatus::Unknown,
-                    estimated_cost_usd: None,
-                    cost_notes:
-                        "Provider-specific token accounting and pricing are not enforced yet."
-                            .to_string(),
+                    max_tokens_per_run: budget_snapshot.max_tokens_per_run,
+                    max_estimated_cost_usd: budget_snapshot.max_estimated_cost_usd,
+                    budget_status: budget_snapshot.status,
+                    budget_exceeded_reason: budget_snapshot.exceeded_reason.clone(),
+                    cost_status: cost_status_for_budget_snapshot(&budget_snapshot),
+                    estimated_cost_usd: budget_snapshot.estimated_cost_usd,
+                    cost_notes: budget_snapshot.cost_notes,
                 },
                 failure: None,
             },
@@ -176,6 +198,17 @@ impl RunReportCollector {
             serde_json::to_string_pretty(&redacted).context("Failed to serialize run report")?;
         let path = project_dir.join("cortex.run.json");
         std::fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))
+    }
+
+    pub fn apply_budget_snapshot(&mut self, snapshot: &BudgetSnapshot) {
+        self.report.metrics.tokens_total = snapshot.tokens_total.map(|tokens| tokens as usize);
+        self.report.metrics.max_tokens_per_run = snapshot.max_tokens_per_run;
+        self.report.metrics.max_estimated_cost_usd = snapshot.max_estimated_cost_usd;
+        self.report.metrics.budget_status = snapshot.status;
+        self.report.metrics.budget_exceeded_reason = snapshot.exceeded_reason.clone();
+        self.report.metrics.estimated_cost_usd = snapshot.estimated_cost_usd;
+        self.report.metrics.cost_status = cost_status_for_budget_snapshot(snapshot);
+        self.report.metrics.cost_notes = snapshot.cost_notes.clone();
     }
 
     pub fn record_event(&mut self, event: &crate::tui::events::TuiEvent) {
@@ -637,9 +670,40 @@ fn model_for_agent_name(agent: &str, model_by_role: &BTreeMap<String, String>) -
         .cloned()
 }
 
+fn cost_status_for_budget_snapshot(snapshot: &BudgetSnapshot) -> CostStatus {
+    match snapshot.status {
+        BudgetStatus::NotApplicable => CostStatus::NotApplicable,
+        BudgetStatus::Unknown => CostStatus::Unknown,
+        BudgetStatus::WithinBudget | BudgetStatus::Exceeded => {
+            if snapshot.estimated_cost_usd.is_some() {
+                CostStatus::Estimated
+            } else {
+                CostStatus::Unknown
+            }
+        }
+    }
+}
+
+fn default_max_tokens_per_run() -> u64 {
+    100_000
+}
+
+fn default_max_estimated_cost_usd() -> f64 {
+    5.0
+}
+
+fn default_budget_status() -> BudgetStatus {
+    BudgetStatus::Unknown
+}
+
+fn default_cost_notes() -> String {
+    "Provider-specific token accounting and pricing are not enforced yet.".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::{BudgetLimits, BudgetState, BudgetStatus};
     use crate::config::Config;
     use crate::tui::events::TuiEvent;
 
@@ -649,15 +713,52 @@ mod tests {
         let collector = RunReportCollector::new("dev", "build a todo app", &config);
         let report = collector.report();
 
-        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.schema_version, 2);
         assert_eq!(report.workflow, "dev");
         assert_eq!(report.prompt, "build a todo app");
         assert_eq!(report.provider, "ollama");
         assert_eq!(report.status, RunStatus::Running);
         assert!(report.finished_at_unix_ms.is_none());
         assert!(!report.run_id.is_empty());
-        assert_eq!(report.metrics.cost_status, CostStatus::Unknown);
+        assert_eq!(report.metrics.cost_status, CostStatus::NotApplicable);
         assert!(report.metrics.estimated_cost_usd.is_none());
+    }
+
+    #[test]
+    fn report_initializes_budget_fields_from_config() {
+        let config = Config::default();
+        let collector = RunReportCollector::new("dev", "build", &config);
+        let report = collector.report();
+
+        assert_eq!(report.metrics.max_tokens_per_run, 100_000);
+        assert_eq!(report.metrics.max_estimated_cost_usd, 5.0);
+        assert_eq!(report.metrics.budget_status, BudgetStatus::NotApplicable);
+        assert_eq!(report.metrics.budget_exceeded_reason, None);
+    }
+
+    #[test]
+    fn collector_applies_budget_snapshot() {
+        let config = Config::default();
+        let mut collector = RunReportCollector::new("dev", "build", &config);
+        let mut budget = BudgetState::new(
+            "openai",
+            "gpt-4.1",
+            BudgetLimits {
+                max_tokens_per_run: 10,
+                max_estimated_cost_usd: 0.0,
+            },
+        );
+
+        budget.record_tokens_total(11);
+        collector.apply_budget_snapshot(&budget.snapshot());
+
+        let metrics = &collector.report().metrics;
+        assert_eq!(metrics.tokens_total, Some(11));
+        assert_eq!(metrics.budget_status, BudgetStatus::Exceeded);
+        assert_eq!(
+            metrics.budget_exceeded_reason.as_deref(),
+            Some("token budget exceeded: 11 > 10")
+        );
     }
 
     #[test]
@@ -681,6 +782,29 @@ mod tests {
         assert!(json.get("files").is_some());
         assert!(json.get("metrics").is_some());
         assert!(json.get("failure").is_some());
+    }
+
+    #[test]
+    fn old_run_report_metrics_deserialize_with_budget_defaults() {
+        let raw = r#"{
+          "duration_ms": 10,
+          "tokens_total": 123,
+          "token_chunks_total": 2,
+          "output_chars_total": 20,
+          "agent_count": 1,
+          "file_count": 0,
+          "tool_call_count": 0,
+          "cost_status": "unknown",
+          "estimated_cost_usd": null,
+          "cost_notes": "old report"
+        }"#;
+
+        let metrics: RunMetrics = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(metrics.max_tokens_per_run, 100_000);
+        assert_eq!(metrics.max_estimated_cost_usd, 5.0);
+        assert_eq!(metrics.budget_status, BudgetStatus::Unknown);
+        assert_eq!(metrics.budget_exceeded_reason, None);
     }
 
     #[test]

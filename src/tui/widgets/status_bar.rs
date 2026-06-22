@@ -156,3 +156,40 @@ impl<'a> StatusBarWidget<'a> {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn renders_with_tokens_at_narrow_width() {
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = StatusBarState {
+            provider: "openai",
+            model: "openai/gpt-4.1",
+            elapsed_secs: 65,
+            tokens_total: 12345,
+            cwd: "/tmp/demo",
+            git_info: Some("main"),
+            mode: "AUTO",
+        };
+
+        terminal
+            .draw(|frame| {
+                StatusBarWidget { state: &state }.render(frame, frame.area());
+            })
+            .unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("AUTO"));
+        assert!(rendered.trim().len() > 10);
+    }
+}

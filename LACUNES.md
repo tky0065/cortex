@@ -71,8 +71,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter un rapport de run structure: timeline, agents executes, prompts tronques ou non, outils appeles, erreurs, fichiers modifies, commandes lancees, cause probable d'echec.
 
 ### 7. Gestion des couts et quotas absente
-**Statut:** En cours
-**Preuve:** `cortex.run.json` expose les champs `metrics`, `tokens_total` quand disponible et `cost_status`, mais les limites de budget et l'estimation provider précise ne sont pas encore implémentées.
+**Statut:** Terminé
+**Preuve:** Couvert par les limites `max_tokens_per_run` et `max_estimated_cost_usd`, le module `src/budget.rs`, l'interruption propre des runs quand une limite évaluable est dépassée, les champs budget/coût dans `cortex.run.json`, les tests Rust dédiés et `docs/BUDGET_AND_TUI_SMOKE.md`.
 
 **Constat:** Cortex peut appeler plusieurs agents, workers paralleles, web search et providers distants, mais ne semble pas exposer un budget clair par run.
 
@@ -153,8 +153,8 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 **Action recommandee:** Ajouter `RELEASE.md`: tests requis, evals, generation checksums, smoke tests install Linux/macOS/Windows, rollback.
 
 ### 15. Tests TUI et UX terminal a completer par scenarios reels
-**Statut:** À faire
-**Preuve:** Non traité dans ce lot.
+**Statut:** Terminé
+**Preuve:** Couvert par des smoke tests TUI déterministes dans `cargo test`: saisie/submit de commande, historique clavier, menu interruption, bascule de mode, picker, status bar étroite et rendu headless complet à tailles normale et réduite. Documenté dans `docs/BUDGET_AND_TUI_SMOKE.md`.
 
 **Constat:** Les widgets ont des tests headless, mais les flux clavier longs restent probablement difficiles a couvrir.
 
@@ -256,17 +256,27 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 
 **Action recommandee:** Ajouter `cargo audit`, `cargo deny`, verification licenses et dependabot/renovate.
 
-## Prochaines etapes recommandees
+## Maintenance continue recommandee
 
-1. Etendre la matrice d'acceptation des outputs pour le workflow `dev` avec des resultats reels de beta.
-2. Completer le harness `evals/` avec scoring, historique de runs et campagnes reproductibles.
-3. Maintenir et etendre le modele de menace et la suite adversariale a mesure que les surfaces tools, providers, custom workflows, web search, email et updater evoluent.
-4. Ajouter un mode de run avec budget: tokens, cout estime, limites et rapport final.
-5. Generer un `cortex.manifest.json` par run pour audit, reprise et debogage.
-6. Choisir le workflow phare de la beta publique et marquer les autres comme experimentaux si necessaire.
-7. Durcir l'ecriture dans les repertoires non vides avec confirmation ou sous-dossier par defaut.
-8. Ajouter templates GitHub Issues et guide "How to report a failed run".
-9. Introduire `cargo audit` / `cargo deny` dans la CI.
+Les 24 lacunes identifiees dans ce document sont marquees traitees pour le perimetre beta actuel. Les sujets ci-dessous restent des pratiques de maintenance continue, pas des lacunes ouvertes:
+
+1. Etendre les evals avec des outputs reels de beta, un historique de campagnes et des tendances de qualite.
+2. Maintenir le modele de menace et les tests adversariaux quand de nouveaux tools, providers, workflows custom, surfaces web/email ou mecanismes d'update sont ajoutes.
+3. Revoir regulierement les recommandations providers/modeles, les limites connues et les estimations de cout.
+4. Garder la checklist release et les smoke tests install/update a jour sur Linux, macOS et Windows.
+5. Continuer a ameliorer la qualite des projets generes a partir des rapports utilisateurs et des echecs reels.
+6. Garder `LACUNES.md` comme registre de fermeture des risques beta; placer les nouveaux chantiers produit dans `TASKS.md`, `conductor/` ou une roadmap dediee.
+
+## Plans conductor traites
+
+| Plan | Statut | Preuve |
+|------|--------|--------|
+| `conductor/bare-tool-tags.md` | Terminé | `src/assistant.rs` parse les tags tools nus via `parse_tool_calls`/`parse_json_call` et couvre les cas `parses_bare_tool_tags_with_raw_text` et `parses_bare_tool_tags_without_wrapper`. |
+| `conductor/improve-ddg-parser.md` | Terminé | `src/tools/web_search.rs` expose `search_without_key()` et `parse_ddg_lite_html()`, avec extraction `result-link` et `result-snippet` pour formatter des resultats DuckDuckGo Lite structures. |
+| `conductor/phantom-assistant-fix.md` | Terminé | `src/assistant.rs`, `src/repl.rs` et `src/tui/mod.rs` emettent le label visible `cortex`; `strip_tool_calls_for_display()` masque le XML tool; `search_without_key()` fournit le fallback web search sans cle. |
+| `conductor/responsive-agents-grid.md` | Terminé | `src/tui/widgets/agent_panel.rs` calcule `min_col_width`, `max_cols`, `cols` et `rows` dans `AgentPanelWidget::render()`, avec des tests headless `TestBackend` pour les rendus agents. |
+| `conductor/task-management-general.md` | Terminé | `src/assistant.rs` demande et maintient `TASKS.md` pour les taches complexes, parse les checklists via `parse_checklist_tasks()`, et publie `TuiEvent::TasksUpdated`. |
+| `conductor/task-management-plan.md` | Terminé | `src/tui/events.rs` (`TuiEvent::TasksUpdated`), `src/tui/widgets/tasks.rs` (`TasksWidget::render()`), `src/tui/layout.rs` (`AppLayout.tasks`) et `src/tui/mod.rs` (`App::draw()`) definissent et rendent le panneau de taches. |
 
 ## Suivi des lots
 
@@ -279,3 +289,5 @@ Le risque central est que Cortex promette "une equipe logicielle en une commande
 - 2026-05-20 — Lot reprise robuste terminé: `cortex.checkpoint.json`, reprise structurée du workflow `dev`, validation des hashes, refus des reprises ambiguës et documentation des artefacts. Lacune terminée: 9.
 - 2026-05-21 — Lot sécurité adversariale avancée terminé: labellisation web search non fiable, tests d'attaques composées custom/tools/email/updater, et modèle de menace mis à jour. Lacunes terminées: 2, 20.
 - 2026-05-23 — Lot concurrence/annulation terminé: tests de stress orchestrateur pour annulation, échec, receivers fermés, workers parallèles, rafales d'événements et lisibilité des artefacts après interruption. Lacune terminée: 23.
+- 2026-05-24 — Lot budget + TUI smoke terminé: limites de tokens/coût estimé par run, reporting budget dans `cortex.run.json`, interruption propre sur dépassement évaluable, documentation budget, et smoke tests TUI scénarisés/headless. Lacunes terminées: 7, 15.
+- 2026-05-24 — Lot release smoke local terminé: script `scripts/release_smoke.sh` ajouté pour construire le binaire release courant, l'exécuter depuis un préfixe temporaire isolé, vérifier les chemins CLI non destructifs, conserver des logs exploitables en cas d'échec, et documenter le workflow dans `RELEASE.md`. Maintenance continue couverte: smoke tests install/update locaux pour la plateforme courante du mainteneur.

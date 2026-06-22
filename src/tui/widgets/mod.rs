@@ -1,4 +1,5 @@
 pub mod agent_panel;
+pub mod cockpit;
 pub mod diff_viewer;
 pub mod input;
 pub mod launcher;
@@ -6,5 +7,4 @@ pub mod logs;
 pub mod picker;
 pub mod pipeline;
 pub mod status_bar;
-pub mod summary;
 pub mod tasks;

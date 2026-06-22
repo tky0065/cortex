@@ -123,6 +123,18 @@ pub struct LimitsConfig {
     pub max_qa_iterations: u32,
     pub max_tokens_per_call: u32,
     pub max_parallel_workers: u32,
+    #[serde(default = "default_max_tokens_per_run")]
+    pub max_tokens_per_run: u64,
+    #[serde(default = "default_max_estimated_cost_usd")]
+    pub max_estimated_cost_usd: f64,
+}
+
+fn default_max_tokens_per_run() -> u64 {
+    100_000
+}
+
+fn default_max_estimated_cost_usd() -> f64 {
+    5.0
 }
 
 impl Default for Config {
@@ -144,6 +156,8 @@ impl Default for Config {
                 max_qa_iterations: 5,
                 max_tokens_per_call: 8192,
                 max_parallel_workers: 4,
+                max_tokens_per_run: default_max_tokens_per_run(),
+                max_estimated_cost_usd: default_max_estimated_cost_usd(),
             },
             api_keys: ApiKeysConfig::default(),
             tools: ToolsConfig::default(),
@@ -340,5 +354,74 @@ impl Config {
     fn config_dir() -> Result<PathBuf> {
         let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(home.join(".cortex"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_limits_include_run_budget() {
+        let config = Config::default();
+
+        assert_eq!(config.limits.max_tokens_per_run, 100_000);
+        assert_eq!(config.limits.max_estimated_cost_usd, 5.0);
+    }
+
+    #[test]
+    fn old_config_without_budget_fields_uses_defaults() {
+        let raw = r#"
+[provider]
+default = "ollama"
+
+[models]
+ceo = "qwen2.5-coder:32b"
+pm = "qwen2.5-coder:32b"
+tech_lead = "qwen2.5-coder:32b"
+developer = "qwen2.5-coder:32b"
+qa = "qwen2.5-coder:14b"
+devops = "qwen2.5-coder:14b"
+assistant = "qwen2.5-coder:32b"
+
+[limits]
+max_qa_iterations = 5
+max_tokens_per_call = 8192
+max_parallel_workers = 4
+"#;
+
+        let config: Config = toml::from_str(raw).unwrap();
+
+        assert_eq!(config.limits.max_tokens_per_run, 100_000);
+        assert_eq!(config.limits.max_estimated_cost_usd, 5.0);
+    }
+
+    #[test]
+    fn config_can_disable_budget_limits_with_zero() {
+        let raw = r#"
+[provider]
+default = "ollama"
+
+[models]
+ceo = "qwen2.5-coder:32b"
+pm = "qwen2.5-coder:32b"
+tech_lead = "qwen2.5-coder:32b"
+developer = "qwen2.5-coder:32b"
+qa = "qwen2.5-coder:14b"
+devops = "qwen2.5-coder:14b"
+assistant = "qwen2.5-coder:32b"
+
+[limits]
+max_qa_iterations = 5
+max_tokens_per_call = 8192
+max_parallel_workers = 4
+max_tokens_per_run = 0
+max_estimated_cost_usd = 0.0
+"#;
+
+        let config: Config = toml::from_str(raw).unwrap();
+
+        assert_eq!(config.limits.max_tokens_per_run, 0);
+        assert_eq!(config.limits.max_estimated_cost_usd, 0.0);
     }
 }
