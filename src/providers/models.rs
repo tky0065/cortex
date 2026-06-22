@@ -713,4 +713,37 @@ mod tests {
     fn unknown_provider_returns_empty_fallback() {
         assert!(static_fallback("unknown_xyz").is_empty());
     }
+
+    #[test]
+    fn normalizes_openai_namespace_through_active_openrouter() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+
+        assert_eq!(
+            normalize_model_input_for_config("openai/gpt-oss-120b:free", &config),
+            "openrouter/openai/gpt-oss-120b:free"
+        );
+    }
+
+    #[test]
+    fn canonical_openrouter_model_is_not_double_prefixed() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+
+        assert_eq!(
+            normalize_model_input_for_config("openrouter/openai/gpt-oss-120b:free", &config),
+            "openrouter/openai/gpt-oss-120b:free"
+        );
+    }
+
+    #[test]
+    fn normalized_openrouter_openai_model_resolves_to_openrouter_backend() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+        let normalized = normalize_model_input_for_config("openai/gpt-oss-120b:free", &config);
+        let resolved = resolve_model_for_config(&normalized, &config).unwrap();
+
+        assert_eq!(resolved.provider, "openrouter");
+        assert_eq!(resolved.model, "openai/gpt-oss-120b:free");
+    }
 }
