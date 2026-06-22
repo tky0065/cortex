@@ -256,6 +256,7 @@ max_skill_context_chars = 12000
           </tbody>
         </table>
         <p>Gemma models served through the Gemini API, such as <code>gemini/gemma-3-12b-it</code>, do not accept developer/system instructions. Cortex keeps them usable by inlining its instructions into the user prompt while leaving native <code>gemini-*</code> models on the standard system-instruction path.</p>
+        <p>OpenRouter is special when it is the active provider: vendor namespaces like <code>openai/</code>, <code>anthropic/</code>, and <code>google/</code> route through OpenRouter and are stored with an <code>openrouter/</code> prefix. For example, with <code>/provider openrouter</code>, <code>/model all openai/gpt-oss-120b:free</code> becomes <code>openrouter/openai/gpt-oss-120b:free</code> and uses <code>OPENROUTER_API_KEY</code>. Old <code>openai/...</code> config values still resolve while OpenRouter is active; switch the provider to <code>openai</code> first for the direct OpenAI API.</p>
         <p>If no prefix is given, <code>ollama</code> is assumed. You can mix providers per role:</p>
         <pre><code>{`[models]
 ceo       = "openrouter/anthropic/claude-3-opus"
@@ -625,13 +626,14 @@ A three-step design sprint workflow.`}</code></pre>
       <section id="providers-ref" className="docs-section">
         <h2>Providers</h2>
         <p>The <code>providers::complete(model_str, preamble, prompt)</code> function parses the prefix of the model string and selects the correct rig client:</p>
-        <pre><code>{`"ollama/qwen2.5-coder:32b"   → rig_ollama::Client      (no API key)
-"openai_chatgpt/gpt-5.5"      → ChatGPT Codex stream   (OAuth via /connect)
-"gemini/gemma-3-12b-it"       → Gemini with inline instruction fallback
-"amazon_bedrock/<model-id>"   → AWS Bedrock Runtime    (AWS credential chain)
-"openrouter/gpt-4o"           → rig_openrouter::Client  (OPENROUTER_API_KEY)
-"groq/llama3-70b-8192"        → groq::Client            (GROQ_API_KEY)
+        <pre><code>{`"ollama/qwen2.5-coder:32b"         → rig_ollama::Client      (no API key)
+"openai_chatgpt/gpt-5.5"          → ChatGPT Codex stream   (OAuth via /connect)
+"gemini/gemma-3-12b-it"           → Gemini with inline instruction fallback
+"amazon_bedrock/<model-id>"       → AWS Bedrock Runtime    (AWS credential chain)
+"openrouter/openai/gpt-oss-120b:free" → rig_openrouter::Client  (OPENROUTER_API_KEY)
+"groq/llama3-70b-8192"            → groq::Client            (GROQ_API_KEY)
 "together/mistralai/Mixtral"  → together::Client        (TOGETHER_API_KEY)`}</code></pre>
+        <p>While <code>openrouter</code> is active, vendor namespaces like <code>openai/...</code> can also route through OpenRouter; switch the provider to <code>openai</code> first if you need the direct OpenAI API.</p>
         <h3>Role → model fallbacks</h3>
         <p>Roles without a dedicated config key fall back to a related one:</p>
         <table>

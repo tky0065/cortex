@@ -35,6 +35,14 @@ Check the README for the exact commands supported by the current release.
 
 For small local models, start with narrow prompts and expect more manual review.
 
+## OpenRouter Namespace Routing
+
+OpenRouter is the one provider that can reinterpret vendor namespaces when it is the active provider. If the active provider is `openrouter`, model strings under the vendor namespaces `openai/`, `anthropic/`, and `google/` are routed through OpenRouter and stored canonically with an `openrouter/` prefix.
+
+Manual entry should follow the canonical storage form. For example, with `/provider openrouter`, `/model all openai/gpt-oss-120b:free` is normalized to `openrouter/openai/gpt-oss-120b:free` and uses `OPENROUTER_API_KEY`.
+
+Legacy config values such as `openai/...` are still resolved through OpenRouter while `openrouter` remains active, so older configs keep working. If you need the first-party OpenAI API instead, switch the provider to `openai` before changing the model.
+
 ## Cost, Quota, And Latency
 
 Cortex can call multiple agents during one run. A single workflow may include planning, generation, review, retries, web search context, and final reporting.

@@ -276,6 +276,8 @@ If no prefix is given, `ollama` is assumed.
 
 Gemma models served through the Gemini API, such as `gemini/gemma-3-12b-it`, do not accept developer/system instructions. Cortex keeps them usable by inlining its instructions into the user prompt while leaving native `gemini-*` models on the standard system-instruction path.
 
+OpenRouter is a special case when it is the active provider: vendor namespaces such as `openai/`, `anthropic/`, and `google/` are routed through OpenRouter and stored canonically with an `openrouter/` prefix. For example, with `/provider openrouter`, `/model all openai/gpt-oss-120b:free` is saved as `openrouter/openai/gpt-oss-120b:free` and uses `OPENROUTER_API_KEY`. Older config values like `openai/...` remain valid while OpenRouter is active. If you want the direct OpenAI API, switch the provider to `openai` first, then change the model.
+
 **Example — mix providers per role:**
 
 ```toml
@@ -769,10 +771,12 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 "openai_chatgpt/gpt-5.5"     → ChatGPT Codex Responses stream (OAuth via /connect)
 "gemini/gemma-3-12b-it"      → Gemini client with inline instructions fallback
 "amazon_bedrock/<model-id>"  → AWS Bedrock Runtime (AWS credential chain)
-"openrouter/gpt-4o"          → rig_openrouter::Client (OPENROUTER_API_KEY)
+"openrouter/openai/gpt-oss-120b:free" → rig_openrouter::Client (OPENROUTER_API_KEY)
 "groq/llama3-70b-8192"       → groq::Client (GROQ_API_KEY)
 "together/mistralai/Mixtral" → together::Client (TOGETHER_API_KEY)
 ```
+
+When `openrouter` is active, vendor namespaces like `openai/...` can also route through OpenRouter; switch the provider to `openai` first if you want the direct OpenAI API instead.
 
 ---
 
