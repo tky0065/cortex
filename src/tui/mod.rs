@@ -171,7 +171,7 @@ struct CockpitData {
 #[derive(Debug)]
 enum AppView {
     Running,
-    ShowingSummary(CockpitData),
+    ShowingSummary(Box<CockpitData>),
 }
 
 // ---------------------------------------------------------------------------
@@ -665,14 +665,14 @@ impl App {
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .and_then(|s| serde_json::from_str::<crate::run_report::RunReport>(&s).ok());
                 let duration_secs = self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-                self.view = AppView::ShowingSummary(CockpitData {
+                self.view = AppView::ShowingSummary(Box::new(CockpitData {
                     output_dir: output_dir.clone(),
                     files: files.clone(),
                     git_hash: git_hash.clone(),
                     active_tab: CockpitTabDisplay::Summary,
                     duration_secs,
                     report,
-                });
+                }));
             }
             TuiEvent::LauncherRefresh => {
                 self.launcher = LauncherData::load();
@@ -4256,14 +4256,14 @@ mod tests {
     async fn cockpit_tab_forward_with_tab() {
         let mut app = test_app();
         let (tx, _rx) = channel();
-        app.view = AppView::ShowingSummary(CockpitData {
+        app.view = AppView::ShowingSummary(Box::new(CockpitData {
             output_dir: "/tmp".to_string(),
             files: vec![],
             git_hash: None,
             active_tab: CockpitTabDisplay::Summary,
             duration_secs: 0,
             report: None,
-        });
+        }));
 
         Tui::handle_input(&mut app, &key(KeyCode::Tab), &tx).await;
         let AppView::ShowingSummary(ref data) = app.view else {
@@ -4276,14 +4276,14 @@ mod tests {
     async fn cockpit_tab_backward_with_backtab() {
         let mut app = test_app();
         let (tx, _rx) = channel();
-        app.view = AppView::ShowingSummary(CockpitData {
+        app.view = AppView::ShowingSummary(Box::new(CockpitData {
             output_dir: "/tmp".to_string(),
             files: vec![],
             git_hash: None,
             active_tab: CockpitTabDisplay::Timeline,
             duration_secs: 0,
             report: None,
-        });
+        }));
 
         Tui::handle_input(&mut app, &key(KeyCode::BackTab), &tx).await;
         let AppView::ShowingSummary(ref data) = app.view else {
@@ -4296,14 +4296,14 @@ mod tests {
     async fn cockpit_jumps_to_tab_with_number_keys() {
         let mut app = test_app();
         let (tx, _rx) = channel();
-        app.view = AppView::ShowingSummary(CockpitData {
+        app.view = AppView::ShowingSummary(Box::new(CockpitData {
             output_dir: "/tmp".to_string(),
             files: vec![],
             git_hash: None,
             active_tab: CockpitTabDisplay::Summary,
             duration_secs: 0,
             report: None,
-        });
+        }));
 
         Tui::handle_input(&mut app, &key(KeyCode::Char('3')), &tx).await;
         let AppView::ShowingSummary(ref data) = app.view else {
@@ -4316,14 +4316,14 @@ mod tests {
     async fn cockpit_exits_with_q() {
         let mut app = test_app();
         let (tx, _rx) = channel();
-        app.view = AppView::ShowingSummary(CockpitData {
+        app.view = AppView::ShowingSummary(Box::new(CockpitData {
             output_dir: "/tmp".to_string(),
             files: vec![],
             git_hash: None,
             active_tab: CockpitTabDisplay::Summary,
             duration_secs: 0,
             report: None,
-        });
+        }));
 
         Tui::handle_input(&mut app, &key(KeyCode::Char('q')), &tx).await;
         assert!(matches!(app.view, AppView::Running));
@@ -4333,14 +4333,14 @@ mod tests {
     async fn cockpit_exits_with_escape() {
         let mut app = test_app();
         let (tx, _rx) = channel();
-        app.view = AppView::ShowingSummary(CockpitData {
+        app.view = AppView::ShowingSummary(Box::new(CockpitData {
             output_dir: "/tmp".to_string(),
             files: vec![],
             git_hash: None,
             active_tab: CockpitTabDisplay::Summary,
             duration_secs: 0,
             report: None,
-        });
+        }));
 
         Tui::handle_input(&mut app, &key(KeyCode::Esc), &tx).await;
         assert!(matches!(app.view, AppView::Running));
