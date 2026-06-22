@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
             model,
             provider,
         }) => {
-            let config = apply_overrides(config, model, provider);
+            let config = apply_overrides(config, model, provider)?;
             let wf = workflows::get_workflow(&workflow)?;
             let orch = Orchestrator::new(wf, Arc::new(config));
             orch.run_with_opts(idea, auto, verbose, None).await?;
@@ -196,7 +196,7 @@ async fn main() -> Result<()> {
             model,
             provider,
         }) => {
-            let config = apply_overrides(config, model, provider);
+            let config = apply_overrides(config, model, provider)?;
             let wf = workflows::get_workflow(&workflow)?;
             let orch = Orchestrator::new(wf, Arc::new(config));
             orch.run_with_opts(prompt, false, verbose, None).await?;
@@ -390,13 +390,36 @@ async fn handle_skill_cli(command: SkillCommands) -> Result<Vec<String>> {
 }
 
 /// Apply one-shot `--model` / `--provider` overrides without persisting to disk.
-fn apply_overrides(mut config: Config, model: Option<String>, provider: Option<String>) -> Config {
-    if let Some(m) = model {
-        // `--model` sets all roles to the given model string
-        let _ = config.set_model("all", m);
-    }
+fn apply_overrides(
+    mut config: Config,
+    model: Option<String>,
+    provider: Option<String>,
+) -> Result<Config> {
     if let Some(p) = provider {
         config.set_provider(p);
+        providers::models::resolve_model_for_config("", &config)?;
     }
-    config
+    if let Some(m) = model {
+        // `--model` sets all roles to the canonical model string.
+        let canonical = providers::models::normalize_model_input_for_config(&m, &config)?;
+        config.set_model("all", canonical)?;
+    }
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_overrides_rejects_unknown_provider() {
+        let error = apply_overrides(
+            Config::default(),
+            None,
+            Some("unknown-provider".to_string()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "Unknown provider 'unknown-provider'");
+    }
 }

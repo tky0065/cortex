@@ -427,7 +427,7 @@ impl App {
         }
     }
 
-    fn on_orchestrator_event(&mut self, event: TuiEvent) {
+    fn on_orchestrator_event(&mut self, event: TuiEvent, tx: &TuiSender) {
         match &event {
             TuiEvent::TasksUpdated { tasks } => {
                 self.tasks = tasks.clone();
@@ -674,11 +674,19 @@ impl App {
                                 crate::providers::models::model_prefix(&cfg.models.ceo)
                                     .is_none_or(|p| p != provider);
                             if still_on_old_provider {
-                                let qualified = crate::providers::models::qualify_model_string(
-                                    first, &provider,
-                                );
-                                let _ = cfg.set_model("all", qualified);
-                                let _ = cfg.save();
+                                let result = crate::providers::models::qualify_model_for_config(
+                                    first, &provider, &cfg,
+                                )
+                                .and_then(|qualified| cfg.set_model("all", qualified))
+                                .and_then(|()| cfg.save());
+                                if let Err(e) = result {
+                                    let _ = tx.send(TuiEvent::Error {
+                                        agent: "models".to_string(),
+                                        message: format!(
+                                            "failed to apply loaded model for {provider}: {e}"
+                                        ),
+                                    });
+                                }
                             }
                         }
                     }
@@ -1141,7 +1149,7 @@ impl Tui {
                     }
                 }
                 Some(ev) = event_rx.recv() => {
-                    app.on_orchestrator_event(ev);
+                    app.on_orchestrator_event(ev, &tx);
                 }
                 _ = tick.tick() => {
                     app.tick_count += 1;
@@ -1893,10 +1901,16 @@ impl Tui {
                                             match store.save() {
                                                 Ok(()) => {
                                                     let mut cfg = config.write().await;
-                                                    sync_models_for_provider(
+                                                    if let Err(e) = sync_models_for_provider(
                                                         &mut cfg,
                                                         "openai_chatgpt",
-                                                    );
+                                                    ) {
+                                                        let _ = tx2.send(TuiEvent::Error {
+                                                            agent: "provider".to_string(),
+                                                            message: e.to_string(),
+                                                        });
+                                                        return;
+                                                    }
                                                     cfg.set_provider("openai_chatgpt".to_string());
                                                     let _ = cfg.save();
                                                     drop(cfg);
@@ -1951,9 +1965,15 @@ impl Tui {
                                                 Ok(()) => {
                                                     {
                                                         let mut cfg = config.write().await;
-                                                        sync_models_for_provider(
+                                                        if let Err(e) = sync_models_for_provider(
                                                             &mut cfg, &provider,
-                                                        );
+                                                        ) {
+                                                            let _ = tx2.send(TuiEvent::Error {
+                                                                agent: "provider".to_string(),
+                                                                message: e.to_string(),
+                                                            });
+                                                            return;
+                                                        }
                                                         cfg.set_provider(provider.clone());
                                                         let _ = cfg.save();
                                                     }
@@ -2048,7 +2068,13 @@ impl Tui {
 
                 if api_key.is_empty() {
                     // Blank = keep existing key, just switch the provider
-                    sync_models_for_provider(&mut cfg, &provider);
+                    if let Err(e) = sync_models_for_provider(&mut cfg, &provider) {
+                        let _ = tx.send(TuiEvent::Error {
+                            agent: "provider".to_string(),
+                            message: e.to_string(),
+                        });
+                        return false;
+                    }
                     cfg.set_provider(provider.clone());
                     cfg.apply_api_keys_to_env();
                     let _ = cfg.save();
@@ -2062,7 +2088,13 @@ impl Tui {
                     match cfg.set_api_key(&provider, api_key.clone()) {
                         Ok(()) => {
                             cfg.apply_api_keys_to_env();
-                            sync_models_for_provider(&mut cfg, &provider);
+                            if let Err(e) = sync_models_for_provider(&mut cfg, &provider) {
+                                let _ = tx.send(TuiEvent::Error {
+                                    agent: "provider".to_string(),
+                                    message: e.to_string(),
+                                });
+                                return false;
+                            }
                             cfg.set_provider(provider.clone());
                             match cfg.save() {
                                 Ok(()) => {
@@ -2095,7 +2127,15 @@ impl Tui {
                                     store.save()
                                 }) {
                                     Ok(()) => {
-                                        sync_models_for_provider(&mut cfg, &provider);
+                                        if let Err(e) =
+                                            sync_models_for_provider(&mut cfg, &provider)
+                                        {
+                                            let _ = tx.send(TuiEvent::Error {
+                                                agent: "provider".to_string(),
+                                                message: e.to_string(),
+                                            });
+                                            return false;
+                                        }
                                         cfg.set_provider(provider.clone());
                                         let _ = cfg.save();
                                         let _ = tx.send(TuiEvent::TokenChunk {
@@ -2224,7 +2264,13 @@ impl Tui {
         let provider = crate::providers::registry::normalize_provider(&provider).to_string();
         let (new_provider, new_model) = {
             let mut cfg = app.config.write().await;
-            sync_models_for_provider(&mut cfg, &provider);
+            if let Err(e) = sync_models_for_provider(&mut cfg, &provider) {
+                let _ = tx.send(TuiEvent::Error {
+                    agent: "provider".to_string(),
+                    message: e.to_string(),
+                });
+                return;
+            }
             cfg.set_provider(provider.clone());
             let p = cfg.provider.default.clone();
             let m = cfg.models.assistant.clone();
@@ -2535,22 +2581,22 @@ impl Tui {
                         .and_then(|ml| ml.selected_id())
                         .unwrap_or_default();
                     if !raw_model.is_empty() {
-                        // Qualify with provider prefix so parse_model() routes correctly.
-                        // OpenRouter model IDs (e.g. "qwen/qwen3-coder:free") contain "/"
-                        // which would otherwise be misread as an unknown provider prefix.
-                        let provider = app
-                            .config
-                            .try_read()
-                            .map(|c| {
-                                crate::providers::registry::normalize_provider(&c.provider.default)
-                                    .to_string()
-                            })
-                            .unwrap_or_else(|_| "ollama".to_string());
-                        let model_str = qualify_model_string(&raw_model, &provider);
                         app.popup = PopupState::None;
                         let (new_provider, new_model) = {
                             let mut cfg = app.config.write().await;
                             let p = cfg.provider.default.clone();
+                            let model_str = match crate::providers::models::qualify_model_for_config(
+                                &raw_model, &p, &cfg,
+                            ) {
+                                Ok(model) => model,
+                                Err(e) => {
+                                    let _ = tx.send(TuiEvent::Error {
+                                        agent: "model".to_string(),
+                                        message: e.to_string(),
+                                    });
+                                    return false;
+                                }
+                            };
                             let saved_model = match cfg.set_model(&role, model_str.clone()) {
                                 Ok(()) => match cfg.save() {
                                     Ok(()) => {
@@ -3248,12 +3294,8 @@ fn skill_scope_label(scope: crate::skills::SkillScope) -> &'static str {
 // Provider-prefix helpers
 // ---------------------------------------------------------------------------
 
-fn sync_models_for_provider(config: &mut Config, provider: &str) {
-    crate::providers::models::apply_provider_defaults(config, provider);
-}
-
-fn qualify_model_string(model: &str, provider: &str) -> String {
-    crate::providers::models::qualify_model_string(model, provider)
+fn sync_models_for_provider(config: &mut Config, provider: &str) -> anyhow::Result<()> {
+    crate::providers::models::apply_provider_defaults(config, provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -3765,39 +3807,8 @@ fn draw_interrupt_menu(frame: &mut Frame, message: &str, has_resume: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{qualify_model_string, sync_models_for_provider};
+    use super::sync_models_for_provider;
     use crate::config::Config;
-
-    #[test]
-    fn qualify_model_string_preserves_current_provider_prefix() {
-        assert_eq!(
-            qualify_model_string("chatgpt/gpt-5.3-codex", "openai_chatgpt"),
-            "openai_chatgpt/gpt-5.3-codex"
-        );
-    }
-
-    #[test]
-    fn qualify_model_string_prefixes_aggregator_model_ids() {
-        assert_eq!(
-            qualify_model_string("google/gemini-2.5-pro", "openrouter"),
-            "openrouter/google/gemini-2.5-pro"
-        );
-        assert_eq!(
-            qualify_model_string("openai/gpt-4.1", "vercel_ai_gateway"),
-            "vercel_ai_gateway/openai/gpt-4.1"
-        );
-    }
-
-    #[test]
-    fn qualify_model_string_prefixes_slashy_native_model_ids() {
-        assert_eq!(
-            qualify_model_string(
-                "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
-                "fireworks"
-            ),
-            "fireworks/accounts/fireworks/models/qwen3-coder-480b-a35b-instruct"
-        );
-    }
 
     #[test]
     fn sync_models_for_provider_rewrites_uniform_models() {
@@ -3810,7 +3821,7 @@ mod tests {
         config.models.qa = "lmstudio/qwen2.5-coder:32b".to_string();
         config.models.devops = "lmstudio/qwen2.5-coder:32b".to_string();
 
-        sync_models_for_provider(&mut config, "openai_chatgpt");
+        sync_models_for_provider(&mut config, "openai_chatgpt").unwrap();
 
         assert!(config.models.assistant.starts_with("openai_chatgpt/"));
         assert!(config.models.developer.starts_with("openai_chatgpt/"));
@@ -3823,7 +3834,7 @@ mod tests {
         config.models.developer = "github_copilot/gpt-4.1".to_string();
         config.models.assistant = "lmstudio/qwen2.5-coder:32b".to_string();
 
-        sync_models_for_provider(&mut config, "openai_chatgpt");
+        sync_models_for_provider(&mut config, "openai_chatgpt").unwrap();
 
         assert!(config.models.ceo.starts_with("openai_chatgpt/"));
         assert!(config.models.developer.starts_with("openai_chatgpt/"));

@@ -46,15 +46,6 @@ pub fn model_for_role<'a>(role: &str, config: &'a Config) -> Result<&'a str> {
     }
 }
 
-/// Parses a model string like `"ollama/qwen2.5-coder:32b"` into `("ollama", "qwen2.5-coder:32b")`.
-fn parse_model(model_str: &str) -> (&str, &str) {
-    if let Some((provider, model)) = model_str.split_once('/') {
-        (registry::normalize_provider(provider), model)
-    } else {
-        ("", model_str)
-    }
-}
-
 fn configured_or_env_key(config: &Config, provider: &str) -> Result<String> {
     let provider = registry::normalize_provider(provider);
     if let Ok(store) = AuthStore::load()
@@ -128,6 +119,10 @@ fn unsupported_direct_provider(provider: &str) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+fn unsupported_model_provider_message(provider: &str) -> String {
+    format!("Model provider '{provider}' is unsupported")
 }
 
 /// Wraps an LM Studio error and appends actionable guidance when it's a connection failure.
@@ -685,12 +680,9 @@ async fn complete_inner(
     let enriched_preamble = preamble.to_string();
     let enriched_prompt = prompt.to_string();
 
-    let (provider, model) = parse_model(model_str);
-    let provider = if provider.is_empty() {
-        registry::normalize_provider(&options.config.provider.default)
-    } else {
-        provider
-    };
+    let resolved = models::resolve_model_for_config(model_str, &options.config)?;
+    let provider = resolved.provider.as_str();
+    let model = resolved.model.as_str();
 
     match provider {
         "openai" => {
@@ -791,19 +783,25 @@ async fn complete_inner(
             consume_stream(stream, options, agent_name).await
         }
         "openrouter" => {
-            let client = openrouter::client()?;
+            let key = configured_or_env_key(&options.config, provider)?;
+            let client = rig::providers::openrouter::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("OpenRouter client init failed: {e}"))?;
             let agent = client.agent(model).preamble(&enriched_preamble).build();
             let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
         "groq" => {
-            let client = groq::client()?;
+            let key = configured_or_env_key(&options.config, provider)?;
+            let client = rig::providers::groq::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Groq client init failed: {e}"))?;
             let agent = client.agent(model).preamble(&enriched_preamble).build();
             let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
         "together" => {
-            let client = together::client()?;
+            let key = configured_or_env_key(&options.config, provider)?;
+            let client = rig::providers::together::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Together AI client init failed: {e}"))?;
             let agent = client.agent(model).preamble(&enriched_preamble).build();
             let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
@@ -883,12 +881,13 @@ async fn complete_inner(
             let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
-        _ => {
+        "ollama" => {
             let client = ollama::client()?;
             let agent = client.agent(model).preamble(&enriched_preamble).build();
             let stream = agent.stream_prompt(&enriched_prompt).await;
             consume_stream(stream, options, agent_name).await
         }
+        unsupported => bail!("{}", unsupported_model_provider_message(unsupported)),
     }
 }
 
@@ -994,21 +993,17 @@ pub async fn complete_chat(
     history: Vec<Message>,
     prompt: &str,
 ) -> Result<String> {
-    let (provider, model) = parse_model(model_str);
-    let default_provider;
-    let provider = if provider.is_empty() {
-        default_provider = Config::load()
-            .map(|c| registry::normalize_provider(&c.provider.default).to_string())
-            .unwrap_or_else(|_| "ollama".to_string());
-        default_provider.as_str()
-    } else {
-        provider
-    };
+    let config = Config::load()?;
+    let resolved = models::resolve_model_for_config(model_str, &config)?;
+    let provider = resolved.provider.as_str();
+    let model = resolved.model.as_str();
     let user_msg = Message::user(prompt);
 
     match provider {
         "openrouter" => {
-            let client = openrouter::client()?;
+            let key = configured_or_env_key(&config, provider)?;
+            let client = rig::providers::openrouter::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("OpenRouter client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
             agent
                 .chat(user_msg, history)
@@ -1016,7 +1011,9 @@ pub async fn complete_chat(
                 .map_err(|e| anyhow::anyhow!("OpenRouter chat error: {e}"))
         }
         "groq" => {
-            let client = groq::client()?;
+            let key = configured_or_env_key(&config, provider)?;
+            let client = rig::providers::groq::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Groq client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
             agent
                 .chat(user_msg, history)
@@ -1024,7 +1021,9 @@ pub async fn complete_chat(
                 .map_err(|e| anyhow::anyhow!("Groq chat error: {e}"))
         }
         "together" => {
-            let client = together::client()?;
+            let key = configured_or_env_key(&config, provider)?;
+            let client = rig::providers::together::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Together AI client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
             agent
                 .chat(user_msg, history)
@@ -1032,7 +1031,7 @@ pub async fn complete_chat(
                 .map_err(|e| anyhow::anyhow!("Together chat error: {e}"))
         }
         "gemini" => {
-            let key = configured_or_env_key(&Config::load()?, provider)?;
+            let key = configured_or_env_key(&config, provider)?;
             let client = rig::providers::gemini::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Gemini client init failed: {e}"))?;
             if gemini_supports_system_instruction(model) {
@@ -1067,7 +1066,6 @@ pub async fn complete_chat(
             bedrock::complete(model, preamble, &turns).await
         }
         "openai" => {
-            let config = Config::load()?;
             let key = configured_or_env_key(&config, provider)?;
             let client = rig::providers::openai::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("OpenAI client init failed: {e}"))?
@@ -1079,7 +1077,6 @@ pub async fn complete_chat(
                 .map_err(|e| anyhow::anyhow!("OpenAI chat error: {e}"))
         }
         "anthropic" => {
-            let config = Config::load()?;
             let key = configured_or_env_key(&config, provider)?;
             let client = rig::providers::anthropic::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Anthropic client init failed: {e}"))?;
@@ -1090,7 +1087,6 @@ pub async fn complete_chat(
                 .map_err(|e| anyhow::anyhow!("Anthropic chat error: {e}"))
         }
         "mistral" => {
-            let config = Config::load()?;
             let key = configured_or_env_key(&config, provider)?;
             let client = rig::providers::mistral::Client::new(&key)
                 .map_err(|e| anyhow::anyhow!("Mistral client init failed: {e}"))?;
@@ -1118,7 +1114,6 @@ pub async fn complete_chat(
         openai_compat if openai_compatible_base_url(openai_compat).is_some() => {
             let (name, base_url) = openai_compatible_base_url(openai_compat)
                 .expect("checked openai-compatible provider");
-            let config = Config::load()?;
             let key = configured_or_env_key(&config, openai_compat)?;
             let client = rig::providers::openai::Client::builder()
                 .api_key(key)
@@ -1132,29 +1127,32 @@ pub async fn complete_chat(
                 .await
                 .map_err(|e| anyhow::anyhow!("{name} chat error: {e}"))
         }
-        custom => {
-            let config = Config::load()?;
-            if let Some(custom_provider) = config.custom_providers.get(custom) {
-                let client = rig::providers::openai::Client::builder()
-                    .api_key(custom_key(&config, custom))
-                    .base_url(&custom_provider.base_url)
-                    .build()
-                    .map_err(|e| anyhow::anyhow!("Custom provider '{custom}' init failed: {e}"))?
-                    .completions_api();
-                let agent = client.agent(model).preamble(preamble).build();
-                agent
-                    .chat(user_msg, history)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Custom provider chat error: {e}"))
-            } else {
-                let client = ollama::client()?;
-                let agent = client.agent(model).preamble(preamble).build();
-                agent
-                    .chat(user_msg, history)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
-            }
+        "ollama" => {
+            let client = ollama::client()?;
+            let agent = client.agent(model).preamble(preamble).build();
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Ollama chat error: {e}"))
         }
+        custom if config.custom_providers.contains_key(custom) => {
+            let custom_provider = config
+                .custom_providers
+                .get(custom)
+                .expect("checked contains_key");
+            let client = rig::providers::openai::Client::builder()
+                .api_key(custom_key(&config, custom))
+                .base_url(&custom_provider.base_url)
+                .build()
+                .map_err(|e| anyhow::anyhow!("Custom provider '{custom}' init failed: {e}"))?
+                .completions_api();
+            let agent = client.agent(model).preamble(preamble).build();
+            agent
+                .chat(user_msg, history)
+                .await
+                .map_err(|e| anyhow::anyhow!("Custom provider chat error: {e}"))
+        }
+        unsupported => bail!("{}", unsupported_model_provider_message(unsupported)),
     }
 }
 
@@ -1182,12 +1180,9 @@ pub async fn complete_chat_stream(
             format!("{base}{paste_context}")
         }
     };
-    let (provider, model) = parse_model(model_str);
-    let provider = if provider.is_empty() {
-        registry::normalize_provider(&config.provider.default)
-    } else {
-        provider
-    };
+    let resolved = models::resolve_model_for_config(model_str, config)?;
+    let provider = resolved.provider.as_str();
+    let model = resolved.model.as_str();
 
     match provider {
         "openai" => {
@@ -1308,7 +1303,9 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("Azure OpenAI chat stream error: {e}"))
         }
         "openrouter" => {
-            let client = openrouter::client()?;
+            let key = configured_or_env_key(config, provider)?;
+            let client = rig::providers::openrouter::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("OpenRouter client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
             let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
@@ -1316,7 +1313,9 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("OpenRouter chat stream error: {e}"))
         }
         "groq" => {
-            let client = groq::client()?;
+            let key = configured_or_env_key(config, provider)?;
+            let client = rig::providers::groq::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Groq client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
             let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
@@ -1324,7 +1323,9 @@ pub async fn complete_chat_stream(
                 .map_err(|e| anyhow::anyhow!("Groq chat stream error: {e}"))
         }
         "together" => {
-            let client = together::client()?;
+            let key = configured_or_env_key(config, provider)?;
+            let client = rig::providers::together::Client::new(&key)
+                .map_err(|e| anyhow::anyhow!("Together AI client init failed: {e}"))?;
             let agent = client.agent(model).preamble(preamble).build();
             let stream = agent.stream_chat(&prompt_with_mentions, history).await;
             consume_chat_stream(stream, tx, agent_name)
@@ -1407,7 +1408,7 @@ pub async fn complete_chat_stream(
                 .await
                 .map_err(|e| anyhow::anyhow!("Custom provider '{custom}' chat stream error: {e}"))
         }
-        _ => {
+        "ollama" => {
             let client = ollama::client()?;
             let agent = client.agent(model).preamble(preamble).build();
             let stream = agent.stream_chat(&prompt_with_mentions, history).await;
@@ -1415,6 +1416,7 @@ pub async fn complete_chat_stream(
                 .await
                 .map_err(|e| anyhow::anyhow!("Ollama chat stream error: {e}"))
         }
+        unsupported => bail!("{}", unsupported_model_provider_message(unsupported)),
     }
 }
 
@@ -1478,18 +1480,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_model_normalizes_provider_aliases() {
+    fn unsupported_builtin_provider_is_not_routed_to_ollama() {
         assert_eq!(
-            parse_model("google/gemini-2.5-pro"),
-            ("gemini", "gemini-2.5-pro")
-        );
-        assert_eq!(
-            parse_model("hf/Qwen/Qwen3-Coder"),
-            ("huggingface", "Qwen/Qwen3-Coder")
-        );
-        assert_eq!(
-            parse_model("azure/my-deployment"),
-            ("azure_openai", "my-deployment")
+            unsupported_model_provider_message("cloudflare"),
+            "Model provider 'cloudflare' is unsupported"
         );
     }
 

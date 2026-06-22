@@ -482,7 +482,23 @@ pub async fn dispatch(
                 }
 
                 let mut cfg = config.write().await;
-                let set_result = cfg.set_model(role, model_str.to_string());
+                let canonical = match crate::providers::models::normalize_model_input_for_config(
+                    model_str, &cfg,
+                ) {
+                    Ok(canonical) => canonical,
+                    Err(e) => {
+                        drop(cfg);
+                        send(
+                            tx,
+                            TuiEvent::Error {
+                                agent: "model".to_string(),
+                                message: e.to_string(),
+                            },
+                        );
+                        return Ok(false);
+                    }
+                };
+                let set_result = cfg.set_model(role, canonical.clone());
                 let (provider_snap, model_snap) =
                     (cfg.provider.default.clone(), cfg.models.assistant.clone());
                 match set_result {
@@ -502,7 +518,7 @@ pub async fn dispatch(
                                 tx,
                                 TuiEvent::TokenChunk {
                                     agent: "model".to_string(),
-                                    chunk: format!("  ✓ {} → {} (saved)", role, model_str),
+                                    chunk: format!("  ✓ {} → {} (saved)", role, canonical),
                                 },
                             );
                             send(
@@ -1645,14 +1661,19 @@ async fn set_provider_and_sync_models(
 
     let qualified_model = selected_model
         .as_deref()
-        .map(|model| crate::providers::models::qualify_model_string(model, &provider));
+        .map(|model| {
+            crate::providers::models::qualify_model_for_config(model, &provider, &config_snapshot)
+        })
+        .transpose()?;
+
+    if qualified_model.is_none() {
+        crate::providers::models::qualify_model_for_config("", &provider, &config_snapshot)?;
+    }
 
     {
         let mut cfg = config.write().await;
         if let Some(model) = &qualified_model {
             let _ = cfg.set_model("all", model.clone());
-        } else {
-            crate::providers::models::apply_provider_defaults(&mut cfg, &provider);
         }
         cfg.set_provider(provider.clone());
         cfg.save()

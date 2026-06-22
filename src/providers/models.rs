@@ -5,6 +5,12 @@ use serde::Deserialize;
 // Public API
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModel {
+    pub provider: String,
+    pub model: String,
+}
+
 /// Fetch the list of model IDs available for a given provider.
 /// Falls back to a curated static list on network error or missing API key.
 pub async fn fetch_models(provider: &str) -> Result<Vec<String>> {
@@ -178,6 +184,103 @@ pub fn qualify_model_string(model: &str, provider: &str) -> String {
     format!("{provider}/{model}")
 }
 
+fn active_provider_for_config(config: &crate::config::Config) -> Result<&str> {
+    let provider = super::registry::normalize_provider(&config.provider.default);
+    if super::registry::builtin(provider).is_some()
+        || config.custom_providers.contains_key(provider)
+    {
+        Ok(provider)
+    } else {
+        anyhow::bail!("Unknown provider '{provider}'")
+    }
+}
+
+fn explicit_provider_prefix<'a>(
+    model: &'a str,
+    config: &crate::config::Config,
+) -> Option<(&'a str, &'a str)> {
+    let (prefix, rest) = model.split_once('/')?;
+    let provider = super::registry::normalize_provider(prefix);
+    if super::registry::builtin(provider).is_some()
+        || config.custom_providers.contains_key(provider)
+    {
+        Some((provider, rest))
+    } else {
+        None
+    }
+}
+
+pub fn qualify_model_for_config(
+    model: &str,
+    provider: &str,
+    config: &crate::config::Config,
+) -> Result<String> {
+    let provider = super::registry::normalize_provider(provider);
+    if super::registry::builtin(provider).is_none()
+        && !config.custom_providers.contains_key(provider)
+    {
+        anyhow::bail!("Unknown provider '{provider}'");
+    }
+
+    if let Some((prefix, rest)) = model.split_once('/')
+        && super::registry::normalize_provider(prefix) == provider
+    {
+        return Ok(format!("{provider}/{rest}"));
+    }
+
+    Ok(format!("{provider}/{model}"))
+}
+
+pub fn normalize_model_input_for_config(
+    model: &str,
+    config: &crate::config::Config,
+) -> Result<String> {
+    let active_provider = active_provider_for_config(config)?;
+    if active_provider == "openrouter" {
+        return qualify_model_for_config(model, active_provider, config);
+    }
+    if let Some((provider, model)) = explicit_provider_prefix(model, config) {
+        return Ok(format!("{provider}/{model}"));
+    }
+    qualify_model_for_config(model, active_provider, config)
+}
+
+pub fn resolve_model_for_config(
+    model: &str,
+    config: &crate::config::Config,
+) -> Result<ResolvedModel> {
+    let active_provider = active_provider_for_config(config)?;
+    // Legacy OpenRouter configs stored native model IDs such as `openai/...`
+    // without the canonical `openrouter/` prefix. While OpenRouter is active,
+    // its namespace takes priority so upgrades keep routing those values through
+    // OpenRouter. Direct OpenAI routing requires OpenAI to be the active provider.
+    if active_provider == "openrouter" {
+        if let Some((prefix, model)) = model.split_once('/')
+            && super::registry::normalize_provider(prefix) == "openrouter"
+        {
+            return Ok(ResolvedModel {
+                provider: active_provider.to_string(),
+                model: model.to_string(),
+            });
+        }
+        return Ok(ResolvedModel {
+            provider: active_provider.to_string(),
+            model: model.to_string(),
+        });
+    }
+    if let Some((provider, model)) = explicit_provider_prefix(model, config) {
+        return Ok(ResolvedModel {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        });
+    }
+
+    Ok(ResolvedModel {
+        provider: active_provider.to_string(),
+        model: model.to_string(),
+    })
+}
+
 /// Returns the normalized provider prefix of a model string, or `None` if bare.
 pub fn model_prefix(model: &str) -> Option<&str> {
     let (prefix, _) = model.split_once('/')?;
@@ -186,13 +289,15 @@ pub fn model_prefix(model: &str) -> Option<&str> {
 
 /// Set every agent model to the latest (first) model of `provider`.
 /// Called whenever the user switches the active provider.
-pub fn apply_provider_defaults(config: &mut crate::config::Config, provider: &str) {
+pub fn apply_provider_defaults(config: &mut crate::config::Config, provider: &str) -> Result<()> {
     let provider = super::registry::normalize_provider(provider);
+    qualify_model_for_config("", provider, config)?;
     let Some(default_model) = default_model_for_config(provider, config) else {
-        return;
+        return Ok(());
     };
-    let qualified = qualify_model_string(&default_model, provider);
-    let _ = config.set_model("all", qualified);
+    let qualified = qualify_model_for_config(&default_model, provider, config)?;
+    config.set_model("all", qualified)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -720,7 +825,7 @@ mod tests {
         config.provider.default = "openrouter".to_string();
 
         assert_eq!(
-            normalize_model_input_for_config("openai/gpt-oss-120b:free", &config),
+            normalize_model_input_for_config("openai/gpt-oss-120b:free", &config).unwrap(),
             "openrouter/openai/gpt-oss-120b:free"
         );
     }
@@ -731,7 +836,8 @@ mod tests {
         config.provider.default = "openrouter".to_string();
 
         assert_eq!(
-            normalize_model_input_for_config("openrouter/openai/gpt-oss-120b:free", &config),
+            normalize_model_input_for_config("openrouter/openai/gpt-oss-120b:free", &config)
+                .unwrap(),
             "openrouter/openai/gpt-oss-120b:free"
         );
     }
@@ -740,8 +846,78 @@ mod tests {
     fn normalized_openrouter_openai_model_resolves_to_openrouter_backend() {
         let mut config = crate::config::Config::default();
         config.provider.default = "openrouter".to_string();
-        let normalized = normalize_model_input_for_config("openai/gpt-oss-120b:free", &config);
+        let normalized =
+            normalize_model_input_for_config("openai/gpt-oss-120b:free", &config).unwrap();
         let resolved = resolve_model_for_config(&normalized, &config).unwrap();
+
+        assert_eq!(resolved.provider, "openrouter");
+        assert_eq!(resolved.model, "openai/gpt-oss-120b:free");
+    }
+
+    #[test]
+    fn unknown_active_provider_is_rejected_during_normalization() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "unknown-provider".to_string();
+
+        let error = normalize_model_input_for_config("some-model", &config).unwrap_err();
+
+        assert_eq!(error.to_string(), "Unknown provider 'unknown-provider'");
+    }
+
+    #[test]
+    fn apply_provider_defaults_rejects_unknown_provider() {
+        let mut config = crate::config::Config::default();
+
+        let error = apply_provider_defaults(&mut config, "unknown-provider").unwrap_err();
+
+        assert_eq!(error.to_string(), "Unknown provider 'unknown-provider'");
+    }
+
+    #[test]
+    fn qualifies_vercel_native_openai_model_with_vercel_provider() {
+        let config = crate::config::Config::default();
+
+        assert_eq!(
+            qualify_model_for_config("openai/gpt-4.1", "vercel_ai_gateway", &config).unwrap(),
+            "vercel_ai_gateway/openai/gpt-4.1"
+        );
+    }
+
+    #[test]
+    fn qualifies_custom_native_openai_model_with_custom_provider() {
+        let mut config = crate::config::Config::default();
+        config.custom_providers.insert(
+            "custom".to_string(),
+            crate::config::CustomProviderConfig::default(),
+        );
+
+        assert_eq!(
+            qualify_model_for_config("openai/foo", "custom", &config).unwrap(),
+            "custom/openai/foo"
+        );
+    }
+
+    #[test]
+    fn provider_native_model_is_not_double_prefixed() {
+        let config = crate::config::Config::default();
+
+        assert_eq!(
+            qualify_model_for_config(
+                "vercel_ai_gateway/openai/gpt-4.1",
+                "vercel_ai_gateway",
+                &config,
+            )
+            .unwrap(),
+            "vercel_ai_gateway/openai/gpt-4.1"
+        );
+    }
+
+    #[test]
+    fn legacy_openai_namespace_resolves_through_active_openrouter() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".to_string();
+
+        let resolved = resolve_model_for_config("openai/gpt-oss-120b:free", &config).unwrap();
 
         assert_eq!(resolved.provider, "openrouter");
         assert_eq!(resolved.model, "openai/gpt-oss-120b:free");
