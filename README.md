@@ -13,6 +13,11 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 - [Budget limits and TUI smoke coverage](docs/BUDGET_AND_TUI_SMOKE.md) — token/cost budget behavior, run report fields, and terminal smoke-test coverage.
 - [Failed run report](.github/ISSUE_TEMPLATE/failed_run.md) — what to include when a run fails or produces unusable output.
 
+## What's new in 0.2.6
+
+- **Persistent chat transcript fix** — Free-form chat now emits the original prompt into the TUI transcript before streaming begins, so `AgentReplaceBuffer` updates only the current Cortex response instead of erasing earlier turns.
+- **Reliable agent-panel scrolling** — Multiple prompts can accumulate and overflow the panel as intended; use the mouse wheel over an agent panel, **Alt + Up/Down**, or **PageUp/PageDown** to review older turns.
+
 ## What's new in 0.2.3
 
 - **ESC ESC interrupt** — Press <kbd>Esc</kbd> twice within 500 ms to immediately interrupt the running workflow or chat generation without closing the application (inspired by GitHub Copilot). A contextual popup appears with:

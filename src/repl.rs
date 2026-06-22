@@ -1408,6 +1408,22 @@ fn send(tx: &TuiSender, event: TuiEvent) {
     let _ = tx.send(event);
 }
 
+fn emit_chat_turn_started(tx: &TuiSender, prompt: &str) {
+    send(
+        tx,
+        TuiEvent::AgentStarted {
+            agent: "cortex".to_string(),
+        },
+    );
+    send(
+        tx,
+        TuiEvent::AgentPrompt {
+            agent: "cortex".to_string(),
+            prompt: prompt.to_string(),
+        },
+    );
+}
+
 async fn handle_connect_command(rest: &str, tx: &TuiSender, config: Arc<RwLock<Config>>) {
     let args = rest.split_whitespace().collect::<Vec<_>>();
     if args.is_empty() {
@@ -2017,12 +2033,7 @@ async fn chat_message(
     // Snapshot history before the call (avoid holding the lock across await)
     let history_snapshot = { state.chat_history.lock().await.clone() };
 
-    send(
-        tx,
-        TuiEvent::AgentStarted {
-            agent: "cortex".to_string(),
-        },
-    );
+    emit_chat_turn_started(tx, message);
 
     // Register a cancellation token so /abort can stop the assistant.
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -2514,4 +2525,27 @@ fn handle_workflow_create(name: &str) -> anyhow::Result<std::path::PathBuf> {
     );
     std::fs::write(&path, template)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_start_emits_agent_then_original_prompt() {
+        let (tx, mut rx) = crate::tui::events::channel();
+
+        emit_chat_turn_started(&tx, "explique-moi ce projet");
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TuiEvent::AgentStarted { agent }) if agent == "cortex"
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TuiEvent::AgentPrompt { agent, prompt })
+                if agent == "cortex" && prompt == "explique-moi ce projet"
+        ));
+        assert!(rx.try_recv().is_err());
+    }
 }
