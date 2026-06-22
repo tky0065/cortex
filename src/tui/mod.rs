@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyModifiers},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers,
+        MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -211,6 +214,8 @@ struct App {
     launcher: LauncherData,
     /// Timestamp of the last ESC key press — used to detect ESC ESC double-press.
     last_esc: Option<std::time::Instant>,
+    /// Last rendered location of the agents panel, used for mouse hit testing.
+    agents_area: Rect,
 }
 
 impl App {
@@ -259,16 +264,18 @@ impl App {
             execution_mode: crate::workflows::ExecutionMode::default(),
             launcher: LauncherData::load(),
             last_esc: None,
+            agents_area: Rect::default(),
         }
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         let inner_width = frame.area().width.saturating_sub(4) as usize;
         let layout = compute(
             frame,
             self.tasks.len(),
             self.input_bar.line_count(inner_width),
         );
+        self.agents_area = layout.agents;
 
         let (provider, model) = (&self.provider_display, &self.model_display);
 
@@ -467,7 +474,7 @@ impl App {
         }
     }
 
-    fn on_orchestrator_event(&mut self, event: TuiEvent, tx: &TuiSender) {
+    fn on_orchestrator_event(&mut self, event: TuiEvent) {
         match &event {
             TuiEvent::TasksUpdated { tasks } => {
                 self.tasks = tasks.clone();
@@ -497,13 +504,21 @@ impl App {
                 self.set_pipeline_status(agent, AgentStatus::Running);
                 self.ensure_agent(agent);
                 if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
-                    if agent == "cortex" {
-                        a.new_turn();
-                    } else {
+                    if agent != "cortex" {
                         a.restart();
+                    } else {
+                        a.status = crate::tui::widgets::agent_panel::AgentRunStatus::Running;
+                        a.current_action = "Thinking…".to_string();
+                        a.progress = 0;
                     }
                 }
                 self.logs.push(LogEntry::agent(agent, "started"));
+            }
+            TuiEvent::AgentPrompt { agent, prompt } => {
+                self.ensure_agent(agent);
+                if let Some(a) = self.active_agents.iter_mut().find(|a| &a.name == agent) {
+                    a.start_turn(prompt);
+                }
             }
             TuiEvent::AgentProgress { agent, message } => {
                 if is_control_agent(agent) {
@@ -740,12 +755,9 @@ impl App {
                                 .and_then(|qualified| cfg.set_model("all", qualified))
                                 .and_then(|()| cfg.save());
                                 if let Err(e) = result {
-                                    let _ = tx.send(TuiEvent::Error {
-                                        agent: "models".to_string(),
-                                        message: format!(
-                                            "failed to apply loaded model for {provider}: {e}"
-                                        ),
-                                    });
+                                    self.logs.push(LogEntry::system(format!(
+                                        "failed to apply loaded model for {provider}: {e}"
+                                    )));
                                 }
                             }
                         }
@@ -1052,10 +1064,11 @@ impl App {
 
         // Active agents section
         for agent in &self.active_agents {
-            let content = if !agent.summary.is_empty() {
-                &agent.summary
+            let transcript = agent.transcript_text();
+            let content = if transcript.is_empty() {
+                agent.summary.as_str()
             } else {
-                &agent.stream_buffer
+                transcript.as_str()
             };
             if !content.is_empty() {
                 out.push_str(&format!("\n--- {} ---\n{}\n", agent.name, content));
@@ -1101,7 +1114,7 @@ impl Tui {
     pub fn new() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -1209,7 +1222,7 @@ impl Tui {
                     }
                 }
                 Some(ev) = event_rx.recv() => {
-                    app.on_orchestrator_event(ev, &tx);
+                    app.on_orchestrator_event(ev);
                 }
                 _ = tick.tick() => {
                     app.tick_count += 1;
@@ -1227,6 +1240,24 @@ impl Tui {
 
     /// Returns `true` when the loop should exit.
     async fn handle_input(app: &mut App, event: &Event, tx: &TuiSender) -> bool {
+        if let Event::Mouse(mouse) = event {
+            let delta = match mouse.kind {
+                MouseEventKind::ScrollUp => -3,
+                MouseEventKind::ScrollDown => 3,
+                _ => return false,
+            };
+            route_mouse_scroll(
+                &mut app.popup,
+                &mut app.active_agents,
+                app.log_filter.as_deref(),
+                app.agents_area,
+                mouse.column,
+                mouse.row,
+                delta,
+            );
+            return false;
+        }
+
         let Event::Key(key) = event else { return false };
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1407,18 +1438,12 @@ impl Tui {
                 }
                 KeyCode::Up => {
                     if key.modifiers.contains(KeyModifiers::ALT) {
-                        for agent in &mut app.active_agents {
-                            if app.log_filter.is_none()
-                                || app.log_filter.as_deref() == Some(&agent.name)
-                                || agent.name.starts_with(&format!(
-                                    "{}:",
-                                    app.log_filter.as_deref().unwrap_or_default()
-                                ))
-                            {
-                                // Always bottom-anchored: Up = increase offset = scroll toward older content
-                                agent.scroll_offset = agent.scroll_offset.saturating_add(5);
-                            }
-                        }
+                        crate::tui::widgets::agent_panel::scroll_visible_agents(
+                            &mut app.active_agents,
+                            app.log_filter.as_deref(),
+                            app.agents_area,
+                            -5,
+                        );
                     } else {
                         app.input_bar.history_up();
                     }
@@ -1426,18 +1451,12 @@ impl Tui {
                 }
                 KeyCode::Down => {
                     if key.modifiers.contains(KeyModifiers::ALT) {
-                        for agent in &mut app.active_agents {
-                            if app.log_filter.is_none()
-                                || app.log_filter.as_deref() == Some(&agent.name)
-                                || agent.name.starts_with(&format!(
-                                    "{}:",
-                                    app.log_filter.as_deref().unwrap_or_default()
-                                ))
-                            {
-                                // Down = decrease offset = scroll back toward bottom
-                                agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
-                            }
-                        }
+                        crate::tui::widgets::agent_panel::scroll_visible_agents(
+                            &mut app.active_agents,
+                            app.log_filter.as_deref(),
+                            app.agents_area,
+                            5,
+                        );
                     } else {
                         app.input_bar.history_down();
                     }
@@ -1462,31 +1481,21 @@ impl Tui {
                     return false;
                 }
                 KeyCode::PageUp => {
-                    for agent in &mut app.active_agents {
-                        if app.log_filter.is_none()
-                            || app.log_filter.as_deref() == Some(&agent.name)
-                            || agent.name.starts_with(&format!(
-                                "{}:",
-                                app.log_filter.as_deref().unwrap_or_default()
-                            ))
-                        {
-                            agent.scroll_offset = agent.scroll_offset.saturating_add(15);
-                        }
-                    }
+                    crate::tui::widgets::agent_panel::scroll_visible_agents(
+                        &mut app.active_agents,
+                        app.log_filter.as_deref(),
+                        app.agents_area,
+                        -15,
+                    );
                     return false;
                 }
                 KeyCode::PageDown => {
-                    for agent in &mut app.active_agents {
-                        if app.log_filter.is_none()
-                            || app.log_filter.as_deref() == Some(&agent.name)
-                            || agent.name.starts_with(&format!(
-                                "{}:",
-                                app.log_filter.as_deref().unwrap_or_default()
-                            ))
-                        {
-                            agent.scroll_offset = agent.scroll_offset.saturating_sub(15);
-                        }
-                    }
+                    crate::tui::widgets::agent_panel::scroll_visible_agents(
+                        &mut app.active_agents,
+                        app.log_filter.as_deref(),
+                        app.agents_area,
+                        15,
+                    );
                     return false;
                 }
                 _ => {}
@@ -1785,6 +1794,10 @@ impl Tui {
             }
             KeyCode::Up => state.move_up(),
             KeyCode::Down => state.move_down(),
+            KeyCode::PageUp => state.page_up(),
+            KeyCode::PageDown => state.page_down(),
+            KeyCode::Home => state.move_first(),
+            KeyCode::End => state.move_last(),
             KeyCode::Backspace => state.pop_search(),
             KeyCode::Enter => {
                 if let Some(id) = state.selected_id() {
@@ -1831,6 +1844,10 @@ impl Tui {
             }
             KeyCode::Up => state.move_up(),
             KeyCode::Down => state.move_down(),
+            KeyCode::PageUp => state.page_up(),
+            KeyCode::PageDown => state.page_down(),
+            KeyCode::Home => state.move_first(),
+            KeyCode::End => state.move_last(),
             KeyCode::Backspace => state.pop_search(),
             KeyCode::Enter => {
                 if let Some(provider) = state.selected_id() {
@@ -1867,6 +1884,10 @@ impl Tui {
             }
             KeyCode::Up => picker.move_up(),
             KeyCode::Down => picker.move_down(),
+            KeyCode::PageUp => picker.page_up(),
+            KeyCode::PageDown => picker.page_down(),
+            KeyCode::Home => picker.move_first(),
+            KeyCode::End => picker.move_last(),
             KeyCode::Backspace => picker.pop_search(),
             KeyCode::Enter => {
                 if let Some(method_id) = picker.selected_id() {
@@ -2459,6 +2480,10 @@ impl Tui {
             }
             KeyCode::Up => state.move_up(),
             KeyCode::Down => state.move_down(),
+            KeyCode::PageUp => state.page_up(),
+            KeyCode::PageDown => state.page_down(),
+            KeyCode::Home => state.move_first(),
+            KeyCode::End => state.move_last(),
             KeyCode::Backspace => state.pop_search(),
             KeyCode::Enter => {
                 if let Some(session_id) = state.selected_id() {
@@ -2522,6 +2547,10 @@ impl Tui {
             }
             KeyCode::Up => state.picker.move_up(),
             KeyCode::Down => state.picker.move_down(),
+            KeyCode::PageUp => state.picker.page_up(),
+            KeyCode::PageDown => state.picker.page_down(),
+            KeyCode::Home => state.picker.move_first(),
+            KeyCode::End => state.picker.move_last(),
             KeyCode::Backspace => {
                 state.picker.pop_search();
                 queue_skill_search(state, tx);
@@ -2630,6 +2659,26 @@ impl Tui {
                         ml.move_down();
                     }
                 }
+                KeyCode::PageUp => {
+                    if let Some(ml) = model_list {
+                        ml.page_up();
+                    }
+                }
+                KeyCode::PageDown => {
+                    if let Some(ml) = model_list {
+                        ml.page_down();
+                    }
+                }
+                KeyCode::Home => {
+                    if let Some(ml) = model_list {
+                        ml.move_first();
+                    }
+                }
+                KeyCode::End => {
+                    if let Some(ml) = model_list {
+                        ml.move_last();
+                    }
+                }
                 KeyCode::Backspace => {
                     if let Some(ml) = model_list {
                         ml.pop_search();
@@ -2646,22 +2695,34 @@ impl Tui {
                         .and_then(|ml| ml.selected_id())
                         .unwrap_or_default();
                     if !raw_model.is_empty() {
+                        // Qualify with the active Cortex provider before saving.
+                        // OpenRouter model IDs (e.g. "qwen/qwen3-coder:free") contain "/"
+                        // which would otherwise be misread as an unknown provider prefix.
+                        let config_snapshot =
+                            app.config.try_read().map(|c| c.clone()).unwrap_or_default();
+                        let provider = crate::providers::registry::normalize_provider(
+                            &config_snapshot.provider.default,
+                        )
+                        .to_string();
+                        let model_str = match crate::providers::models::qualify_model_for_config(
+                            &raw_model,
+                            &provider,
+                            &config_snapshot,
+                        ) {
+                            Ok(model) => model,
+                            Err(e) => {
+                                app.popup = PopupState::None;
+                                let _ = tx.send(TuiEvent::Error {
+                                    agent: "model".to_string(),
+                                    message: e.to_string(),
+                                });
+                                return false;
+                            }
+                        };
                         app.popup = PopupState::None;
                         let (new_provider, new_model) = {
                             let mut cfg = app.config.write().await;
                             let p = cfg.provider.default.clone();
-                            let model_str = match crate::providers::models::qualify_model_for_config(
-                                &raw_model, &p, &cfg,
-                            ) {
-                                Ok(model) => model,
-                                Err(e) => {
-                                    let _ = tx.send(TuiEvent::Error {
-                                        agent: "model".to_string(),
-                                        message: e.to_string(),
-                                    });
-                                    return false;
-                                }
-                            };
                             let saved_model = match cfg.set_model(&role, model_str.clone()) {
                                 Ok(()) => match cfg.save() {
                                     Ok(()) => {
@@ -2707,6 +2768,10 @@ impl Tui {
                 }
                 KeyCode::Up => picker.move_up(),
                 KeyCode::Down => picker.move_down(),
+                KeyCode::PageUp => picker.page_up(),
+                KeyCode::PageDown => picker.page_down(),
+                KeyCode::Home => picker.move_first(),
+                KeyCode::End => picker.move_last(),
                 KeyCode::Backspace => picker.pop_search(),
                 KeyCode::Enter => {
                     if let Some(role) = picker.selected_id() {
@@ -3107,9 +3172,71 @@ impl Tui {
 impl Drop for Tui {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
+}
+
+fn scroll_active_picker(popup: &mut PopupState, delta: isize) -> bool {
+    let picker = match popup {
+        PopupState::ProviderPicker(state)
+        | PopupState::ConnectProviderPicker(state)
+        | PopupState::ResumePicker(state) => Some(state),
+        PopupState::AuthMethodPicker { picker, .. } => Some(picker),
+        PopupState::SkillPicker(state) => Some(&mut state.picker),
+        PopupState::ModelPicker {
+            picker,
+            editing_role,
+            model_list,
+            ..
+        } => {
+            if editing_role.is_some() {
+                model_list.as_mut()
+            } else {
+                Some(picker)
+            }
+        }
+        _ => None,
+    };
+    if let Some(picker) = picker {
+        picker.move_by(delta);
+        true
+    } else {
+        false
+    }
+}
+
+fn route_mouse_scroll(
+    popup: &mut PopupState,
+    agents: &mut [ActiveAgent],
+    focused_agent: Option<&str>,
+    agents_area: Rect,
+    column: u16,
+    row: u16,
+    delta: isize,
+) -> bool {
+    if !matches!(popup, PopupState::None) {
+        return scroll_active_picker(popup, delta);
+    }
+    let inside_agents = column >= agents_area.x
+        && column < agents_area.right()
+        && row >= agents_area.y
+        && row < agents_area.bottom();
+    if !inside_agents {
+        return false;
+    }
+    crate::tui::widgets::agent_panel::scroll_hovered_agent(
+        agents,
+        focused_agent,
+        agents_area,
+        column,
+        row,
+        delta,
+    )
 }
 
 fn is_control_agent(agent: &str) -> bool {
@@ -3923,9 +4050,11 @@ mod tests {
     use super::{App, AppView, CockpitData, LogEntry, PopupState, Tui, sync_models_for_provider};
     use crate::config::Config;
     use crate::tui::events::channel;
+    use crate::tui::widgets::agent_panel::ActiveAgent;
     use crate::tui::widgets::cockpit::CockpitTabDisplay;
     use crate::workflows::ExecutionMode;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::layout::Rect;
     use ratatui::{Terminal, backend::TestBackend};
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -4123,7 +4252,6 @@ mod tests {
         assert!(config.models.developer.starts_with("openai_chatgpt/"));
         assert!(config.models.assistant.starts_with("openai_chatgpt/"));
     }
-
     #[tokio::test]
     async fn cockpit_tab_forward_with_tab() {
         let mut app = test_app();
@@ -4216,5 +4344,191 @@ mod tests {
 
         Tui::handle_input(&mut app, &key(KeyCode::Esc), &tx).await;
         assert!(matches!(app.view, AppView::Running));
+    }
+
+    #[test]
+    fn mouse_scroll_moves_active_model_list_without_closing_popup() {
+        use crate::tui::widgets::picker::{PickerGroup, PickerItem, PickerState};
+
+        let make_picker = || {
+            PickerState::new(
+                "Models",
+                vec![PickerGroup {
+                    title: "OpenRouter".to_string(),
+                    items: (0..20)
+                        .map(|index| PickerItem {
+                            id: index.to_string(),
+                            label: format!("model-{index}"),
+                            description: None,
+                            checked: false,
+                        })
+                        .collect(),
+                }],
+            )
+        };
+        let mut popup = super::PopupState::ModelPicker {
+            picker: make_picker(),
+            editing_role: Some("assistant".to_string()),
+            model_list: Some(make_picker()),
+            is_loading: false,
+        };
+
+        assert!(super::scroll_active_picker(&mut popup, 3));
+
+        let super::PopupState::ModelPicker {
+            model_list: Some(model_list),
+            ..
+        } = popup
+        else {
+            panic!("model picker should remain open");
+        };
+        assert_eq!(model_list.cursor, 3);
+    }
+
+    #[test]
+    fn mouse_scroll_over_agents_scrolls_agent_content() {
+        let mut popup = super::PopupState::None;
+        let mut agent = ActiveAgent::new("cortex");
+        agent.stream_buffer = (0..100)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        agent.finish();
+        let mut agents = vec![agent];
+        let agents_area = Rect::new(0, 3, 80, 20);
+
+        assert!(super::route_mouse_scroll(
+            &mut popup,
+            &mut agents,
+            None,
+            agents_area,
+            10,
+            10,
+            -3,
+        ));
+        assert!(agents[0].scroll_offset > 0);
+        assert!(!agents[0].follow_tail);
+    }
+
+    #[test]
+    fn mouse_scroll_outside_agents_does_not_scroll_agent_content() {
+        let mut popup = super::PopupState::None;
+        let mut agent = ActiveAgent::new("cortex");
+        agent.stream_buffer = "line\n".repeat(100);
+        agent.finish();
+        let mut agents = vec![agent];
+        let agents_area = Rect::new(0, 3, 80, 20);
+
+        assert!(!super::route_mouse_scroll(
+            &mut popup,
+            &mut agents,
+            None,
+            agents_area,
+            90,
+            10,
+            -3,
+        ));
+        assert_eq!(agents[0].scroll_offset, 0);
+    }
+
+    #[test]
+    fn mouse_scroll_only_moves_the_hovered_agent_panel() {
+        let mut popup = super::PopupState::None;
+        let make_agent = |name: &str| {
+            let mut agent = ActiveAgent::new(name);
+            agent.stream_buffer = "line\n".repeat(100);
+            agent.finish();
+            agent
+        };
+        let mut agents = vec![make_agent("left"), make_agent("right")];
+        let agents_area = Rect::new(0, 3, 100, 20);
+
+        assert!(super::route_mouse_scroll(
+            &mut popup,
+            &mut agents,
+            None,
+            agents_area,
+            10,
+            10,
+            -3,
+        ));
+        assert!(!agents[0].follow_tail);
+        assert!(agents[1].follow_tail);
+    }
+
+    #[test]
+    fn mouse_scroll_popup_has_priority_over_agent_panel() {
+        use crate::tui::widgets::picker::{PickerGroup, PickerItem, PickerState};
+
+        let picker = PickerState::new(
+            "Providers",
+            vec![PickerGroup {
+                title: "Available".to_string(),
+                items: (0..10)
+                    .map(|index| PickerItem {
+                        id: index.to_string(),
+                        label: format!("provider-{index}"),
+                        description: None,
+                        checked: false,
+                    })
+                    .collect(),
+            }],
+        );
+        let mut popup = super::PopupState::ProviderPicker(picker);
+        let mut agent = ActiveAgent::new("cortex");
+        agent.stream_buffer = "line\n".repeat(100);
+        agent.finish();
+        let mut agents = vec![agent];
+
+        assert!(super::route_mouse_scroll(
+            &mut popup,
+            &mut agents,
+            None,
+            Rect::new(0, 3, 80, 20),
+            10,
+            10,
+            3,
+        ));
+        assert_eq!(agents[0].scroll_offset, 0);
+        let super::PopupState::ProviderPicker(picker) = popup else {
+            panic!("provider picker should remain open");
+        };
+        assert_eq!(picker.cursor, 3);
+    }
+
+    #[test]
+    fn prompt_events_create_distinct_cortex_turns() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut app = super::App::new(Arc::new(RwLock::new(Config::default())));
+        for (prompt, response) in [("premier", "réponse un"), ("deuxième", "réponse deux")] {
+            app.on_orchestrator_event(super::TuiEvent::AgentStarted {
+                agent: "cortex".to_string(),
+            });
+            app.on_orchestrator_event(super::TuiEvent::AgentPrompt {
+                agent: "cortex".to_string(),
+                prompt: prompt.to_string(),
+            });
+            app.on_orchestrator_event(super::TuiEvent::TokenChunk {
+                agent: "cortex".to_string(),
+                chunk: "stream temporaire".to_string(),
+            });
+            app.on_orchestrator_event(super::TuiEvent::AgentReplaceBuffer {
+                agent: "cortex".to_string(),
+                content: response.to_string(),
+            });
+        }
+
+        let cortex = app
+            .active_agents
+            .iter()
+            .find(|agent| agent.name == "cortex")
+            .unwrap();
+        assert_eq!(cortex.turns.len(), 2);
+        assert_eq!(cortex.turns[0].prompt, "premier");
+        assert_eq!(cortex.turns[0].response, "réponse un");
+        assert_eq!(cortex.turns[1].prompt, "deuxième");
+        assert_eq!(cortex.turns[1].response, "réponse deux");
     }
 }

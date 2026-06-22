@@ -257,7 +257,7 @@ max_skill_context_chars = 12000
         </table>
         <p>Gemma models served through the Gemini API, such as <code>gemini/gemma-3-12b-it</code>, do not accept developer/system instructions. Cortex keeps them usable by inlining its instructions into the user prompt while leaving native <code>gemini-*</code> models on the standard system-instruction path.</p>
         <p>OpenRouter is special when it is the active provider: vendor namespaces like <code>openai/</code>, <code>anthropic/</code>, and <code>google/</code> route through OpenRouter and are stored with an <code>openrouter/</code> prefix. For example, with <code>/provider openrouter</code>, <code>/model all openai/gpt-oss-120b:free</code> becomes <code>openrouter/openai/gpt-oss-120b:free</code> and uses <code>OPENROUTER_API_KEY</code>. Old <code>openai/...</code> config values still resolve while OpenRouter is active; switch the provider to <code>openai</code> first for the direct OpenAI API.</p>
-        <p>If no prefix is given, <code>ollama</code> is assumed. You can mix providers per role:</p>
+        <p>If no prefix is given, Cortex uses the active provider. You can mix providers per role:</p>
         <pre><code>{`[models]
 ceo       = "openrouter/anthropic/claude-3-opus"
 developer = "ollama/qwen2.5-coder:32b"
@@ -329,6 +329,7 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
           <tbody>
             <tr><td><strong>Alt + ↑ / ↓</strong></td><td>Scroll active agent content (5 lines)</td></tr>
             <tr><td><strong>PageUp / PageDown</strong></td><td>Fast scroll active agent content (15 lines)</td></tr>
+            <tr><td><strong>Mouse wheel</strong></td><td>Scroll visible agent responses when the pointer is over Agents, or the active picker when one is open</td></tr>
             <tr><td><strong>↑ / ↓</strong></td><td>Cycle through command history</td></tr>
             <tr><td><strong>Shift + Tab</strong></td><td>Cycle execution mode: NORMAL → PLAN → AUTO → REVIEW</td></tr>
             <tr><td><strong>Tab</strong></td><td>Trigger command palette or autocomplete <code>/</code>, <code>@</code>, and <code>$</code> suggestions</td></tr>
@@ -656,7 +657,8 @@ A three-step design sprint workflow.`}</code></pre>
         <h3>Key components</h3>
         <p><strong>Orchestrator</strong> — holds the <code>CancellationToken</code> (for <code>/abort</code>) and the resume <code>mpsc</code> channel (for <code>/continue</code>).</p>
         <p><strong>RunOptions</strong> — threaded through every workflow and agent: <code>config</code>, <code>tx</code>, <code>project_dir</code>, <code>cancel</code>, <code>resume_tx</code>, <code>auto</code>, <code>verbose</code>.</p>
-        <p><strong>TUI event bus</strong> — all agent output flows through <code>TuiEvent</code> over <code>mpsc::UnboundedSender</code>: <code>WorkflowStarted</code>, <code>AgentStarted</code>, <code>TokenChunk</code>, <code>AgentDone</code>, <code>PhaseComplete</code>, <code>InteractivePause</code>, <code>Resume</code>, <code>Error</code>.</p>
+        <p>The Cortex agent panel preserves every user prompt and Markdown-rendered response. Scrolling upward pauses automatic tail-follow until the view returns to the bottom.</p>
+        <p><strong>TUI event bus</strong> — all agent output flows through <code>TuiEvent</code> over <code>mpsc::UnboundedSender</code>: <code>WorkflowStarted</code>, <code>AgentStarted</code>, <code>AgentPrompt</code>, <code>TokenChunk</code>, <code>AgentDone</code>, <code>PhaseComplete</code>, <code>InteractivePause</code>, <code>Resume</code>, <code>Error</code>.</p>
         <p><strong>Assistant streaming</strong> — free-form REPL messages stream visible assistant text while private tool-call XML stays hidden from the user. Project <code>AGENTS.md</code> and relevant skills are added to prompts before provider calls.</p>
         <p><strong>Provider auth</strong> — <code>/connect</code> opens a searchable provider picker generated from the provider registry, then stores OAuth/device/API credentials in <code>~/.cortex/auth.json</code>.</p>
         <p><strong>Parallel workers</strong> — the developer phase uses <code>tokio::spawn</code> + <code>Arc&lt;Semaphore&gt;</code> to run up to <code>max_parallel_workers</code> concurrently. Each worker writes its output file immediately.</p>

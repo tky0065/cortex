@@ -21,6 +21,11 @@ pub enum TuiEvent {
     AgentStarted {
         agent: String,
     },
+    /// Starts a structured assistant turn with the original user-visible prompt.
+    AgentPrompt {
+        agent: String,
+        prompt: String,
+    },
     AgentProgress {
         agent: String,
         message: String,
