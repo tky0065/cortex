@@ -15,6 +15,12 @@ pub enum AgentRunStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ConversationTurn {
+    pub prompt: String,
+    pub response: String,
+}
+
 /// Live state for a single active agent.
 #[derive(Debug, Clone)]
 pub struct ActiveAgent {
@@ -28,8 +34,12 @@ pub struct ActiveAgent {
     pub status: AgentRunStatus,
     /// Progress 0–100 (advanced by token chunks)
     pub progress: u8,
-    /// Vertical scroll offset for the content area
+    /// Absolute first visible line while manual scrolling is active.
     pub scroll_offset: usize,
+    /// Whether the panel follows newly appended content at the bottom.
+    pub follow_tail: bool,
+    /// Structured chat transcript used by the Cortex assistant.
+    pub turns: Vec<ConversationTurn>,
     /// Inline file diffs accumulated during this agent's run.
     pub diffs: Vec<FileDiff>,
     /// Tool calls emitted during this agent's run — rendered as structured labeled blocks.
@@ -46,6 +56,8 @@ impl ActiveAgent {
             status: AgentRunStatus::Running,
             progress: 0,
             scroll_offset: 0,
+            follow_tail: true,
+            turns: Vec::new(),
             diffs: Vec::new(),
             tool_calls: Vec::new(),
         }
@@ -71,21 +83,24 @@ impl ActiveAgent {
         self.stream_buffer.clear();
         self.progress = 0;
         self.scroll_offset = 0;
+        self.follow_tail = true;
+        self.turns.clear();
         self.diffs.clear();
         self.tool_calls.clear();
     }
 
-    /// Like `restart()` but keeps previous content with a visual separator so
-    /// the chat history stays visible across prompts (used for the "cortex" assistant).
-    pub fn new_turn(&mut self) {
+    pub fn start_turn(&mut self, prompt: impl Into<String>) {
         self.status = AgentRunStatus::Running;
         self.current_action = "Thinking…".to_string();
         self.summary.clear();
         self.progress = 0;
         self.scroll_offset = 0;
-        if !self.stream_buffer.is_empty() {
-            self.stream_buffer.push_str("\n\n---\n\n");
-        }
+        self.follow_tail = true;
+        self.turns.push(ConversationTurn {
+            prompt: prompt.into(),
+            response: String::new(),
+        });
+        self.trim_transcript();
     }
 
     pub fn set_summary(&mut self, summary: &str) {
@@ -103,16 +118,21 @@ impl ActiveAgent {
         {
             self.current_action = "Generating...".to_string();
         }
-        self.stream_buffer.push_str(chunk);
-        // Keep only the last 50 000 chars to prevent unbounded buffer growth.
-        const MAX_BUFFER: usize = 50_000;
-        if self.stream_buffer.len() > MAX_BUFFER {
-            let excess = self.stream_buffer.len() - MAX_BUFFER;
-            let cut = self.stream_buffer[excess..]
-                .find('\n')
-                .map(|i| excess + i + 1)
-                .unwrap_or(excess);
-            self.stream_buffer = self.stream_buffer[cut..].to_string();
+        if let Some(turn) = self.turns.last_mut() {
+            turn.response.push_str(chunk);
+            self.trim_transcript();
+        } else {
+            self.stream_buffer.push_str(chunk);
+            // Keep only the last 50 000 chars to prevent unbounded buffer growth.
+            const MAX_BUFFER: usize = 50_000;
+            if self.stream_buffer.len() > MAX_BUFFER {
+                let excess = self.stream_buffer.len() - MAX_BUFFER;
+                let cut = self.stream_buffer[excess..]
+                    .find('\n')
+                    .map(|i| excess + i + 1)
+                    .unwrap_or(excess);
+                self.stream_buffer = self.stream_buffer[cut..].to_string();
+            }
         }
         // Advance progress by a small amount per chunk (cap at 95 — finish() sets 100)
         if self.progress < 95 {
@@ -137,9 +157,39 @@ impl ActiveAgent {
         self.current_action = message.to_owned();
     }
 
-    /// Replace stream_buffer with a clean final reply (used to fix content duplication).
+    /// Replace only the current response with its clean final form.
     pub fn replace_buffer(&mut self, content: &str) {
-        self.stream_buffer = content.to_owned();
+        if let Some(turn) = self.turns.last_mut() {
+            turn.response = content.to_owned();
+            self.trim_transcript();
+        } else {
+            self.stream_buffer = content.to_owned();
+        }
+    }
+
+    pub fn transcript_text(&self) -> String {
+        if self.turns.is_empty() {
+            return self.stream_buffer.clone();
+        }
+        self.turns
+            .iter()
+            .map(|turn| format!("Vous:\n{}\n\nCortex:\n{}", turn.prompt, turn.response))
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n")
+    }
+
+    fn trim_transcript(&mut self) {
+        const MAX_TRANSCRIPT_CHARS: usize = 50_000;
+        let mut total = self
+            .turns
+            .iter()
+            .map(|turn| turn.prompt.chars().count() + turn.response.chars().count())
+            .sum::<usize>();
+        while self.turns.len() > 1 && total > MAX_TRANSCRIPT_CHARS {
+            let removed = self.turns.remove(0);
+            total = total
+                .saturating_sub(removed.prompt.chars().count() + removed.response.chars().count());
+        }
     }
 }
 
@@ -169,94 +219,178 @@ impl<'a> AgentPanelWidget<'a> {
             vertical: 1,
         });
 
-        // ── Focused Mode ─────────────────────────────────────────────────────
-        if let Some(target) = self.focused_agent {
-            // Match if agent name equals target OR starts with target (e.g. "developer" matches "developer:src/main.rs")
-            if let Some(agent) = self
-                .agents
-                .iter()
-                .find(|a| a.name == target || a.name.starts_with(&format!("{}:", target)))
-            {
-                render_agent_block(frame, agent, inner, self.tick_count);
-                return;
-            }
+        let visible_indices = visible_agent_indices(self.agents, self.focused_agent);
+        let panel_areas = visible_agent_areas(inner, visible_indices.len(), self.focused_agent);
+        for (index, panel_area) in visible_indices.into_iter().zip(panel_areas) {
+            render_agent_block(frame, &self.agents[index], panel_area, self.tick_count);
         }
+    }
+}
 
-        // ── Grid Mode ────────────────────────────────────────────────────────
-        // Select up to 6 agents to display:
-        // 1. Running or Error agents.
-        // 2. Most recently added Done agents.
-        // 3. Re-sort by original index to keep positions stable.
-        let mut enumerated_agents: Vec<(usize, &ActiveAgent)> =
-            self.agents.iter().enumerate().collect();
+/// Scrolls the agent panels currently visible in `area`.
+///
+/// A negative delta moves toward older content; a positive delta returns toward
+/// the bottom. Manual scrolling uses an absolute line index so streaming does
+/// not move the viewport underneath the user.
+pub fn scroll_visible_agents(
+    agents: &mut [ActiveAgent],
+    focused_agent: Option<&str>,
+    area: Rect,
+    delta: isize,
+) -> bool {
+    if agents.is_empty() || area.width < 3 || area.height < 3 {
+        return false;
+    }
 
-        // Sort: Running/Error first, then by index descending (newest first) for Done agents
-        enumerated_agents.sort_by(|(idx_a, a), (idx_b, b)| {
-            let a_active = a.status != AgentRunStatus::Done;
-            let b_active = b.status != AgentRunStatus::Done;
-            if a_active && !b_active {
-                std::cmp::Ordering::Less
-            } else if !a_active && b_active {
-                std::cmp::Ordering::Greater
-            } else {
-                // If both are same status type (both active or both done), newest first to pick the most recent ones if we have > 6
-                idx_b.cmp(idx_a)
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let visible_indices = visible_agent_indices(agents, focused_agent);
+    let panel_areas = visible_agent_areas(inner, visible_indices.len(), focused_agent);
+    if visible_indices.is_empty() {
+        return false;
+    }
+
+    for (index, panel_area) in visible_indices.into_iter().zip(panel_areas) {
+        scroll_agent(&mut agents[index], panel_area, delta);
+    }
+    true
+}
+
+pub fn scroll_hovered_agent(
+    agents: &mut [ActiveAgent],
+    focused_agent: Option<&str>,
+    area: Rect,
+    column: u16,
+    row: u16,
+    delta: isize,
+) -> bool {
+    if agents.is_empty() || area.width < 3 || area.height < 3 {
+        return false;
+    }
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let visible_indices = visible_agent_indices(agents, focused_agent);
+    let panel_areas = visible_agent_areas(inner, visible_indices.len(), focused_agent);
+    for (index, panel_area) in visible_indices.into_iter().zip(panel_areas) {
+        if column >= panel_area.x
+            && column < panel_area.right()
+            && row >= panel_area.y
+            && row < panel_area.bottom()
+        {
+            scroll_agent(&mut agents[index], panel_area, delta);
+            return true;
+        }
+    }
+    false
+}
+
+fn scroll_agent(agent: &mut ActiveAgent, panel_area: Rect, delta: isize) {
+    let content_area = agent_content_area(agent, panel_area);
+    let total_lines = build_agent_content_lines(agent, content_area.width as usize).len();
+    let tail_start = total_lines.saturating_sub(content_area.height as usize);
+    let current_start = if agent.follow_tail {
+        tail_start
+    } else {
+        agent.scroll_offset.min(tail_start)
+    };
+    if delta < 0 {
+        agent.scroll_offset = current_start.saturating_sub(delta.unsigned_abs());
+        agent.follow_tail = false;
+    } else {
+        let next = current_start.saturating_add(delta as usize).min(tail_start);
+        agent.scroll_offset = next;
+        agent.follow_tail = next == tail_start;
+    }
+}
+
+fn visible_agent_indices(agents: &[ActiveAgent], focused_agent: Option<&str>) -> Vec<usize> {
+    if let Some(target) = focused_agent
+        && let Some(index) = agents
+            .iter()
+            .position(|agent| agent.name == target || agent.name.starts_with(&format!("{target}:")))
+    {
+        return vec![index];
+    }
+
+    let mut indices: Vec<usize> = (0..agents.len()).collect();
+    indices.sort_by(|&idx_a, &idx_b| {
+        let a_active = agents[idx_a].status != AgentRunStatus::Done;
+        let b_active = agents[idx_b].status != AgentRunStatus::Done;
+        if a_active && !b_active {
+            std::cmp::Ordering::Less
+        } else if !a_active && b_active {
+            std::cmp::Ordering::Greater
+        } else {
+            idx_b.cmp(&idx_a)
+        }
+    });
+    indices.truncate(6);
+    indices.sort_unstable();
+    indices
+}
+
+fn visible_agent_areas(inner: Rect, count: usize, focused_agent: Option<&str>) -> Vec<Rect> {
+    if count == 0 {
+        return Vec::new();
+    }
+    if focused_agent.is_some() {
+        return vec![inner];
+    }
+
+    let max_cols = (inner.width as usize / 35).max(1);
+    let desired_cols = match count {
+        1 => 1,
+        2 => 2,
+        3 | 4 => 2,
+        _ => 3,
+    };
+    let cols = desired_cols.min(max_cols);
+    let rows = count.div_ceil(cols);
+    let row_rects = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            (0..rows)
+                .map(|_| Constraint::Ratio(1, rows as u32))
+                .collect::<Vec<_>>(),
+        )
+        .split(inner);
+
+    let mut areas = Vec::with_capacity(count);
+    for row_rect in row_rects.iter().take(rows) {
+        let col_rects = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                (0..cols)
+                    .map(|_| Constraint::Ratio(1, cols as u32))
+                    .collect::<Vec<_>>(),
+            )
+            .split(*row_rect);
+        for col_rect in col_rects.iter().take(cols) {
+            if areas.len() == count {
+                return areas;
             }
-        });
+            areas.push(*col_rect);
+        }
+    }
+    areas
+}
 
-        // Take max 6
-        enumerated_agents.truncate(6);
-
-        // Re-sort by original index so they appear in creation order on screen
-        enumerated_agents.sort_by_key(|(idx, _)| *idx);
-
-        let visible_agents: Vec<&ActiveAgent> =
-            enumerated_agents.into_iter().map(|(_, a)| a).collect();
-
-        // Divide inner area into a grid based on active agents (max 6 visible)
-        let count = visible_agents.len();
-
-        // Responsive grid: adjust columns based on available width to keep panels readable.
-        // min_col_width = 35 chars is a reasonable floor for readable agent output.
-        let min_col_width = 35;
-        let available_width = inner.width as usize;
-        let max_cols = (available_width / min_col_width).max(1);
-
-        let desired_cols = match count {
-            1 => 1,
-            2 => 2,
-            3 | 4 => 2,
-            _ => 3,
-        };
-
-        let cols = desired_cols.min(max_cols);
-        let rows = count.div_ceil(cols);
-
-        let row_constraints: Vec<Constraint> = (0..rows)
-            .map(|_| Constraint::Ratio(1, rows as u32))
-            .collect();
-        let col_constraints: Vec<Constraint> = (0..cols)
-            .map(|_| Constraint::Ratio(1, cols as u32))
-            .collect();
-
-        let row_rects = Layout::default()
+fn agent_content_area(agent: &ActiveAgent, area: Rect) -> Rect {
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    if agent.status != AgentRunStatus::Done && inner.height >= 3 {
+        Layout::default()
             .direction(Direction::Vertical)
-            .constraints(row_constraints)
-            .split(inner);
-
-        for r in 0..rows {
-            let col_rects = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(col_constraints.clone())
-                .split(row_rects[r]);
-
-            for c in 0..cols {
-                let index = r * cols + c;
-                if index < count {
-                    render_agent_block(frame, visible_agents[index], col_rects[c], self.tick_count);
-                }
-            }
-        }
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner)[0]
+    } else {
+        inner
     }
 }
 
@@ -343,10 +477,33 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
     let available_lines = content_area.height as usize;
     let panel_width = content_area.width as usize;
 
-    // Build all content lines: tool calls first, then diffs, then stream buffer.
-    // With bottom-anchored scroll this means: scroll_offset=0 shows the agent's final
-    // message at the bottom, and scrolling up reveals the file diffs and tool calls above it.
-    let mut all_lines: Vec<Line<'static>> = Vec::new();
+    let all_lines = build_agent_content_lines(agent, panel_width);
+
+    if all_lines.is_empty() {
+        frame.render_widget(Paragraph::new(vec![Line::from("")]), content_area);
+    } else {
+        let total = all_lines.len();
+        let tail_start = total.saturating_sub(available_lines);
+        let start = if agent.follow_tail {
+            tail_start
+        } else {
+            agent.scroll_offset.min(tail_start)
+        };
+        let end = (start + available_lines).min(total);
+        let visible = all_lines[start..end].to_vec();
+        frame.render_widget(Paragraph::new(visible), content_area);
+        if tail_start > 0 && area.width >= 24 {
+            let hint_area = Rect::new(area.right().saturating_sub(20), area.y, 19, 1);
+            frame.render_widget(
+                Paragraph::new("↕ wheel/PageUp").style(Style::default().fg(THEME.muted)),
+                hint_area,
+            );
+        }
+    }
+}
+
+fn build_agent_content_lines(agent: &ActiveAgent, panel_width: usize) -> Vec<Line<'static>> {
+    let mut all_lines = Vec::new();
 
     for (tool, label) in &agent.tool_calls {
         all_lines.extend(render_tool_call_line(tool, label, panel_width));
@@ -360,21 +517,48 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
         all_lines.push(Line::from(""));
     }
 
-    if !agent.stream_buffer.is_empty() {
+    if !agent.turns.is_empty() {
+        for (index, turn) in agent.turns.iter().enumerate() {
+            if index > 0 {
+                all_lines.push(Line::from(Span::styled(
+                    "────────────────────────────────",
+                    Style::default().fg(THEME.muted),
+                )));
+                all_lines.push(Line::from(""));
+            }
+            all_lines.push(Line::from(Span::styled(
+                "Vous",
+                Style::default()
+                    .fg(THEME.secondary)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            all_lines.extend(build_content_lines(&turn.prompt, panel_width.max(20)));
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(Span::styled(
+                "Cortex",
+                Style::default()
+                    .fg(THEME.primary)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            let clean_response = crate::assistant::strip_tool_calls_for_display(&turn.response);
+            all_lines.extend(build_content_lines(&clean_response, panel_width.max(20)));
+        }
+    } else if !agent.stream_buffer.is_empty() {
         let clean_buffer = crate::assistant::strip_tool_calls_for_display(&agent.stream_buffer);
         let content_lines = build_content_lines(&clean_buffer, panel_width.max(20));
         if agent.status == AgentRunStatus::Running {
-            // Gradient: dim older lines, full brightness on newest
             let total = content_lines.len();
             for (i, line) in content_lines.into_iter().enumerate() {
                 if i + 4 >= total {
                     all_lines.push(line);
                 } else {
-                    let dimmed: Vec<Span<'static>> = line
+                    let dimmed = line
                         .spans
                         .into_iter()
-                        .map(|s| Span::styled(s.content, s.style.fg(Color::Rgb(130, 140, 150))))
-                        .collect();
+                        .map(|span| {
+                            Span::styled(span.content, span.style.fg(Color::Rgb(130, 140, 150)))
+                        })
+                        .collect::<Vec<_>>();
                     all_lines.push(Line::from(dimmed));
                 }
             }
@@ -383,18 +567,7 @@ fn render_agent_block(frame: &mut Frame, agent: &ActiveAgent, area: Rect, tick_c
         }
     }
 
-    if all_lines.is_empty() {
-        frame.render_widget(Paragraph::new(vec![Line::from("")]), content_area);
-    } else {
-        // Always bottom-anchored: most recent content (including diffs) is at the bottom.
-        // scroll_offset counts lines scrolled UP from the bottom; Alt+↑/↓ adjusts it.
-        let total = all_lines.len();
-        let base_start = total.saturating_sub(available_lines);
-        let start = base_start.saturating_sub(agent.scroll_offset);
-        let end = (start + available_lines).min(total);
-        let visible = all_lines[start..end].to_vec();
-        frame.render_widget(Paragraph::new(visible), content_area);
-    }
+    all_lines
 }
 
 /// Render a tool call as a single styled line — Claude Code style:
@@ -685,81 +858,189 @@ fn build_content_lines(text: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Prose: detect block-level markdown, then word-wrap
-        if let Some(rest) = line.strip_prefix("## ") {
-            for wl in wrap_prose(rest, width.saturating_sub(3)) {
-                let spans = parse_inline_spans(
-                    &wl,
-                    Style::default()
-                        .fg(THEME.primary)
-                        .add_modifier(Modifier::BOLD),
-                );
-                lines.push(Line::from(spans));
+        // Parse block and inline markdown before visual wrapping so markers can
+        // never be split across terminal lines.
+        if let Some((level, rest)) = parse_heading(line) {
+            let mut style = Style::default()
+                .fg(THEME.primary)
+                .add_modifier(Modifier::BOLD);
+            if level == 1 {
+                style = style.add_modifier(Modifier::UNDERLINED);
             }
-        } else if let Some(rest) = line.strip_prefix("# ") {
-            for wl in wrap_prose(rest, width.saturating_sub(2)) {
-                let spans = parse_inline_spans(
-                    &wl,
-                    Style::default()
-                        .fg(THEME.primary)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                );
-                lines.push(Line::from(spans));
-            }
-        } else if let Some(rest) = line.strip_prefix("- ") {
-            let bullet_w = width.saturating_sub(2);
-            let wrapped = wrap_prose(rest, bullet_w.max(1));
-            for (idx, wl) in wrapped.into_iter().enumerate() {
-                let mut spans: Vec<Span<'static>> = if idx == 0 {
-                    vec![Span::styled("• ", Style::default().fg(THEME.primary))]
-                } else {
-                    vec![Span::raw("  ")]
-                };
-                spans.extend(parse_inline_spans(&wl, Style::default().fg(THEME.text)));
-                lines.push(Line::from(spans));
-            }
+            lines.extend(wrap_styled_spans(
+                parse_inline_spans(rest, style),
+                width.max(1),
+                None,
+            ));
+        } else if is_horizontal_rule(line) {
+            lines.push(Line::from(Span::styled(
+                "─".repeat(width.min(48)),
+                Style::default().fg(THEME.muted),
+            )));
+        } else if let Some(rest) = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .or_else(|| line.strip_prefix("+ "))
+        {
+            lines.extend(wrap_styled_spans(
+                parse_inline_spans(rest, Style::default().fg(THEME.text)),
+                width.saturating_sub(2).max(1),
+                Some((
+                    Span::styled("• ", Style::default().fg(THEME.primary)),
+                    "  ".to_string(),
+                )),
+            ));
+        } else if let Some(rest) = line.strip_prefix("> ") {
+            lines.extend(wrap_styled_spans(
+                parse_inline_spans(rest, Style::default().fg(THEME.muted)),
+                width.saturating_sub(2).max(1),
+                Some((
+                    Span::styled("▎ ", Style::default().fg(THEME.secondary)),
+                    "  ".to_string(),
+                )),
+            ));
+        } else if is_ordered_list_item(line) {
+            let (number, rest) = parse_ordered_list_item(line);
+            let prefix = format!("{number}. ");
+            let continuation = " ".repeat(prefix.chars().count());
+            lines.extend(wrap_styled_spans(
+                parse_inline_spans(rest, Style::default().fg(THEME.text)),
+                width.saturating_sub(prefix.chars().count()).max(1),
+                Some((
+                    Span::styled(prefix, Style::default().fg(THEME.primary)),
+                    continuation,
+                )),
+            ));
         } else {
-            // Normal prose — word-wrap preserving indentation
             let leading = line.len() - line.trim_start().len();
             let indent = &line[..leading];
             let content = line.trim_start();
             let wrap_w = width.saturating_sub(leading).max(1);
-            let wrapped = wrap_prose(content, wrap_w);
-            for wl in wrapped {
-                let full = format!("{}{}", indent, wl);
-                let spans = parse_inline_spans(&full, Style::default().fg(THEME.text));
-                lines.push(Line::from(spans));
-            }
+            let prefix =
+                (!indent.is_empty()).then(|| (Span::raw(indent.to_string()), indent.to_string()));
+            lines.extend(wrap_styled_spans(
+                parse_inline_spans(content, Style::default().fg(THEME.text)),
+                wrap_w,
+                prefix,
+            ));
         }
     }
 
     lines
 }
 
-/// Word-wrap a plain prose string to `width` chars, splitting at whitespace.
-/// Does NOT try to preserve leading indentation (handled by the caller).
-fn wrap_prose(text: &str, width: usize) -> Vec<String> {
-    if width == 0 || text.chars().count() <= width {
-        return vec![text.to_string()];
+fn parse_heading(line: &str) -> Option<(usize, &str)> {
+    let level = line.chars().take_while(|ch| *ch == '#').count();
+    if (1..=6).contains(&level) && line.as_bytes().get(level) == Some(&b' ') {
+        Some((level, &line[level + 1..]))
+    } else {
+        None
     }
+}
+
+fn is_horizontal_rule(line: &str) -> bool {
+    let compact = line
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    compact.len() >= 3
+        && (compact.chars().all(|ch| ch == '-')
+            || compact.chars().all(|ch| ch == '*')
+            || compact.chars().all(|ch| ch == '_'))
+}
+
+fn is_ordered_list_item(line: &str) -> bool {
+    let digit_end = line
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(line.len());
+    digit_end > 0
+        && digit_end < line.len()
+        && (line[digit_end..].starts_with(". ") || line[digit_end..].starts_with(") "))
+}
+
+fn parse_ordered_list_item(line: &str) -> (&str, &str) {
+    let digit_end = line
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(line.len());
+    (&line[..digit_end], &line[digit_end + 2..])
+}
+
+fn wrap_styled_spans(
+    spans: Vec<Span<'static>>,
+    width: usize,
+    prefix: Option<(Span<'static>, String)>,
+) -> Vec<Line<'static>> {
+    let width = width.max(1);
     let mut result = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        if line.is_empty() {
-            line.push_str(word);
-        } else if line.len() + 1 + word.len() <= width {
-            line.push(' ');
-            line.push_str(word);
-        } else {
-            result.push(line.clone());
-            line = word.to_string();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_len = 0usize;
+
+    let flush = |result: &mut Vec<Line<'static>>,
+                 current: &mut Vec<Span<'static>>,
+                 current_len: &mut usize| {
+        if !current.is_empty() {
+            result.push(Line::from(std::mem::take(current)));
+            *current_len = 0;
         }
+    };
+
+    for span in spans {
+        let style = span.style;
+        let mut word = String::new();
+        let push_word = |word: &mut String,
+                         result: &mut Vec<Line<'static>>,
+                         current: &mut Vec<Span<'static>>,
+                         current_len: &mut usize| {
+            if word.is_empty() {
+                return;
+            }
+            let word_len = word.chars().count();
+            if *current_len > 0 && *current_len + word_len > width {
+                flush(result, current, current_len);
+            }
+            if word_len <= width {
+                current.push(Span::styled(std::mem::take(word), style));
+                *current_len += word_len;
+            } else {
+                let chars = std::mem::take(word).chars().collect::<Vec<_>>();
+                for chunk in chars.chunks(width) {
+                    if *current_len > 0 {
+                        flush(result, current, current_len);
+                    }
+                    current.push(Span::styled(chunk.iter().collect::<String>(), style));
+                    *current_len = chunk.len();
+                    flush(result, current, current_len);
+                }
+            }
+        };
+
+        for ch in span.content.chars() {
+            if ch.is_whitespace() {
+                push_word(&mut word, &mut result, &mut current, &mut current_len);
+                if current_len > 0 && current_len < width {
+                    current.push(Span::styled(" ", style));
+                    current_len += 1;
+                }
+            } else {
+                word.push(ch);
+            }
+        }
+        push_word(&mut word, &mut result, &mut current, &mut current_len);
     }
-    if !line.is_empty() {
-        result.push(line);
-    }
+    flush(&mut result, &mut current, &mut current_len);
     if result.is_empty() {
-        result.push(String::new());
+        result.push(Line::from(""));
+    }
+
+    if let Some((first_prefix, continuation)) = prefix {
+        for (index, line) in result.iter_mut().enumerate() {
+            let prefix = if index == 0 {
+                first_prefix.clone()
+            } else {
+                Span::raw(continuation.clone())
+            };
+            line.spans.insert(0, prefix);
+        }
     }
     result
 }
@@ -775,52 +1056,7 @@ fn wrap_prose(text: &str, width: usize) -> Vec<String> {
 /// - plain text                   → default colour
 #[cfg(test)]
 fn render_markdown_lines(text: &str) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-
-    for raw in text.split('\n') {
-        let line = raw.trim_end();
-
-        if line.is_empty() {
-            lines.push(Line::from(""));
-            continue;
-        }
-
-        // H2 heading
-        if let Some(rest) = line.strip_prefix("## ") {
-            let spans = parse_inline_spans(
-                rest,
-                Style::default()
-                    .fg(THEME.primary)
-                    .add_modifier(Modifier::BOLD),
-            );
-            lines.push(Line::from(spans));
-            continue;
-        }
-        // H1 heading
-        if let Some(rest) = line.strip_prefix("# ") {
-            let spans = parse_inline_spans(
-                rest,
-                Style::default()
-                    .fg(THEME.primary)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            );
-            lines.push(Line::from(spans));
-            continue;
-        }
-        // Bullet point (`- ` but not `**`)
-        if let Some(rest) = line.strip_prefix("- ") {
-            let mut spans = vec![Span::styled("• ", Style::default().fg(THEME.primary))];
-            spans.extend(parse_inline_spans(rest, Style::default().fg(THEME.text)));
-            lines.push(Line::from(spans));
-            continue;
-        }
-
-        // Normal line — parse inline markers
-        let spans = parse_inline_spans(line, Style::default().fg(THEME.text));
-        lines.push(Line::from(spans));
-    }
-
-    lines
+    build_content_lines(text, 10_000)
 }
 
 /// Parse inline markdown markers (`**bold**`, `*italic*`, `【citation】`) within a
@@ -874,6 +1110,65 @@ fn parse_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
                     base_style.add_modifier(Modifier::ITALIC),
                 ));
                 i = j + 1;
+            } else {
+                buf.push(chars[i]);
+                i += 1;
+            }
+        }
+        // Inline code: `code`
+        else if chars[i] == '`' {
+            let inner_start = i + 1;
+            let mut j = inner_start;
+            while j < n && chars[j] != '`' {
+                j += 1;
+            }
+            if j < n {
+                flush!();
+                let code: String = chars[inner_start..j].iter().collect();
+                spans.push(Span::styled(
+                    code,
+                    Style::default()
+                        .fg(Color::Rgb(255, 200, 100))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                i = j + 1;
+            } else {
+                buf.push(chars[i]);
+                i += 1;
+            }
+        }
+        // Markdown links: [label](url)
+        else if chars[i] == '[' {
+            let label_start = i + 1;
+            let mut label_end = label_start;
+            while label_end < n && chars[label_end] != ']' {
+                label_end += 1;
+            }
+            if label_end + 1 < n && chars[label_end + 1] == '(' {
+                let url_start = label_end + 2;
+                let mut url_end = url_start;
+                while url_end < n && chars[url_end] != ')' {
+                    url_end += 1;
+                }
+                if url_end < n {
+                    flush!();
+                    let label: String = chars[label_start..label_end].iter().collect();
+                    let url: String = chars[url_start..url_end].iter().collect();
+                    spans.push(Span::styled(
+                        label,
+                        Style::default()
+                            .fg(THEME.secondary)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" ({url})"),
+                        Style::default().fg(THEME.muted),
+                    ));
+                    i = url_end + 1;
+                } else {
+                    buf.push(chars[i]);
+                    i += 1;
+                }
             } else {
                 buf.push(chars[i]);
                 i += 1;
@@ -1056,6 +1351,114 @@ mod tests {
     }
 
     #[test]
+    fn cortex_transcript_keeps_previous_prompt_and_response() {
+        let mut agent = ActiveAgent::new("cortex");
+        agent.start_turn("premier prompt");
+        agent.push_chunk("premiere reponse");
+        agent.replace_buffer("premiere reponse finale");
+
+        agent.start_turn("deuxieme prompt");
+        agent.push_chunk("deuxieme reponse");
+        agent.replace_buffer("deuxieme reponse finale");
+
+        assert_eq!(agent.turns.len(), 2);
+        assert_eq!(agent.turns[0].prompt, "premier prompt");
+        assert_eq!(agent.turns[0].response, "premiere reponse finale");
+        assert_eq!(agent.turns[1].prompt, "deuxieme prompt");
+        assert_eq!(agent.turns[1].response, "deuxieme reponse finale");
+    }
+
+    #[test]
+    fn replace_buffer_only_replaces_current_cortex_response() {
+        let mut agent = ActiveAgent::new("cortex");
+        agent.start_turn("un");
+        agent.replace_buffer("reponse un");
+        agent.start_turn("deux");
+        agent.push_chunk("bruit de streaming");
+
+        agent.replace_buffer("reponse deux");
+
+        assert_eq!(agent.turns[0].response, "reponse un");
+        assert_eq!(agent.turns[1].response, "reponse deux");
+    }
+
+    #[test]
+    fn transcript_limit_removes_complete_oldest_turns() {
+        let mut agent = ActiveAgent::new("cortex");
+        for index in 0..3 {
+            agent.start_turn(format!("prompt {index}"));
+            agent.replace_buffer(&format!("response-{index}-{}", "x".repeat(20_000)));
+        }
+
+        assert_eq!(agent.turns.len(), 2);
+        assert_eq!(agent.turns[0].prompt, "prompt 1");
+        assert_eq!(agent.turns[1].prompt, "prompt 2");
+        assert!(agent.turns[0].response.starts_with("response-1-"));
+    }
+
+    #[test]
+    fn markdown_is_parsed_before_wrapping() {
+        let text =
+            "### Heading\nThis contains **a bold phrase spanning several words** after text.";
+        let lines = build_content_lines(text, 18);
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(!rendered.contains("###"));
+        assert!(!rendered.contains("**"));
+        assert!(lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
+            span.style.add_modifier.contains(Modifier::BOLD) && span.content.contains("bold")
+        }));
+    }
+
+    #[test]
+    fn manual_scroll_position_stays_fixed_while_tokens_arrive() {
+        let mut agent = ActiveAgent::new("cortex");
+        agent.start_turn("prompt");
+        agent.replace_buffer(
+            &(0..60)
+                .map(|index| format!("line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        agent.finish();
+        let area = Rect::new(0, 0, 80, 20);
+        let mut agents = vec![agent];
+
+        assert!(scroll_visible_agents(&mut agents, None, area, -8));
+        let fixed_start = agents[0].scroll_offset;
+        assert!(!agents[0].follow_tail);
+
+        agents[0].push_chunk("\nnew streamed line");
+
+        assert_eq!(agents[0].scroll_offset, fixed_start);
+        assert!(!agents[0].follow_tail);
+    }
+
+    #[test]
+    fn scrolling_is_bounded_by_available_content() {
+        let mut agent = ActiveAgent::new("cortex");
+        agent.stream_buffer = (0..40)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        agent.finish();
+        let mut agents = vec![agent];
+        let area = Rect::new(0, 0, 80, 20);
+
+        assert!(scroll_visible_agents(&mut agents, None, area, -1_000));
+        assert_eq!(agents[0].scroll_offset, 0);
+        assert!(!agents[0].follow_tail);
+
+        assert!(scroll_visible_agents(&mut agents, None, area, 1_000));
+        assert!(agents[0].follow_tail);
+        assert!(agents[0].scroll_offset > 0);
+    }
+
+    #[test]
     fn word_wrap_basic() {
         let lines = word_wrap("hello world foo bar", 10);
         assert!(lines.iter().all(|l| l.len() <= 10));
@@ -1103,6 +1506,43 @@ mod tests {
                 .render(f, area);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn headless_render_keeps_two_markdown_turns_visible() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut agent = ActiveAgent::new("cortex");
+        agent.start_turn("premier prompt");
+        agent.replace_buffer("### Première réponse\n**important**");
+        agent.start_turn("deuxième prompt");
+        agent.replace_buffer("### Deuxième réponse\n- détail");
+        agent.finish();
+        let agents = vec![agent];
+
+        terminal
+            .draw(|frame| {
+                AgentPanelWidget {
+                    agents: &agents,
+                    focused_agent: None,
+                    tick_count: 0,
+                }
+                .render(frame, frame.area());
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("premier prompt"));
+        assert!(rendered.contains("Première réponse"));
+        assert!(rendered.contains("deuxième prompt"));
+        assert!(rendered.contains("Deuxième réponse"));
+        assert!(!rendered.contains("###"));
+        assert!(!rendered.contains("**"));
     }
 
     #[test]

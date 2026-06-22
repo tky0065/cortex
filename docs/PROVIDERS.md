@@ -14,6 +14,26 @@ Cortex quality depends heavily on the provider and model selected for each agent
 
 Check the README for the exact commands supported by the current release.
 
+## Provider And Model Resolution
+
+The canonical model format is
+`<cortex-provider>/<provider-native-model-id>`. Provider-native IDs may contain
+slashes. For example:
+
+```text
+openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+```
+
+Cortex only treats the first segment as an explicit provider when it matches a
+builtin provider, alias, or configured custom provider. Otherwise the complete
+value is treated as a namespaced model ID for the active `provider.default`.
+This prevents OpenRouter namespaces such as `nvidia/`, `anthropic/`, and
+`google/` from being mistaken for Cortex backends.
+
+Manual `/model` and `--model` selections are canonicalized before use. Unknown
+configured providers return an explicit error; Cortex does not silently retry
+them through Ollama.
+
 ## Local vs Remote
 
 | Choice | Benefits | Trade-offs |
@@ -82,6 +102,9 @@ When a run fails, record:
 Common symptoms:
 
 - Authentication error: reconnect with `/connect` or reset the API key with `/apikey`.
+- Ollama reports a remote model as missing: verify the model is stored with the
+  active provider, for example
+  `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`.
 - Rate limit: retry later, lower parallelism, or switch provider.
 - Weak generated output: use a stronger model or reduce project scope.
 - Unsupported model behavior: try a mainstream chat or coding model for the same provider.

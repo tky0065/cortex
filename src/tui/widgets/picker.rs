@@ -62,39 +62,72 @@ impl PickerState {
 
     /// Filtered items matching the current search string.
     pub fn filtered(&self) -> Vec<(/*group_title*/ &str, &PickerItem)> {
-        let q = self.search.to_lowercase();
-        self.groups
-            .iter()
-            .flat_map(|g| {
-                let q = q.clone();
-                g.items
-                    .iter()
-                    .filter(move |item| {
-                        q.is_empty()
-                            || item.label.to_lowercase().contains(&q)
-                            || item
-                                .description
-                                .as_deref()
-                                .map(|d| d.to_lowercase().contains(&q))
-                                .unwrap_or(false)
-                    })
-                    .map(move |item| (g.title.as_str(), item))
-            })
+        let query = normalize_search_text(&self.search);
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        let mut matches: Vec<(usize, usize, &str, &PickerItem)> = Vec::new();
+        let mut original_index = 0usize;
+        for group in &self.groups {
+            for item in &group.items {
+                let label = normalize_search_text(&item.label);
+                let description =
+                    normalize_search_text(item.description.as_deref().unwrap_or_default());
+                let searchable = format!("{label} {description}");
+                if terms.iter().all(|term| searchable.contains(term)) {
+                    let rank = if query.is_empty() || label == query {
+                        0
+                    } else if label.starts_with(&query) {
+                        1
+                    } else if terms.iter().all(|term| label.contains(term)) {
+                        2
+                    } else {
+                        3
+                    };
+                    matches.push((rank, original_index, group.title.as_str(), item));
+                }
+                original_index += 1;
+            }
+        }
+        matches.sort_by_key(|(rank, original_index, _, _)| (*rank, *original_index));
+        matches
+            .into_iter()
+            .map(|(_, _, group, item)| (group, item))
             .collect()
     }
 
     pub fn move_up(&mut self) {
-        let len = self.filtered().len();
-        if len > 0 && self.cursor > 0 {
-            self.cursor -= 1;
-        }
+        self.move_by(-1);
     }
 
     pub fn move_down(&mut self) {
+        self.move_by(1);
+    }
+
+    pub fn move_by(&mut self, delta: isize) {
         let len = self.filtered().len();
-        if len > 0 && self.cursor + 1 < len {
-            self.cursor += 1;
+        if len == 0 {
+            self.cursor = 0;
+            return;
         }
+        self.cursor = self
+            .cursor
+            .saturating_add_signed(delta)
+            .min(len.saturating_sub(1));
+    }
+
+    pub fn page_up(&mut self) {
+        self.move_by(-10);
+    }
+
+    pub fn page_down(&mut self) {
+        self.move_by(10);
+    }
+
+    pub fn move_first(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn move_last(&mut self) {
+        self.cursor = self.filtered().len().saturating_sub(1);
     }
 
     pub fn push_search(&mut self, c: char) {
@@ -159,6 +192,23 @@ impl PickerState {
     }
 }
 
+fn normalize_search_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -179,15 +229,16 @@ impl<'a> PickerWidget<'a> {
         let inner = outer_block.inner(area);
         frame.render_widget(outer_block, area);
 
-        // Split inner: title row / search bar / list
+        // Split inner: title row / search bar / metadata / list / shortcuts
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // title + esc hint
                 Constraint::Length(1), // spacer
                 Constraint::Length(1), // search
-                Constraint::Length(1), // spacer
+                Constraint::Length(1), // result count + cursor position
                 Constraint::Min(1),    // list
+                Constraint::Length(1), // shortcuts
             ])
             .split(inner);
 
@@ -212,8 +263,34 @@ impl<'a> PickerWidget<'a> {
             chunks[2],
         );
 
-        // Build list rows — grouped with section headers
         let filtered = self.state.filtered();
+        let total = self
+            .state
+            .groups
+            .iter()
+            .map(|group| group.items.len())
+            .sum::<usize>();
+        let position = if filtered.is_empty() {
+            "position 0/0".to_string()
+        } else {
+            format!(
+                "position {}/{}",
+                self.state.cursor.min(filtered.len() - 1) + 1,
+                filtered.len()
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(format!(
+                "  {} results / {} total  •  {}",
+                filtered.len(),
+                total,
+                position
+            ))
+            .style(Style::default().fg(THEME.muted)),
+            chunks[3],
+        );
+
+        // Build list rows — grouped with section headers
         let mut rows: Vec<ListItem> = Vec::new();
         let mut last_group = "";
 
@@ -295,6 +372,11 @@ impl<'a> PickerWidget<'a> {
         let list = List::new(rows).style(Style::default().bg(THEME.bg));
 
         frame.render_stateful_widget(list, chunks[4], &mut list_state);
+        frame.render_widget(
+            Paragraph::new("  ↑↓ row  PgUp/PgDn page  Home/End  wheel  Enter select  Esc back")
+                .style(Style::default().fg(THEME.muted)),
+            chunks[5],
+        );
     }
 }
 
@@ -521,6 +603,120 @@ pub fn resume_picker(sessions: &[crate::repl::SessionInfo]) -> PickerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn item(id: &str, label: &str, description: Option<&str>) -> PickerItem {
+        PickerItem {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: description.map(str::to_string),
+            checked: false,
+        }
+    }
+
+    fn state_with_items(items: Vec<PickerItem>) -> PickerState {
+        PickerState::new(
+            "Models",
+            vec![PickerGroup {
+                title: "OpenRouter".to_string(),
+                items,
+            }],
+        )
+    }
+
+    #[test]
+    fn multi_word_search_matches_case_insensitively_across_fields() {
+        let mut state = state_with_items(vec![
+            item(
+                "nemotron",
+                "nvidia/nemotron-3-ultra",
+                Some("Free reasoning model"),
+            ),
+            item("other", "openai/gpt-4o", Some("Paid general model")),
+        ]);
+
+        state.search = "NVIDIA FREE".to_string();
+
+        assert_eq!(state.filtered()[0].1.id, "nemotron");
+        assert_eq!(state.filtered().len(), 1);
+    }
+
+    #[test]
+    fn search_ranks_exact_then_prefix_then_label_then_description() {
+        let mut state = state_with_items(vec![
+            item("description", "vendor/other", Some("deepseek r1 model")),
+            item("contains", "vendor/deepseek-r1-chat", None),
+            item("prefix", "deepseek-r1-distill", None),
+            item("exact", "deepseek-r1", None),
+        ]);
+
+        state.search = "deepseek-r1".to_string();
+
+        let ids: Vec<&str> = state
+            .filtered()
+            .into_iter()
+            .map(|(_, item)| item.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["exact", "prefix", "contains", "description"]);
+    }
+
+    #[test]
+    fn navigation_supports_steps_pages_and_boundaries() {
+        let mut state = state_with_items(
+            (0..25)
+                .map(|index| item(&index.to_string(), &format!("model-{index}"), None))
+                .collect(),
+        );
+
+        state.move_by(3);
+        assert_eq!(state.cursor, 3);
+        state.page_down();
+        assert_eq!(state.cursor, 13);
+        state.move_last();
+        assert_eq!(state.cursor, 24);
+        state.move_by(3);
+        assert_eq!(state.cursor, 24);
+        state.page_up();
+        assert_eq!(state.cursor, 14);
+        state.move_first();
+        assert_eq!(state.cursor, 0);
+        state.move_by(-3);
+        assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
+    fn search_edits_reset_cursor_to_first_result() {
+        let mut state = state_with_items(vec![
+            item("one", "model-one", None),
+            item("two", "model-two", None),
+        ]);
+        state.move_last();
+
+        state.push_search('t');
+
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.selected_id().as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn rendering_keeps_last_result_visible_in_long_lists() {
+        let mut state = state_with_items(
+            (0..40)
+                .map(|index| item(&index.to_string(), &format!("model-{index}"), None))
+                .collect(),
+        );
+        state.move_last();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| PickerWidget { state: &state }.render(frame))
+            .unwrap();
+
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("model-39"));
+        assert!(!rendered.contains("model-0 "));
+    }
 
     #[test]
     fn toggle_selected_updates_checked_count() {

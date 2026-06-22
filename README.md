@@ -61,6 +61,7 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 - **Beta Release Track**: Cortex 0.1.5 keeps the project on the beta track across the CLI metadata, README, and website.
 - **Professional Progress Indicators**: Replaced the bulky green gauge with a discrete inline progress bar (`[███░░] 60%`) and an animated spinner for active agents.
 - **Scrollable Agent Panels**: View long reports directly in the TUI using **Alt + Up/Down** or **PageUp/Down**.
+- **Persistent Cortex Transcript**: The Agents panel keeps each user prompt and Markdown-rendered Cortex response. Scrolling up pauses auto-follow so streamed tokens do not move the viewport.
 - **`cortex init` / `/init`**: Scans the current project and maintains `AGENTS.md` as durable agent context.
 - **Project Context Injection**: `AGENTS.md` is automatically injected into workflow agents and assistant prompts.
 - **Expanded Provider System**: `/connect` now exposes the full provider registry, including ChatGPT Plus/Pro OAuth, GitHub Copilot device login, GitLab Duo auth, Vertex AI, Bedrock, local providers, hosted APIs, aggregators, and custom OpenAI-compatible endpoints.
@@ -246,7 +247,9 @@ OAuth and device-login credentials are stored separately in `~/.cortex/auth.json
 
 ### Model string format
 
-Every model value follows `"<provider>/<model-name>"`. Supported providers:
+The canonical stored form is `"<provider>/<provider-native-model-id>"`. Model IDs
+may themselves contain `/`; for example OpenRouter's Nemotron model is
+`openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`.
 
 | Prefix | Backend | Env var required |
 |--------|---------|------------------|
@@ -267,16 +270,28 @@ Every model value follows `"<provider>/<model-name>"`. Supported providers:
 | `gitlab_duo/` | GitLab Duo compatible accounts | `/connect gitlab_duo` |
 | `google_vertex/` | Google Vertex AI | Google ADC / `gcloud` |
 | `amazon_bedrock/` | Amazon Bedrock | AWS credential chain |
-| `openrouter/` | OpenRouter API | `OPENROUTER_API_KEY` |
-| `groq/` | Groq API | `GROQ_API_KEY` |
-| `together/` | Together AI | `TOGETHER_API_KEY` |
+| `openrouter/` | OpenRouter API | `/apikey`, `/connect`, or `OPENROUTER_API_KEY` |
+| `groq/` | Groq API | `/apikey`, `/connect`, or `GROQ_API_KEY` |
+| `together/` | Together AI | `/apikey`, `/connect`, or `TOGETHER_API_KEY` |
 | `fireworks/`, `deepinfra/`, `cerebras/`, `moonshot/`, `zai/`, `302ai/`, `alibaba/`, `cloudflare/`, `minimax/`, `nebius/`, `scaleway/`, `vercel_ai_gateway/` | Hosted or aggregator OpenAI-compatible APIs | provider-specific API key |
 
-If no prefix is given, `ollama` is assumed.
+If the first segment is not a registered Cortex provider, Cortex treats the
+whole value as a provider-native model ID and routes it through
+`provider.default`. With `default = "openrouter"`, both
+`nvidia/nemotron-3-ultra-550b-a55b:free` and the canonical
+`openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` route through OpenRouter.
+Bare model names follow the same active-provider rule.
 
 Gemma models served through the Gemini API, such as `gemini/gemma-3-12b-it`, do not accept developer/system instructions. Cortex keeps them usable by inlining its instructions into the user prompt while leaving native `gemini-*` models on the standard system-instruction path.
 
-OpenRouter is a special case when it is the active provider: vendor namespaces such as `openai/`, `anthropic/`, and `google/` are routed through OpenRouter and stored canonically with an `openrouter/` prefix. For example, with `/provider openrouter`, `/model all openai/gpt-oss-120b:free` is saved as `openrouter/openai/gpt-oss-120b:free` and uses `OPENROUTER_API_KEY`. Older config values like `openai/...` remain valid while OpenRouter is active. If you want the direct OpenAI API, switch the provider to `openai` first, then change the model.
+OpenRouter is a special case when it is the active provider: vendor namespaces
+such as `openai/`, `anthropic/`, and `google/` are routed through OpenRouter and
+stored canonically with an `openrouter/` prefix. For example, with
+`/provider openrouter`, `/model all openai/gpt-oss-120b:free` is saved as
+`openrouter/openai/gpt-oss-120b:free` and uses `OPENROUTER_API_KEY`. Older
+config values like `openai/...` remain valid while OpenRouter is active. If you
+want the direct OpenAI API, switch the provider to `openai` first, then change
+the model.
 
 **Example — mix providers per role:**
 
@@ -308,6 +323,7 @@ Use `/connect` for interactive auth flows and account-based providers:
 /connect openai chatgpt_browser  # ChatGPT Plus/Pro OAuth browser flow
 /connect github_copilot github_device
 /connect amazon_bedrock aws_profile
+/connect openrouter api_key sk-or-...
 ```
 
 **Option B — environment variables (session-only):**
@@ -363,10 +379,15 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | **Alt + ↑ / ↓** | Scroll active agent content (5 lines) |
 | **PageUp / PageDown** | Fast scroll active agent content (15 lines) |
 | **↑ / ↓** | Cycle through command history |
+| **Mouse wheel** | Scroll visible agent responses when the pointer is over Agents, or the active picker when one is open |
+| **PageUp / PageDown, Home / End** | Navigate by page or jump to picker boundaries while a picker is open |
 | **Shift + Tab** | Cycle execution mode: NORMAL → PLAN → AUTO → REVIEW |
 | **Tab** | Trigger command palette or autocomplete `/`, `@`, and `$` suggestions |
 | **Ctrl + C** | Abort current action or exit |
 | **Ctrl + Y** | Copy all visible logs and agent output to clipboard |
+
+Picker search accepts multiple case-insensitive words in any model-ID segment.
+For example, `deepseek r1` matches IDs such as `deepseek/deepseek-r1-0528`.
 
 **Examples:**
 
@@ -772,11 +793,16 @@ The `providers::complete(model_str, preamble, prompt)` function parses the prefi
 "gemini/gemma-3-12b-it"      → Gemini client with inline instructions fallback
 "amazon_bedrock/<model-id>"  → AWS Bedrock Runtime (AWS credential chain)
 "openrouter/openai/gpt-oss-120b:free" → rig_openrouter::Client (OPENROUTER_API_KEY)
+"openrouter/openai/gpt-4o"   → rig_openrouter::Client (config, /connect, or env key)
+"openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+                              → rig_openrouter::Client with namespaced model ID preserved
 "groq/llama3-70b-8192"       → groq::Client (GROQ_API_KEY)
 "together/mistralai/Mixtral" → together::Client (TOGETHER_API_KEY)
 ```
 
-When `openrouter` is active, vendor namespaces like `openai/...` can also route through OpenRouter; switch the provider to `openai` first if you want the direct OpenAI API instead.
+When `openrouter` is active, vendor namespaces like `openai/...` can also route
+through OpenRouter; switch the provider to `openai` first if you want the direct
+OpenAI API instead.
 
 ---
 
@@ -818,6 +844,7 @@ All agent output flows through `TuiEvent` over an `mpsc::UnboundedSender`:
 |-------|------|
 | `WorkflowStarted` | Workflow begins |
 | `AgentStarted { agent }` | Agent begins its LLM call |
+| `AgentPrompt { agent, prompt }` | Starts a visible Cortex transcript turn with the original user prompt |
 | `TokenChunk { agent, chunk }` | Agent produces a text fragment |
 | `AgentDone { agent }` | Agent finishes |
 | `PhaseComplete { phase }` | A phase milestone is reached |
