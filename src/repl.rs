@@ -71,6 +71,9 @@ pub struct ReplState {
     pub execution_mode: Arc<Mutex<ExecutionMode>>,
     /// Original user message pending plan approval (chat mode only).
     pub pending_chat_message: Arc<Mutex<Option<String>>>,
+    /// The chat conversation currently being persisted (per-project). `None`
+    /// until the first chat turn; reset by `/new` and replaced on chat resume.
+    pub current_chat: Arc<Mutex<Option<crate::chat_session::ChatSession>>>,
 }
 
 impl ReplState {
@@ -116,9 +119,9 @@ impl ReplState {
     pub fn add_session(&self, session: SessionInfo) -> Result<()> {
         let mut history = self.session_history.lock().unwrap();
         history.push(session);
-        // Keep only the last 50 sessions to prevent unbounded growth.
-        if history.len() > 50 {
-            let excess = history.len() - 50;
+        // Keep only the last 100 sessions to prevent unbounded growth.
+        if history.len() > 100 {
+            let excess = history.len() - 100;
             history.drain(0..excess);
         }
         // Persist to disk.
@@ -158,7 +161,8 @@ pub async fn dispatch(
             let lines = vec![
                 "  /start <workflow> \"<idea>\"  — launch a workflow",
                 "  /run   <workflow> \"<prompt>\" — alias for /start",
-                "  /resume <project-dir>         — resume an interrupted workflow",
+                "  /resume [<project-dir>]       — reopen a past session (chat or workflow run)",
+                "  /new                          — start a fresh session (alias of /clear)",
                 "  /init [--force]               — scan this project and generate/update AGENTS.md",
                 "  /mode [normal|plan|auto|review] — show or set execution mode (Shift+Tab to cycle)",
                 "  /approve                      — approve a plan and start execution (Plan mode)",
@@ -181,7 +185,7 @@ pub async fn dispatch(
                 "  /skill                        — browse, install, enable, disable, and remove skills",
                 "  /update [check|<version>]      — check for or install Cortex updates",
                 "  /focus <agent>                — show only logs for one agent",
-                "  /clear                        — clear visible logs",
+                "  /clear                        — start a fresh session (previous stays resumable)",
                 "  /logs                         — toggle log panel focus",
                 "  /quit                         — exit cortex",
             ];
@@ -1292,8 +1296,21 @@ pub async fn dispatch(
             );
         }
 
-        "/clear" => {
+        // Start fresh with an empty context. The previous conversation was saved
+        // incrementally and stays resumable via /resume (like Claude Code).
+        "/clear" | "/new" => {
+            state.chat_history.lock().await.clear();
+            *state.current_chat.lock().await = None;
             send(tx, TuiEvent::ClearLogs);
+            send(tx, TuiEvent::RestoreChat { turns: Vec::new() });
+            send(
+                tx,
+                TuiEvent::TokenChunk {
+                    agent: "repl".to_string(),
+                    chunk: "  Started a fresh session — the previous one stays resumable."
+                        .to_string(),
+                },
+            );
         }
 
         "/focus" => {
@@ -1327,6 +1344,19 @@ pub async fn dispatch(
                 }
 
                 let config_snapshot = Arc::new(config.read().await.clone());
+                if !crate::checkpoint::Checkpoint::checkpoint_path(&project_dir).exists() {
+                    send(
+                        tx,
+                        TuiEvent::Error {
+                            agent: "repl".to_string(),
+                            message: format!(
+                                "No resumable checkpoint found in {}. Only interrupted `dev` workflows can be resumed.",
+                                project_dir.display()
+                            ),
+                        },
+                    );
+                    return Ok(false);
+                }
                 let checkpoint = match crate::checkpoint::Checkpoint::load(&project_dir) {
                     Ok(checkpoint) => checkpoint,
                     Err(e) => {
@@ -1422,6 +1452,24 @@ fn emit_chat_turn_started(tx: &TuiSender, prompt: &str) {
             prompt: prompt.to_string(),
         },
     );
+}
+
+/// Restore a saved chat by id: seed the in-memory history for continuation and
+/// emit a `RestoreChat` event so the TUI redraws the transcript.
+pub async fn resume_session(state: &Arc<ReplState>, tx: &TuiSender, id: &str) -> Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let session = crate::chat_session::load(&cwd, id)?;
+
+    *state.chat_history.lock().await = session.rig_history();
+    let turns: Vec<(String, String)> = session
+        .turns
+        .iter()
+        .map(|t| (t.prompt.clone(), t.response.clone()))
+        .collect();
+    *state.current_chat.lock().await = Some(session);
+
+    send(tx, TuiEvent::RestoreChat { turns });
+    Ok(())
 }
 
 async fn handle_connect_command(rest: &str, tx: &TuiSender, config: Arc<RwLock<Config>>) {
@@ -2106,6 +2154,22 @@ async fn chat_message(
                 {
                     let mut hist = state.chat_history.lock().await;
                     *hist = full_history;
+                }
+
+                // Persist the turn to the per-project chat store so it can be
+                // resumed after restart. Best-effort: disk errors don't break chat.
+                {
+                    let response_display = crate::assistant::strip_tool_calls_for_display(&reply);
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    let mut cur = state.current_chat.lock().await;
+                    let session =
+                        cur.get_or_insert_with(|| crate::chat_session::ChatSession::new(cwd));
+                    session.turns.push(crate::chat_session::ChatTurn {
+                        prompt: message.to_string(),
+                        response: response_display,
+                    });
+                    session.updated_at = Utc::now();
+                    let _ = session.save();
                 }
 
                 // Replace the accumulated stream buffer with the clean final reply so that

@@ -294,7 +294,8 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
           <tbody>
             <tr><td>/start &lt;workflow&gt; "&lt;idea&gt;"</td><td>Launch a workflow</td></tr>
             <tr><td>/run &lt;workflow&gt; "&lt;prompt&gt;"</td><td>Alias for /start</td></tr>
-            <tr><td>/resume &lt;dir&gt;</td><td>Resume an interrupted workflow</td></tr>
+            <tr><td>/resume [&lt;dir&gt;]</td><td>Reopen a past session — chat or workflow run, newest first (no arg opens the picker)</td></tr>
+            <tr><td>/new</td><td>Start a fresh session (alias of /clear)</td></tr>
             <tr><td>/workflows</td><td>List all available workflows and descriptions</td></tr>
             <tr><td>/workflow list</td><td>List built-in and custom workflows</td></tr>
             <tr><td>/workflow create &lt;name&gt; [desc]</td><td>Generate a new custom workflow definition with AI</td></tr>
@@ -316,7 +317,7 @@ export WEB_SEARCH_API_KEY="BSA..."`}</code></pre>
             <tr><td>/skill</td><td>Browse and manage reusable Cortex skills</td></tr>
             <tr><td>/update [check|&lt;version&gt;]</td><td>Check for or install Cortex updates</td></tr>
             <tr><td>/focus &lt;agent&gt;</td><td>Show logs for one agent</td></tr>
-            <tr><td>/clear</td><td>Clear visible logs</td></tr>
+            <tr><td>/clear</td><td>Start a fresh session (previous one stays resumable)</td></tr>
             <tr><td>/logs</td><td>Toggle log panel focus</td></tr>
             <tr><td>/quit</td><td>Exit Cortex</td></tr>
           </tbody>

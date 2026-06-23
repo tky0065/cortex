@@ -523,80 +523,85 @@ pub fn model_picker(current_models: &[(&str, &str)]) -> PickerState {
     PickerState::new("Set model per role", groups)
 }
 
-/// Build a PickerState for session history resume selection.
-/// Sessions are grouped by status: active/interrupted first, then completed, then failed.
-pub fn resume_picker(sessions: &[crate::repl::SessionInfo]) -> PickerState {
-    if sessions.is_empty() {
+/// Build a PickerState listing past sessions for the current project.
+///
+/// Workflow runs (from `session_history`) and persisted chats are merged into a
+/// single, flat, newest-first list. Each row shows a relative time. Item ids are
+/// prefixed `wf:` or `chat:` so the handler knows how to resume them.
+pub fn resume_picker(
+    workflows: &[crate::repl::SessionInfo],
+    chats: &[crate::chat_session::ChatSession],
+) -> PickerState {
+    if workflows.is_empty() && chats.is_empty() {
         let groups = vec![PickerGroup {
             title: "No sessions yet".to_string(),
             items: vec![PickerItem {
                 id: "__empty__".to_string(),
-                label: "No past sessions found".to_string(),
-                description: Some("Use /start <workflow> \"<idea>\" to begin".to_string()),
+                label: "No past sessions for this directory".to_string(),
+                description: Some(
+                    "Send a message to start a chat, or /start dev \"<idea>\"".to_string(),
+                ),
                 checked: false,
             }],
         }];
         return PickerState::new("Resume a session  esc to close", groups);
     }
 
-    // Partition sessions by status group
-    let mut active: Vec<&crate::repl::SessionInfo> = Vec::new();
-    let mut completed: Vec<&crate::repl::SessionInfo> = Vec::new();
-    let mut failed: Vec<&crate::repl::SessionInfo> = Vec::new();
+    // (recency, PickerItem) so chats and workflows can be merged by time.
+    let mut rows: Vec<(chrono::DateTime<chrono::Utc>, PickerItem)> = Vec::new();
 
-    for s in sessions.iter().rev() {
-        match s.status {
-            crate::repl::SessionStatus::Running | crate::repl::SessionStatus::Interrupted => {
-                active.push(s)
-            }
-            crate::repl::SessionStatus::Completed => completed.push(s),
-            crate::repl::SessionStatus::Failed => failed.push(s),
-        }
+    for c in chats {
+        rows.push((
+            c.updated_at,
+            PickerItem {
+                id: format!("chat:{}", c.id),
+                label: format!("💬 {}", c.summary()),
+                description: Some(format!(
+                    "{} · {} turn{}",
+                    crate::chat_session::humanize_since(c.updated_at),
+                    c.turns.len(),
+                    if c.turns.len() == 1 { "" } else { "s" }
+                )),
+                checked: false,
+            },
+        ));
     }
 
-    let make_item = |s: &crate::repl::SessionInfo| -> PickerItem {
-        let status_icon = match s.status {
-            crate::repl::SessionStatus::Running => "● ",
-            crate::repl::SessionStatus::Interrupted => "✗ ",
-            crate::repl::SessionStatus::Completed => "✓ ",
-            crate::repl::SessionStatus::Failed => "✗ ",
-        };
-        let idea = if s.idea.len() > 55 {
-            format!("{}…", &s.idea[..55])
+    for s in workflows {
+        let idea = if s.idea.chars().count() > 55 {
+            let truncated: String = s.idea.chars().take(55).collect();
+            format!("{truncated}…")
         } else {
             s.idea.clone()
         };
-        let time_str = s.timestamp.format("%Y-%m-%d %H:%M").to_string();
-        let dir = s.directory.display().to_string();
-        PickerItem {
-            id: s.id.clone(),
-            label: format!("{}{} · {}", status_icon, s.workflow, idea),
-            description: Some(format!("{} — {}", time_str, dir)),
-            checked: false,
-        }
-    };
-
-    let mut groups: Vec<PickerGroup> = Vec::new();
-
-    if !active.is_empty() {
-        groups.push(PickerGroup {
-            title: "Active / Interrupted".to_string(),
-            items: active.iter().map(|s| make_item(s)).collect(),
-        });
-    }
-    if !completed.is_empty() {
-        groups.push(PickerGroup {
-            title: "Completed".to_string(),
-            items: completed.iter().map(|s| make_item(s)).collect(),
-        });
-    }
-    if !failed.is_empty() {
-        groups.push(PickerGroup {
-            title: "Failed".to_string(),
-            items: failed.iter().map(|s| make_item(s)).collect(),
-        });
+        let status = match s.status {
+            crate::repl::SessionStatus::Running => "running",
+            crate::repl::SessionStatus::Interrupted => "interrupted",
+            crate::repl::SessionStatus::Completed => "completed",
+            crate::repl::SessionStatus::Failed => "failed",
+        };
+        rows.push((
+            s.timestamp,
+            PickerItem {
+                id: format!("wf:{}", s.id),
+                label: format!("[{}] {}", s.workflow, idea),
+                description: Some(format!(
+                    "{} · {}",
+                    crate::chat_session::humanize_since(s.timestamp),
+                    status
+                )),
+                checked: false,
+            },
+        ));
     }
 
+    // Newest first.
+    rows.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
+
+    let groups = vec![PickerGroup {
+        title: "Sessions".to_string(),
+        items: rows.into_iter().map(|(_, item)| item).collect(),
+    }];
     PickerState::new("Resume a session  esc to close", groups)
 }
 
@@ -716,6 +721,67 @@ mod tests {
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("model-39"));
         assert!(!rendered.contains("model-0 "));
+    }
+
+    /// Collect every selectable item id across all groups in a picker.
+    fn picker_ids(state: &PickerState) -> Vec<String> {
+        state
+            .filtered()
+            .into_iter()
+            .map(|(_, item)| item.id.clone())
+            .collect()
+    }
+
+    fn chat(prompt: &str) -> crate::chat_session::ChatSession {
+        let mut s = crate::chat_session::ChatSession::new(std::path::PathBuf::from("/tmp/proj"));
+        s.turns.push(crate::chat_session::ChatTurn {
+            prompt: prompt.to_string(),
+            response: "ok".to_string(),
+        });
+        s
+    }
+
+    fn workflow(id: &str, name: &str, idea: &str) -> crate::repl::SessionInfo {
+        crate::repl::SessionInfo {
+            id: id.to_string(),
+            workflow: name.to_string(),
+            idea: idea.to_string(),
+            directory: std::path::PathBuf::from("/tmp/proj"),
+            timestamp: chrono::Utc::now(),
+            status: crate::repl::SessionStatus::Completed,
+            git_hash: None,
+        }
+    }
+
+    #[test]
+    fn resume_picker_merges_chats_and_workflows_newest_first() {
+        // Workflow is older; chat is the most recent.
+        let mut wf = workflow("wf1", "scanner", "scan le projet");
+        wf.timestamp = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let chat = chat("most recent question");
+
+        let state = resume_picker(std::slice::from_ref(&wf), std::slice::from_ref(&chat));
+        let ids = picker_ids(&state);
+
+        // Newest (chat) first, then the workflow; ids are prefixed by kind.
+        assert_eq!(ids, vec![format!("chat:{}", chat.id), "wf:wf1".to_string()]);
+        assert!(state.groups.iter().any(|g| g.title == "Sessions"));
+
+        let wf_row = state.groups[0]
+            .items
+            .iter()
+            .find(|i| i.id == "wf:wf1")
+            .unwrap();
+        assert!(wf_row.label.contains("[scanner]"));
+        // Descriptions carry a relative time.
+        assert!(wf_row.description.as_ref().unwrap().contains("ago"));
+    }
+
+    #[test]
+    fn resume_picker_shows_empty_state_when_no_sessions() {
+        let state = resume_picker(&[], &[]);
+        let ids = picker_ids(&state);
+        assert_eq!(ids, vec!["__empty__".to_string()]);
     }
 
     #[test]

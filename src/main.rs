@@ -3,6 +3,7 @@ mod agent_loader;
 mod assistant;
 mod auth;
 mod budget;
+mod chat_session;
 mod checkpoint;
 mod config;
 mod context;

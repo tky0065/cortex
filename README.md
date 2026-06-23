@@ -23,7 +23,7 @@ Cortex is a beta agentic CLI written in Rust that simulates a full software deve
 - **ESC ESC interrupt** — Press <kbd>Esc</kbd> twice within 500 ms to immediately interrupt the running workflow or chat generation without closing the application (inspired by GitHub Copilot). A contextual popup appears with:
   - **`[Enter]` / `[Esc]`** — dismiss and keep chatting; all previous conversation messages are preserved.
   - **`[R]`** — open the resume picker to continue an interrupted workflow from where it stopped (files written so far are kept on disk).
-- History is automatically preserved: `session_history` is saved to `~/.cortex/sessions.json` with an `Interrupted` status so workflows can always be resumed via `/resume`.
+- History is automatically preserved per project under `~/.cortex/projects/<encoded-dir>/`: every chat and workflow run is saved as a resumable session (newest first, up to 100 per directory) and listed by `/resume`, Claude-Code style.
 
 ## What's new in 0.2.0
 
@@ -357,7 +357,8 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 |---------|-------------|
 | `/start <workflow> "<idea>"` | Launch a workflow |
 | `/run <workflow> "<prompt>"` | Alias for `/start` |
-| `/resume <project-dir>` | Resume an interrupted workflow |
+| `/resume [<project-dir>]` | Reopen a past session — chat or workflow run (no arg opens the picker) |
+| `/new` | Start a fresh session (alias of `/clear`) |
 | `/init [--force]` | Scan the current project and generate/update `AGENTS.md` |
 | `/status` | Show whether a workflow is running |
 | `/abort` | Cancel the running workflow at the next checkpoint |
@@ -374,7 +375,7 @@ A full-screen TUI opens. Type slash commands in the input bar at the bottom.
 | `/skill` / `/skills` | Browse, install, enable, disable, and remove Cortex skills |
 | `/update [check\|<version>]` | Check for or install Cortex updates |
 | `/focus <agent>` | Show only logs for one agent |
-| `/clear` | Clear visible logs |
+| `/clear` | Start a fresh session (the previous one stays resumable via `/resume`) |
 | `/logs` | Toggle log panel focus |
 | `/quit` or `/exit` | Exit Cortex |
 
@@ -462,6 +463,8 @@ cortex resume ./demo
 `cortex resume <project-dir>` uses `cortex.checkpoint.json` to continue a structured `dev` workflow run. The checkpoint stores the original prompt, completed phases, next action, and hashes for files Cortex already wrote.
 
 Resume stops before running agents if the checkpoint is missing, invalid, belongs to an unsupported workflow, or if tracked checkpoint files were changed or removed. Cortex does not overwrite local edits to tracked checkpoint files during structured resume.
+
+In the REPL, running `/resume` with no argument opens a picker, modeled on Claude Code sessions. It lists **every past session for the current directory** — free-form chats *and* `/start` workflow runs — **newest first**, each row showing a summary, time since last activity, and turn count. Sessions are saved automatically as you work (up to 100 per project) under `~/.cortex/projects/<encoded-dir>/`, keyed by the directory they were started in. Selecting a session restores its transcript and lets you keep talking; a `dev` run that still has a checkpoint resumes the structured workflow instead. `/clear` (or `/new`) starts a fresh session — the previous one stays resumable.
 
 Run artifacts:
 

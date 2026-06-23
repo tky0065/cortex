@@ -26,6 +26,11 @@ pub enum TuiEvent {
         agent: String,
         prompt: String,
     },
+    /// Restore a saved chat transcript into the "cortex" agent panel (clears it
+    /// first). Each tuple is a `(prompt, response)` turn.
+    RestoreChat {
+        turns: Vec<(String, String)>,
+    },
     AgentProgress {
         agent: String,
         message: String,

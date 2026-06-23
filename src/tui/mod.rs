@@ -38,7 +38,7 @@ use crate::tui::{
         agent_panel::{ActiveAgent, AgentPanelWidget},
         cockpit::{CockpitPanel, CockpitTabDisplay},
         diff_viewer::{DiffViewerWidget, FileDiff},
-        input::{InputBar, PaletteContext, ResumeSuggestion, default_provider_suggestions},
+        input::{InputBar, PaletteContext, default_provider_suggestions},
         launcher::{IdlePipelineWidget, LauncherData, LauncherWidget},
         logs::{LogEntry, LogsWidget},
         picker::{
@@ -520,6 +520,25 @@ impl App {
                     a.start_turn(prompt);
                 }
             }
+            TuiEvent::RestoreChat { turns } => {
+                self.ensure_agent("cortex");
+                if let Some(a) = self.active_agents.iter_mut().find(|a| a.name == "cortex") {
+                    a.restart();
+                    for (prompt, response) in turns {
+                        a.start_turn(prompt.clone());
+                        a.push_chunk(response);
+                    }
+                    a.finish();
+                }
+                if !self.pipeline.iter().any(|a| a.name == "cortex") {
+                    self.pipeline.push(AgentState::idle("cortex"));
+                }
+                self.set_pipeline_status("cortex", AgentStatus::Done);
+                self.logs.push(LogEntry::system(format!(
+                    "restored chat ({} turns)",
+                    turns.len()
+                )));
+            }
             TuiEvent::AgentProgress { agent, message } => {
                 if is_control_agent(agent) {
                     self.logs
@@ -813,8 +832,16 @@ impl App {
                     .push(LogEntry::system(format!("{provider}: {message}")));
             }
             TuiEvent::OpenResumePicker => {
-                let sessions = self.repl_state.session_history.lock().unwrap().clone();
-                self.popup = PopupState::ResumePicker(resume_picker(&sessions));
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                // Past workflow runs for this directory + persisted chats.
+                let workflows: Vec<crate::repl::SessionInfo> = self
+                    .repl_state
+                    .session_history
+                    .lock()
+                    .map(|h| h.iter().filter(|s| s.directory == cwd).cloned().collect())
+                    .unwrap_or_default();
+                let chats = crate::chat_session::list_for_project(&cwd);
+                self.popup = PopupState::ResumePicker(resume_picker(&workflows, &chats));
             }
             TuiEvent::OpenSkillPicker => {
                 self.popup = PopupState::SkillPicker(build_skill_picker(Vec::new(), true));
@@ -929,7 +956,6 @@ impl App {
             || input.starts_with("/connect ");
         let needs_models = input.starts_with("/model ");
         let needs_agents = input.starts_with("/focus ") || input.starts_with("/agent ");
-        let needs_resume_sessions = input.starts_with("/resume ");
         let needs_skills =
             input.starts_with("/skill ") || input.starts_with("/skills ") || input.contains('$');
         let needs_project_paths = input.contains('@');
@@ -975,33 +1001,6 @@ impl App {
             Vec::new()
         };
 
-        let resume_sessions = if needs_resume_sessions {
-            self.repl_state
-                .session_history
-                .lock()
-                .map(|history| {
-                    history
-                        .iter()
-                        .rev()
-                        .map(|session| {
-                            let idea = if session.idea.len() > 55 {
-                                format!("{}...", &session.idea[..55])
-                            } else {
-                                session.idea.clone()
-                            };
-                            ResumeSuggestion {
-                                label: format!("{} {}", session.workflow, idea),
-                                description: session.directory.display().to_string(),
-                                path: session.directory.display().to_string(),
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
         let skills = if needs_skills {
             crate::skills::list()
                 .map(|records| {
@@ -1033,7 +1032,6 @@ impl App {
             providers,
             models,
             agents,
-            resume_sessions,
             skills,
             project_paths,
         }
@@ -1372,6 +1370,22 @@ impl Tui {
                 }
                 _ => {}
             }
+            return false;
+        }
+
+        // `/resume` with no argument always opens the session picker popup,
+        // regardless of palette state (a complete command + trailing space would
+        // otherwise leave the palette open and swallow Enter).
+        if key.code == KeyCode::Enter && app.input_bar.input.value().trim() == "/resume" {
+            app.logs.push(LogEntry::system("> /resume".to_string()));
+            app.input_bar.push_history("/resume".to_string());
+            app.input_bar.input = tui_input::Input::default();
+            Self::spawn_dispatch(
+                "/resume".to_string(),
+                tx.clone(),
+                Arc::clone(&app.config),
+                Arc::clone(&app.repl_state),
+            );
             return false;
         }
 
@@ -2488,37 +2502,22 @@ impl Tui {
             KeyCode::Enter => {
                 if let Some(session_id) = state.selected_id() {
                     app.popup = PopupState::None;
-                    // Look up the directory for this session and dispatch /resume <dir>
-                    let dir = {
-                        let history = app.repl_state.session_history.lock().unwrap();
-                        history
-                            .iter()
-                            .find(|s| s.id == session_id)
-                            .map(|s| s.directory.display().to_string())
-                    };
-                    if let Some(dir_str) = dir {
-                        let cmd = format!("/resume {}", dir_str);
-                        match crate::repl::dispatch(
-                            &cmd,
-                            tx,
-                            Arc::clone(&app.config),
-                            Arc::clone(&app.repl_state),
-                        )
-                        .await
+                    // The empty-state placeholder is not a real session — ignore it.
+                    if session_id == "__empty__" {
+                        return false;
+                    }
+                    if let Some(chat_id) = session_id.strip_prefix("chat:") {
+                        // Restore a chat transcript and continue the conversation.
+                        if let Err(e) =
+                            crate::repl::resume_session(&app.repl_state, tx, chat_id).await
                         {
-                            Ok(should_quit) => return should_quit,
-                            Err(e) => {
-                                let _ = tx.send(TuiEvent::Error {
-                                    agent: "resume".to_string(),
-                                    message: e.to_string(),
-                                });
-                            }
+                            let _ = tx.send(TuiEvent::Error {
+                                agent: "resume".to_string(),
+                                message: e.to_string(),
+                            });
                         }
-                    } else {
-                        let _ = tx.send(TuiEvent::Error {
-                            agent: "resume".to_string(),
-                            message: format!("session not found: {}", session_id),
-                        });
+                    } else if let Some(wf_id) = session_id.strip_prefix("wf:") {
+                        Self::resume_workflow_session(app, tx, wf_id).await;
                     }
                 }
             }
@@ -2526,6 +2525,54 @@ impl Tui {
             _ => {}
         }
         false
+    }
+
+    /// Resume a past workflow run selected from the session picker.
+    ///
+    /// A `dev` run with a saved checkpoint resumes the structured workflow;
+    /// any other run prefills `/start <workflow> "<idea>"` so the user can
+    /// review and relaunch it.
+    async fn resume_workflow_session(app: &mut App, tx: &TuiSender, wf_id: &str) {
+        let session = {
+            let history = app.repl_state.session_history.lock().unwrap();
+            history.iter().find(|s| s.id == wf_id).cloned()
+        };
+        let Some(session) = session else {
+            let _ = tx.send(TuiEvent::Error {
+                agent: "resume".to_string(),
+                message: format!("session not found: {wf_id}"),
+            });
+            return;
+        };
+
+        let has_checkpoint =
+            crate::checkpoint::Checkpoint::checkpoint_path(&session.directory).exists();
+        if session.workflow == "dev" && has_checkpoint {
+            let cmd = format!("/resume {}", session.directory.display());
+            if let Err(e) = crate::repl::dispatch(
+                &cmd,
+                tx,
+                Arc::clone(&app.config),
+                Arc::clone(&app.repl_state),
+            )
+            .await
+            {
+                let _ = tx.send(TuiEvent::Error {
+                    agent: "resume".to_string(),
+                    message: e.to_string(),
+                });
+            }
+            return;
+        }
+
+        // No conversation to restore — prefill the launch command for review.
+        let quoted = session.idea.replace('"', "'");
+        app.input_bar
+            .set_value(format!("/start {} \"{}\"", session.workflow, quoted));
+        app.logs.push(LogEntry::system(format!(
+            "prefilled /start {} — press Enter to relaunch",
+            session.workflow
+        )));
     }
 
     // -------------------------------------------------------------------------

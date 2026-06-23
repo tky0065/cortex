@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use tui_input::Input;
 
@@ -12,7 +12,8 @@ use tui_input::Input;
 const COMMANDS: &[(&str, &str)] = &[
     ("/start", "Launch a workflow"),
     ("/run", "Alias for /start"),
-    ("/resume", "Resume an interrupted workflow"),
+    ("/resume", "Reopen a past session (chat or workflow run)"),
+    ("/new", "Start a fresh session"),
     ("/init", "Generate or update AGENTS.md"),
     ("/status", "Show current workflow status"),
     ("/abort", "Cancel the running workflow"),
@@ -32,7 +33,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/skill", "Browse and manage skills"),
     ("/update", "Check for or install Cortex updates"),
     ("/focus", "Focus logs by agent"),
-    ("/clear", "Clear visible logs"),
+    ("/clear", "Start a fresh session"),
     ("/logs", "Toggle log panel"),
     ("/help", "Show all commands"),
     ("/agents", "List all agent statuses from the bus"),
@@ -129,16 +130,8 @@ pub struct PaletteContext {
     pub providers: Vec<(String, String)>,
     pub models: Vec<String>,
     pub agents: Vec<String>,
-    pub resume_sessions: Vec<ResumeSuggestion>,
     pub skills: Vec<(String, String)>,
     pub project_paths: Vec<(String, String)>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResumeSuggestion {
-    pub label: String,
-    pub description: String,
-    pub path: String,
 }
 
 pub struct InputBar {
@@ -169,6 +162,14 @@ impl InputBar {
             completion_idx: None,
             palette_idx: 0,
         }
+    }
+
+    /// Replace the input value, placing the cursor at the end.
+    pub fn set_value(&mut self, value: impl Into<String>) {
+        let value = value.into();
+        let cursor = value.chars().count();
+        self.input = Input::new(value).with_cursor(cursor);
+        self.palette_idx = 0;
     }
 
     // -----------------------------------------------------------------------
@@ -615,7 +616,11 @@ impl InputBar {
                 .border_style(THEME.border_style())
                 .style(Style::default().bg(THEME.bg)),
         );
-        frame.render_widget(list, palette_area);
+        // Track the cursor with a ListState so the view scrolls when the match
+        // list is taller than the palette window.
+        let mut list_state = ListState::default();
+        list_state.select(Some(cursor));
+        frame.render_stateful_widget(list, palette_area, &mut list_state);
     }
 }
 
@@ -623,7 +628,6 @@ impl InputBar {
 const REQUIRES_ARGS: &[&str] = &[
     "/start",
     "/run",
-    "/resume",
     "/focus",
     "/apikey",
     "/websearch",
@@ -810,17 +814,6 @@ fn argument_matches(parsed: &ParsedCommand<'_>, context: &PaletteContext) -> Vec
             }
             items
         }
-        ("/resume", 0) => context
-            .resume_sessions
-            .iter()
-            .map(|session| {
-                PaletteItem::with_replacement(
-                    &session.label,
-                    &session.description,
-                    quote_arg_if_needed(&session.path),
-                )
-            })
-            .collect(),
         _ => Vec::new(),
     };
 
@@ -931,18 +924,6 @@ mod tests {
                 "ollama/llama3.1:8b".to_string(),
             ],
             agents: vec!["ceo".to_string(), "developer:src/main.rs".to_string()],
-            resume_sessions: vec![
-                ResumeSuggestion {
-                    label: "dev build app".to_string(),
-                    description: "/tmp/cortex-app".to_string(),
-                    path: "/tmp/cortex-app".to_string(),
-                },
-                ResumeSuggestion {
-                    label: "marketing launch".to_string(),
-                    description: "/tmp/cortex project".to_string(),
-                    path: "/tmp/cortex project".to_string(),
-                },
-            ],
             skills: vec![
                 ("rust".to_string(), "Rust workflow skill".to_string()),
                 ("docs".to_string(), "Documentation skill".to_string()),
@@ -1325,15 +1306,21 @@ mod tests {
     }
 
     #[test]
-    fn resume_palette_inserts_quoted_paths_when_needed() {
+    fn command_palette_offers_new() {
         let mut bar = InputBar::new();
-        type_into(&mut bar, "/resume marketing");
-        let selected = bar.palette_select(&context());
+        type_into(&mut bar, "/new");
+        assert!(values(bar.palette_matches(&context())).contains(&"/new".to_string()));
+    }
 
+    #[test]
+    fn set_value_replaces_input_and_places_cursor_at_end() {
+        let mut bar = InputBar::new();
+        type_into(&mut bar, "hello");
+        bar.set_value("/start dev \"build an app\"");
+        assert_eq!(bar.input.value(), "/start dev \"build an app\"");
         assert_eq!(
-            selected,
-            Some("/resume \"/tmp/cortex project\"".to_string())
+            bar.input.cursor(),
+            "/start dev \"build an app\"".chars().count()
         );
-        assert_eq!(bar.input.value(), "/resume \"/tmp/cortex project\"");
     }
 }
